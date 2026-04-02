@@ -1,0 +1,74 @@
+pipeline {
+  agent any
+
+  options {
+    timestamps()
+    ansiColor('xterm')
+    disableConcurrentBuilds()
+    buildDiscarder(logRotator(numToKeepStr: '30'))
+  }
+
+  parameters {
+    choice(name: 'SCAN_PROFILE', choices: ['pr', 'integration', 'scheduled'], description: 'Run the PR/CI gate, the local OpenBao integration verifier, or the scheduled security sweep.')
+    booleanParam(name: 'RUN_DOCKER_SCOUT_PR', defaultValue: false, description: 'Build and scan local images during PR/CI runs.')
+    string(name: 'DEFAULT_BRANCH', defaultValue: 'main', description: 'Default branch used for diff-based scans.')
+    string(name: 'SCOUT_BUILD_SERVICES', defaultValue: 'control-plane,policy,detection,response,identity,siem-connector,compliance,runtime,proxy-agent,transparent-proxy,agent-identity,ai-router,audit,integration-control', description: 'Comma-separated docker compose services to build and scan.')
+    string(name: 'ZAP_TARGET_URL', defaultValue: '', description: 'Optional baseline scan target for scheduled ZAP runs.')
+    string(name: 'PROWLER_PROVIDER', defaultValue: 'aws', description: 'Prowler provider/module to run on scheduled scans.')
+    string(name: 'PROWLER_ARGS', defaultValue: '', description: 'Additional arguments passed to Prowler on scheduled runs.')
+    string(name: 'OPENBAO_COMPOSE_PROJECT', defaultValue: 'cyberarmor-openbao-ci', description: 'Compose project name used for the local OpenBao integration verifier.')
+  }
+
+  environment {
+    SECURITY_REPORT_DIR = 'reports/security'
+    DEFAULT_BRANCH = "${params.DEFAULT_BRANCH}"
+    SCOUT_BUILD_SERVICES = "${params.SCOUT_BUILD_SERVICES}"
+    ZAP_TARGET_URL = "${params.ZAP_TARGET_URL}"
+    PROWLER_PROVIDER = "${params.PROWLER_PROVIDER}"
+    PROWLER_ARGS = "${params.PROWLER_ARGS}"
+    COMPOSE_PROJECT_NAME = "${params.OPENBAO_COMPOSE_PROJECT}"
+    OPENBAO_VERIFY_KEEP_STACK = 'false'
+  }
+
+  stages {
+    stage('Checkout') {
+      steps {
+        checkout scm
+        sh 'mkdir -p "$SECURITY_REPORT_DIR"'
+      }
+    }
+
+    stage('PR Security Gate') {
+      when {
+        expression { params.SCAN_PROFILE == 'pr' }
+      }
+      steps {
+        sh 'bash scripts/ci/security/run_pr_gate.sh'
+      }
+    }
+
+    stage('OpenBao Integration Verifier') {
+      when {
+        expression { params.SCAN_PROFILE == 'integration' }
+      }
+      steps {
+        sh 'bash scripts/ci/run_openbao_integration.sh'
+      }
+    }
+
+    stage('Scheduled Security Sweep') {
+      when {
+        expression { params.SCAN_PROFILE == 'scheduled' }
+      }
+      steps {
+        sh 'bash scripts/ci/security/run_scheduled_scans.sh'
+      }
+    }
+  }
+
+  post {
+    always {
+      archiveArtifacts artifacts: 'reports/security/**/*', allowEmptyArchive: true
+    }
+  }
+}

@@ -1,0 +1,18 @@
+services:
+  jenkins:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cyberarmor-jenkins-security:latest
+    restart: unless-stopped
+    ports:
+      - "8088:8080"
+      - "50000:50000"
+    environment:
+      JAVA_OPTS: "-Djenkins.install.runSetupWizard=false"
+    volumes:
+      - jenkins_home:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ../../:/var/jenkins_home/workspace/CyberArmorAi
+volumes:
+  jenkins_home:

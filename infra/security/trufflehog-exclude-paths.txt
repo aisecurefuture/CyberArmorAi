@@ -1,0 +1,4 @@
+# One regex per line. These are passed to trufflehog --exclude-paths.
+^extensions/.*/node_modules/
+^dist/
+^reports/security/

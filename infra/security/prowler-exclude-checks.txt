@@ -1,0 +1,3 @@
+# One Prowler check ID per line.
+# Example:
+# check12

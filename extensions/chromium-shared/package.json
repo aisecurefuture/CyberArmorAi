@@ -1,0 +1,14 @@
+{
+  "name": "cyberarmor-browser-shared",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:pqc": "node ./build-pqc.mjs"
+  },
+  "dependencies": {
+    "mlkem": "^2.5.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.2"
+  }
+}

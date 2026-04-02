@@ -1,0 +1,21 @@
+title = "CyberArmor gitleaks config"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Allow demo placeholders and obviously fake example keys"
+regexes = [
+  '''change-me([a-z0-9-]+)?''',
+  '''sk-mock''',
+  '''AKIA1234567890ABCDEF''',
+  '''PQC:'''
+]
+
+[[allowlists]]
+description = "Allow generated dependency and build output directories"
+paths = [
+  '''^extensions/.*/node_modules/''',
+  '''^dist/''',
+  '''^reports/security/'''
+]

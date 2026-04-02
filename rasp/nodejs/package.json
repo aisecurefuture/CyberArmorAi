@@ -1,0 +1,14 @@
+{
+  "name": "cyberarmor-rasp",
+  "version": "1.0.0",
+  "description": "CyberArmor RASP - Runtime Application Self-Protection for AI/LLM APIs",
+  "main": "cyberarmor-rasp.js",
+  "exports": {
+    ".": "./cyberarmor-rasp.js",
+    "./legacy": "./cyberarmor-rasp.js"
+  },
+  "keywords": ["security", "ai", "llm", "rasp", "middleware"],
+  "author": "CyberArmor",
+  "license": "MIT",
+  "engines": { "node": ">=18.0.0" }
+}

@@ -1,0 +1,11 @@
+workflow-aggregator
+docker-workflow
+git
+github-branch-source
+credentials-binding
+ws-cleanup
+pipeline-stage-view
+matrix-auth
+plain-credentials
+job-dsl
+configuration-as-code
