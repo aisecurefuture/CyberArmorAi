@@ -4,7 +4,7 @@
 
 **Do not open a public GitHub issue for security vulnerabilities.**
 
-Report security issues by email to **security@gratitech.com**. You should receive an acknowledgment within **2 business days** and a status update within **7 business days**.
+Report security issues by email to **security@gratitech.com**. You should receive an acknowledgment within **7 business days** and a status update within **14 business days**.
 
 Please include as much of the following as possible:
 
@@ -14,7 +14,7 @@ Please include as much of the following as possible:
 - Your estimated severity (Critical / High / Medium / Low)
 - Any suggested mitigations you have identified
 
-We request **90-day coordinated disclosure**. We will work with you to understand and remediate the issue before public disclosure. If a fix requires more time, we will communicate that and agree on a revised timeline.
+We request **120-day coordinated disclosure**. We will work with you to understand and remediate the issue before public disclosure. If a fix requires more time, we will communicate that and agree on a revised timeline.
 
 ## Supported Versions
 
