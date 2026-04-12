@@ -18,6 +18,10 @@ CyberArmor is a zero-trust, multi-layered security platform that provides real-t
 │Control │ Policy │Detect- │Response│Identity│  SIEM  │Compliance│
 │ Plane  │ Engine │  ion   │        │Provider│Connector│ Engine  │
 │ :8000  │ :8001  │ :8002  │ :8003  │ :8004  │ :8005  │ :8006   │
+├────────┬────────┬────────┬────────┬────────┬────────┬──────────┤
+│ Agent  │AI Router│ Audit │Integ-  │Runtime │Secrets │ OpenBao  │
+│Identity│        │       │ration  │  API   │Service │  Vault   │
+│ :8008  │ :8009  │ :8011 │ :8012  │ :8010  │ :8013  │          │
 ├────────┴────────┴────────┴────────┴────────┴────────┴──────────┤
 │                   Transparent AI Proxy (:8080)                  │
 │             (mitmproxy dev; HTTPS on :8443 in dev)              │
@@ -50,9 +54,14 @@ CyberArmor is a zero-trust, multi-layered security platform that provides real-t
 | Identity Provider | 8004 | SSO integration (Entra ID, Okta, Ping, AWS IAM) |
 | SIEM Connector | 8005 | Output to Splunk, Sentinel, QRadar, Elastic, Google SecOps, Syslog/CEF |
 | Compliance Engine | 8006 | 14 compliance frameworks with evidence-based assessment |
+| Agent Identity | 8008 | AI agent identities, credentials, tokens, and delegation chains |
+| AI Router | 8009 | Unified gateway to AI providers with credential vault, request normalization, cost tracking, and governance |
 | Proxy Agent | 8010 | Policy decision API and local block actions |
-| Transparent Proxy | 8080 / 8443 | AI traffic interception, inspection, and policy enforcement |
+| Audit Service | 8011 | Immutable PQC-signed audit log and AI action graph |
 | Integration Control | 8012 | SaaS integration discovery, OAuth scope visibility, and control actions |
+| Secrets Service | 8013 | Thin CyberArmor control layer over OpenBao: tenant/provider credential storage, transit encrypt/decrypt/sign, key rotation |
+| Transparent Proxy | 8080 / 8443 | AI traffic interception, inspection, and policy enforcement |
+| OpenBao Vault | — | Underlying secret and cryptographic engine (KV, transit, key management) |
 
 ## Security Features
 
@@ -182,12 +191,21 @@ ai-protect-system-claude-4.6/
 │   ├── php/                  # PHP PSR-15/Laravel middleware
 │   └── c_cpp/                # C/C++ LD_PRELOAD interceptor
 └── services/
+    ├── agent-identity/       # AI agent identity, credentials, and delegation chains
+    ├── ai-router/            # Unified AI provider gateway with credential vault and cost tracking
+    ├── audit/                # Immutable PQC-signed audit log and AI action graph
     ├── compliance/           # Compliance engine (14 frameworks)
+    ├── control-plane/        # Central API gateway and tenant management
+    ├── detection/            # Prompt injection, jailbreak, toxicity, PII detection
     ├── identity/             # Identity provider service
+    ├── integration-control/  # SaaS integration discovery and OAuth scope control
+    ├── llm-mock/             # Mock LLM endpoint for local development and testing
     ├── policy/               # Policy engine with AND/OR groups
     ├── proxy/                # Transparent proxy core
-    ├── siem-connector/       # SIEM output integrations
-    └── [control-plane, detection, response in Archive]
+    ├── response/             # Incident management and automated response actions
+    ├── runtime/              # Unified AISR runtime decision API (orchestrates detection, policy, response)
+    ├── secrets-service/      # CyberArmor control layer over OpenBao (KV, transit, key rotation)
+    └── siem-connector/       # SIEM output integrations
 ```
 
 ## Configuration
@@ -204,6 +222,21 @@ ai-protect-system-claude-4.6/
 | `PQC_ENABLED` | Enable post-quantum crypto | `true` |
 | `FIPS_MODE` | Enable FIPS 140-3 mode | `true` |
 | `LOG_LEVEL` | Logging level | `INFO` |
+| `AGENT_IDENTITY_API_SECRET` | Agent identity service API key | (required) |
+| `AGENT_IDENTITY_JWT_SECRET` | JWT signing secret for agent tokens | (required) |
+| `ROUTER_API_SECRET` | AI router service API key | (required) |
+| `ROUTER_ENCRYPTION_KEY` | AES-256 master key for provider credential encryption | (required) |
+| `AUDIT_API_SECRET` | Audit service API key | (required) |
+| `CYBERARMOR_AUDIT_SIGNING_KEY` | PQC signing key for immutable audit entries | (required) |
+| `AUDIT_RETENTION_DAYS` | Audit log retention period | `365` |
+| `SECRETS_SERVICE_API_SECRET` | Secrets service API key | (required) |
+| `OPENBAO_ADDR` | OpenBao server address | (required) |
+| `OPENBAO_TOKEN` | OpenBao root/service token | (required) |
+| `OPENBAO_NAMESPACE` | OpenBao namespace | (optional) |
+| `OPENBAO_KV_MOUNT` | OpenBao KV secrets mount path | (optional) |
+| `OPENBAO_TRANSIT_MOUNT` | OpenBao transit engine mount path | (optional) |
+| `CYBERARMOR_ENFORCE_SECURE_SECRETS` | Reject insecure default secrets at startup | `false` |
+| `CYBERARMOR_ENFORCE_MTLS` | Require mTLS for inter-service calls | `false` |
 
 ### Identity Provider Setup
 
