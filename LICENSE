@@ -1,0 +1,60 @@
+Copyright (c) 2024–2026 Gratitech Research and Charitable Endeavor Corporation
+All rights reserved.
+
+PROPRIETARY SOFTWARE LICENSE
+
+This software and associated documentation files (the "Software") are the
+exclusive property of Gratitech Research and Charitable Endeavor Corporation
+("Gratitech"). All rights are reserved. No part of the Software may be
+reproduced, distributed, modified, sublicensed, or transmitted in any form
+or by any means — electronic, mechanical, photocopying, recording, or
+otherwise — without the prior written permission of Gratitech.
+
+PERMITTED USES
+
+Subject to the terms of a separate written agreement executed with Gratitech,
+authorized licensees may:
+
+1. Install and run the Software solely for internal business operations or
+   evaluation purposes as expressly permitted in the applicable agreement.
+2. Make a reasonable number of copies of the Software solely for backup and
+   disaster-recovery purposes.
+
+RESTRICTIONS
+
+Unless expressly authorized in writing by Gratitech, you may not:
+
+1. Copy, modify, adapt, translate, or create derivative works of the Software.
+2. Reverse engineer, decompile, disassemble, or otherwise attempt to derive
+   source code from any compiled portion of the Software.
+3. Sell, sublicense, rent, lease, lend, transfer, or otherwise make the
+   Software available to any third party.
+4. Remove or alter any proprietary notices, labels, or marks on the Software.
+5. Use the Software to develop a competing product or service.
+
+INTELLECTUAL PROPERTY
+
+Gratitech retains all right, title, and interest in and to the Software,
+including all intellectual property rights therein. Nothing in this License
+grants you any rights in Gratitech's trademarks, trade names, service marks,
+or logos.
+
+NO WARRANTY
+
+THE SOFTWARE IS PROVIDED "AS IS," WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT. IN NO EVENT SHALL
+GRATITECH BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN
+AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+GOVERNING LAW
+
+This License shall be governed by and construed in accordance with the laws
+of the State of Delaware, United States, without regard to its conflict-of-law
+provisions.
+
+CONTACT
+
+For licensing inquiries: support@gratitech.com
+For security disclosures: security@gratitech.com
