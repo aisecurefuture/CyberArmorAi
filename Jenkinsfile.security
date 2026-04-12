@@ -2,8 +2,6 @@ pipeline {
   agent any
 
   options {
-    timestamps()
-    ansiColor('xterm')
     disableConcurrentBuilds()
     buildDiscarder(logRotator(numToKeepStr: '30'))
   }
@@ -21,6 +19,8 @@ pipeline {
 
   environment {
     SECURITY_REPORT_DIR = 'reports/security'
+    MOUNTED_REPO_DIR = '/repo/CyberArmorAi'
+    HOST_JENKINS_WORK_ROOT = "${env.HOST_JENKINS_WORK_ROOT}"
     DEFAULT_BRANCH = "${params.DEFAULT_BRANCH}"
     SCOUT_BUILD_SERVICES = "${params.SCOUT_BUILD_SERVICES}"
     ZAP_TARGET_URL = "${params.ZAP_TARGET_URL}"
@@ -33,8 +33,39 @@ pipeline {
   stages {
     stage('Checkout') {
       steps {
-        checkout scm
-        sh 'mkdir -p "$SECURITY_REPORT_DIR"'
+        script {
+          def checkoutSourceDir = ''
+          try {
+            checkout scm
+            checkoutSourceDir = pwd()
+            echo "Checked out SCM into ${checkoutSourceDir}"
+          } catch (err) {
+            if (fileExists("${env.MOUNTED_REPO_DIR}/Jenkinsfile.security")) {
+              checkoutSourceDir = env.MOUNTED_REPO_DIR
+              echo "Using mounted repo source at ${checkoutSourceDir}"
+            } else {
+              throw err
+            }
+          }
+
+          env.CYBERARMOR_WORKDIR = "${env.HOST_JENKINS_WORK_ROOT}/${env.JOB_BASE_NAME ?: 'CyberArmorAI'}"
+          if (checkoutSourceDir == env.MOUNTED_REPO_DIR) {
+            if (!fileExists("${env.CYBERARMOR_WORKDIR}/Jenkinsfile.security")) {
+              error "Mounted repo fallback requires a host-prepared workdir at ${env.CYBERARMOR_WORKDIR}. Run scripts/ci/start_jenkins_security.sh and rerun this job."
+            }
+            echo "Using host-prepared workdir at ${env.CYBERARMOR_WORKDIR}"
+          } else {
+            sh """
+              rm -rf '${env.CYBERARMOR_WORKDIR}'
+              mkdir -p '${env.CYBERARMOR_WORKDIR}'
+              cp -R '${checkoutSourceDir}/.' '${env.CYBERARMOR_WORKDIR}/'
+            """
+          }
+          echo "Prepared mountable workdir at ${env.CYBERARMOR_WORKDIR}"
+        }
+        dir("${env.CYBERARMOR_WORKDIR}") {
+          sh 'mkdir -p "$SECURITY_REPORT_DIR"'
+        }
       }
     }
 
@@ -43,7 +74,9 @@ pipeline {
         expression { params.SCAN_PROFILE == 'pr' }
       }
       steps {
-        sh 'bash scripts/ci/security/run_pr_gate.sh'
+        dir("${env.CYBERARMOR_WORKDIR}") {
+          sh 'bash scripts/ci/security/run_pr_gate.sh'
+        }
       }
     }
 
@@ -52,7 +85,9 @@ pipeline {
         expression { params.SCAN_PROFILE == 'integration' }
       }
       steps {
-        sh 'bash scripts/ci/run_openbao_integration.sh'
+        dir("${env.CYBERARMOR_WORKDIR}") {
+          sh 'bash scripts/ci/run_openbao_integration.sh'
+        }
       }
     }
 
@@ -61,14 +96,22 @@ pipeline {
         expression { params.SCAN_PROFILE == 'scheduled' }
       }
       steps {
-        sh 'bash scripts/ci/security/run_scheduled_scans.sh'
+        dir("${env.CYBERARMOR_WORKDIR}") {
+          sh 'bash scripts/ci/security/run_scheduled_scans.sh'
+        }
       }
     }
   }
 
   post {
     always {
-      archiveArtifacts artifacts: 'reports/security/**/*', allowEmptyArchive: true
+      script {
+        if (env.CYBERARMOR_WORKDIR?.trim()) {
+          dir("${env.CYBERARMOR_WORKDIR}") {
+            archiveArtifacts artifacts: 'reports/security/**/*', allowEmptyArchive: true
+          }
+        }
+      }
     }
   }
 }

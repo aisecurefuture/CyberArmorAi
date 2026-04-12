@@ -8,5 +8,10 @@ ENV PYTHONPATH="/app/libs/cyberarmor-core:${PYTHONPATH}"
 
 COPY services/response/main.py ./main.py
 
+RUN useradd --create-home --shell /usr/sbin/nologin appuser && \
+    chown -R appuser:appuser /app
+
+USER appuser
+
 EXPOSE 8003
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8003"]

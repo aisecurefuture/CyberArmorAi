@@ -5,7 +5,7 @@ Validates launch files and monitors node launches for security policy compliance
 
 import os
 import re
-import xml.etree.ElementTree as ET
+from defusedxml import ElementTree as ET
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set
 import logging

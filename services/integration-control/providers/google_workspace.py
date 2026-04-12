@@ -44,6 +44,10 @@ class GoogleWorkspaceConnector(IntegrationConnector):
             return "medium"
         return "low"
 
+    @staticmethod
+    def _stable_id(value: str) -> str:
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+
     async def discover(
         self, tenant_id: str, include_events: bool = False
     ) -> Tuple[List[IntegrationConnection], List[IntegrationPermission], List[IntegrationEvent], List[IntegrationFinding]]:
@@ -77,7 +81,7 @@ class GoogleWorkspaceConnector(IntegrationConnector):
 
         for scope in scopes:
             risk = self._risk_for_scope(scope)
-            pid = f"gws_perm_{hashlib.sha1((oauth_client + '|' + scope).encode('utf-8')).hexdigest()[:16]}"
+            pid = f"gws_perm_{self._stable_id(oauth_client + '|' + scope)}"
             permissions.append(
                 IntegrationPermission(
                     permission_id=pid,
@@ -189,4 +193,3 @@ class GoogleWorkspaceConnector(IntegrationConnector):
             "status": "manual_action_required",
             "detail": "Disable connection via Google Admin Console App Access Control or workspace app settings.",
         }
-

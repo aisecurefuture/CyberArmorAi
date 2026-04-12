@@ -10,9 +10,13 @@ services:
       - "50000:50000"
     environment:
       JAVA_OPTS: "-Djenkins.install.runSetupWizard=false"
+      HOST_JENKINS_WORK_ROOT: "${HOST_JENKINS_WORK_ROOT:-/tmp/cyberarmor-jenkins}"
+    user: "0:0"
+    command: ["/usr/local/bin/start-jenkins-security.sh"]
     volumes:
       - jenkins_home:/var/jenkins_home
       - /var/run/docker.sock:/var/run/docker.sock
-      - ../../:/var/jenkins_home/workspace/CyberArmorAi
+      - ../../:/repo/CyberArmorAi
+      - ${HOST_JENKINS_WORK_ROOT:-/tmp/cyberarmor-jenkins}:${HOST_JENKINS_WORK_ROOT:-/tmp/cyberarmor-jenkins}
 volumes:
   jenkins_home:

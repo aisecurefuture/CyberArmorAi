@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Web framework (from PyPI)
-RUN pip install --no-cache-dir fastapi "uvicorn[standard]" pydantic
+RUN pip install --no-cache-dir fastapi "uvicorn[standard]" pydantic cryptography
 
 # CPU-only torch – must use PyTorch's own index to get the +cpu wheel
 RUN pip install --no-cache-dir "torch==2.6.0+cpu" \
@@ -29,10 +29,14 @@ COPY services/detection/main.py ./main.py
 
 # Model cache directory (mount a volume in production for persistence)
 RUN mkdir -p /tmp/cyberarmor_models
+RUN useradd --create-home --shell /usr/sbin/nologin appuser && \
+    chown -R appuser:appuser /app /tmp/cyberarmor_models
 ENV TRANSFORMERS_CACHE=/tmp/cyberarmor_models
 ENV HF_HOME=/tmp/cyberarmor_models
 # Set TRANSFORMERS_OFFLINE=1 after initial download to block any outbound HF traffic
 ENV TRANSFORMERS_OFFLINE=0
+
+USER appuser
 
 EXPOSE 8002
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8002"]

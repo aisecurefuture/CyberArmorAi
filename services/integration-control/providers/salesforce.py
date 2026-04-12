@@ -58,6 +58,10 @@ class SalesforceConnector(IntegrationConnector):
             return "medium"
         return "low"
 
+    @staticmethod
+    def _stable_id(value: str) -> str:
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+
     async def discover(
         self, tenant_id: str, include_events: bool = False
     ) -> Tuple[List[IntegrationConnection], List[IntegrationPermission], List[IntegrationEvent], List[IntegrationFinding]]:
@@ -102,7 +106,7 @@ class SalesforceConnector(IntegrationConnector):
         target_connection_id = connections[0].connection_id if connections else "sf_conn_unknown"
         for scope in token_scopes:
             risk = self._risk_for_scope(scope)
-            pid = f"sf_perm_{hashlib.sha1((target_connection_id + '|' + scope).encode('utf-8')).hexdigest()[:16]}"
+            pid = f"sf_perm_{self._stable_id(target_connection_id + '|' + scope)}"
             permissions.append(
                 IntegrationPermission(
                     permission_id=pid,
@@ -193,4 +197,3 @@ class SalesforceConnector(IntegrationConnector):
             "status": "manual_action_required",
             "detail": "Disable or block connected app via Salesforce Connected Apps OAuth policies / profiles / permission sets.",
         }
-

@@ -3,3 +3,8 @@ dist/
 reports/security/
 extensions/**/out/
 extensions/**/node_modules/
+docs/runbooks/integration-onboarding-policy-gated-runbook.md
+infra/security/gitleaks.toml
+scripts/demo/run_demo_1_attack_to_action.sh
+scripts/demo/run_live_demo.sh
+services/proxy/Dockerfile

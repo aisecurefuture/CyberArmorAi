@@ -61,6 +61,8 @@ Or use the one-command helper:
 bash scripts/ci/start_jenkins_security.sh
 ```
 
+That helper rebuilds and restarts the Jenkins container, which is important after plugin or container permission changes.
+
 Jenkins will be available on `http://localhost:8088`.
 
 The Jenkins container expects access to the host Docker socket:
@@ -68,6 +70,20 @@ The Jenkins container expects access to the host Docker socket:
 - `/var/run/docker.sock:/var/run/docker.sock`
 
 That is what allows containerized scanners, docker builds, Docker Scout, and ZAP to run from inside Jenkins.
+
+The repo is also mounted into the container at:
+
+- `/repo/CyberArmorAi`
+
+That mounted path is used as a fallback source when you run `Jenkinsfile.security` from a plain Pipeline job instead of a Multibranch Pipeline or Pipeline script from SCM job.
+
+The pipeline prepares its runnable copy under a host-mounted writable path:
+
+- `/tmp/cyberarmor-jenkins` by default
+
+That matters because the scanner steps run in sibling Docker containers through the host Docker socket, so they need a host-visible working tree instead of a container-only workspace path.
+
+The Jenkins container startup also normalizes ownership of `/var/jenkins_home` before launching Jenkins so workspace steps can create their `@tmp` control directories reliably.
 
 ## Pipeline Parameters
 
@@ -114,6 +130,15 @@ That is what allows containerized scanners, docker builds, Docker Scout, and ZAP
 - `SCAN_PROFILE=integration`
 - Docker socket mounted into Jenkins, same as the security jobs
 - optional branch protection gate once the path is stable for a few runs
+
+## Job Setup Notes
+
+- `checkout scm` only works automatically in:
+  - Multibranch Pipeline
+  - Pipeline script from SCM
+- If you use a plain `Pipeline` job and paste/load `Jenkinsfile.security`, the pipeline now falls back to the mounted repo at `/repo/CyberArmorAi`, then copies it into a writable workspace directory before running shell steps.
+- Regardless of checkout mode, the pipeline copies the working tree into the host-mounted Jenkins work root before running Docker-based scanners, so containerized tools can mount the same files Jenkins is using.
+- Avoid mounting the repo under `/var/jenkins_home/workspace/...` on macOS hosts. Case-insensitive path collisions can cause workspace permission failures when job names differ only by capitalization.
 
 ## Credentials / Environment
 

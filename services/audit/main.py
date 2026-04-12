@@ -180,7 +180,8 @@ def _ensure_chain_columns() -> None:
             if name in existing:
                 continue
             with engine.begin() as conn:
-                conn.execute(text(f"ALTER TABLE audit_events ADD COLUMN {name} {ddl}"))
+                # Safe here: both column names and DDL fragments come from the fixed `needed` map above.
+                conn.execute(text(f"ALTER TABLE audit_events ADD COLUMN {name} {ddl}"))  # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
             logger.info("Added missing audit_events column via runtime migration: %s", name)
     except Exception as exc:
         logger.warning("Failed to apply audit chain migration: %s", exc)

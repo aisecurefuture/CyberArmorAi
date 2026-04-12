@@ -110,6 +110,23 @@ class QRadarOutput(SIEMOutput):
         }
 
     @property
+    def _verify_api_tls(self) -> bool | str:
+        """Return httpx TLS verification config for QRadar REST calls.
+
+        Verification is enabled by default. For local labs only, set
+        QRADAR_API_TLS_VERIFY=false. For private CAs, prefer QRADAR_API_CA_BUNDLE
+        or QRADAR_TLS_CA_CERT.
+        """
+        verify = self._config.get("QRADAR_API_TLS_VERIFY", "true").strip().lower()
+        if verify in {"false", "0", "no", "off"}:
+            logger.warning(
+                "QRadar REST TLS certificate verification disabled; use only for local/dev endpoints."
+            )
+            return False
+        ca_bundle = self._config.get("QRADAR_API_CA_BUNDLE") or self._config.get("QRADAR_TLS_CA_CERT")
+        return ca_bundle or True
+
+    @property
     def _auto_offense(self) -> bool:
         return self._config.get(
             "QRADAR_AUTO_OFFENSE", "false"
@@ -218,9 +235,13 @@ class QRadarOutput(SIEMOutput):
             if ca_cert:
                 ssl_context.load_verify_locations(ca_cert)
             else:
-                # Allow self-signed certs if no CA provided
-                ssl_context.check_hostname = False
-                ssl_context.verify_mode = ssl.CERT_NONE
+                tls_verify = self._config.get("QRADAR_SYSLOG_TLS_VERIFY", "true").strip().lower()
+                if tls_verify in {"false", "0", "no", "off"}:
+                    logger.warning(
+                        "QRadar syslog TLS certificate verification disabled; use only for local/dev endpoints."
+                    )
+                    ssl_context.check_hostname = False
+                    ssl_context.verify_mode = ssl.CERT_NONE  # nosec B323
 
         reader, writer = await asyncio.open_connection(
             self._host, self._syslog_port, ssl=ssl_context
@@ -256,7 +277,7 @@ class QRadarOutput(SIEMOutput):
         )
 
         try:
-            async with httpx.AsyncClient(verify=False, timeout=15.0) as client:
+            async with httpx.AsyncClient(verify=self._verify_api_tls, timeout=15.0) as client:
                 resp = await client.post(url, headers=self._api_headers)
                 if resp.status_code not in (200, 201):
                     logger.warning(
@@ -293,7 +314,7 @@ class QRadarOutput(SIEMOutput):
         }
 
         try:
-            async with httpx.AsyncClient(verify=False, timeout=15.0) as client:
+            async with httpx.AsyncClient(verify=self._verify_api_tls, timeout=15.0) as client:
                 resp = await client.get(
                     url, headers=self._api_headers, params=params
                 )
@@ -378,7 +399,7 @@ class QRadarOutput(SIEMOutput):
         if self._api_token:
             try:
                 url = f"{self._api_url}/api/system/about"
-                async with httpx.AsyncClient(verify=False, timeout=10.0) as client:
+                async with httpx.AsyncClient(verify=self._verify_api_tls, timeout=10.0) as client:
                     resp = await client.get(url, headers=self._api_headers)
                     rest_ok = resp.status_code == 200
             except Exception as exc:
@@ -418,9 +439,21 @@ class QRadarOutput(SIEMOutput):
                     "type": "string",
                     "description": "Path to CA certificate for TLS verification.",
                 },
+                "QRADAR_SYSLOG_TLS_VERIFY": {
+                    "type": "string",
+                    "description": "Verify QRadar syslog TLS certificates (default: true; set false only for local/dev).",
+                },
                 "QRADAR_API_TOKEN": {
                     "type": "string",
                     "description": "QRadar authorized service token for REST API.",
+                },
+                "QRADAR_API_TLS_VERIFY": {
+                    "type": "string",
+                    "description": "Verify QRadar REST API TLS certificates (default: true; set false only for local/dev).",
+                },
+                "QRADAR_API_CA_BUNDLE": {
+                    "type": "string",
+                    "description": "Optional CA bundle path for private QRadar REST API certificates.",
                 },
                 "QRADAR_API_URL": {
                     "type": "string",

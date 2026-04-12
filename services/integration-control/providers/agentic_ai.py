@@ -37,6 +37,10 @@ class AgenticAiConnector(IntegrationConnector):
             return "medium"
         return "low"
 
+    @staticmethod
+    def _stable_id(value: str) -> str:
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+
     async def discover(
         self, tenant_id: str, include_events: bool = False
     ) -> Tuple[List[IntegrationConnection], List[IntegrationPermission], List[IntegrationEvent], List[IntegrationFinding]]:
@@ -54,7 +58,7 @@ class AgenticAiConnector(IntegrationConnector):
             connectors = item.get("connectors") or []
             last_used_days = int(item.get("last_used_days", 0) or 0)
 
-            cid = f"ai_conn_{hashlib.sha1((app + '|' + external_id).encode('utf-8')).hexdigest()[:16]}"
+            cid = f"ai_conn_{self._stable_id(app + '|' + external_id)}"
             connections.append(
                 IntegrationConnection(
                     connection_id=cid,
@@ -109,7 +113,7 @@ class AgenticAiConnector(IntegrationConnector):
             for scope in scopes:
                 scope_str = str(scope)
                 risk = self._risk_for_scope(scope_str)
-                pid = f"ai_perm_{hashlib.sha1((cid + '|' + scope_str).encode('utf-8')).hexdigest()[:16]}"
+                pid = f"ai_perm_{self._stable_id(cid + '|' + scope_str)}"
                 permissions.append(
                     IntegrationPermission(
                         permission_id=pid,
@@ -177,4 +181,3 @@ class AgenticAiConnector(IntegrationConnector):
             "status": "manual_action_required",
             "detail": "Disable integration in source agentic AI platform and remove connector OAuth grants.",
         }
-

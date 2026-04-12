@@ -22,5 +22,10 @@ COPY services/policy/rego_compiler.py  ./rego_compiler.py
 COPY services/policy/rego/             ./rego/
 COPY scripts/security/run_uvicorn_tls.py ./run_uvicorn_tls.py
 
+RUN useradd --create-home --shell /usr/sbin/nologin appuser && \
+    chown -R appuser:appuser /app
+
+USER appuser
+
 EXPOSE 8001
 CMD ["python", "run_uvicorn_tls.py", "main:app", "8001"]

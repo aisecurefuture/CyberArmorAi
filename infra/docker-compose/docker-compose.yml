@@ -43,7 +43,7 @@ services:
     environment:
       OLLAMA_KEEP_ALIVE: "24h"
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags || exit 1"]
+      test: ["CMD", "ollama", "list"]
       interval: 15s
       retries: 5
     restart: unless-stopped

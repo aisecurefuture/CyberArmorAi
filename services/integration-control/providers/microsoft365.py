@@ -57,6 +57,10 @@ class Microsoft365Connector(IntegrationConnector):
             return "medium"
         return "low"
 
+    @staticmethod
+    def _stable_id(value: str) -> str:
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+
     async def discover(
         self, tenant_id: str, include_events: bool = False
     ) -> Tuple[List[IntegrationConnection], List[IntegrationPermission], List[IntegrationEvent], List[IntegrationFinding]]:
@@ -102,7 +106,7 @@ class Microsoft365Connector(IntegrationConnector):
             connection_id = f"m365_conn_{client_id}"
             principal = str(grant.get("principalId") or grant.get("consentType") or "unknown")
             for scope in scopes:
-                perm_id = f"m365_perm_{hashlib.sha1((grant_id + '|' + scope).encode('utf-8')).hexdigest()[:16]}"
+                perm_id = f"m365_perm_{self._stable_id(grant_id + '|' + scope)}"
                 risk = self._risk_for_scope(scope)
                 permissions.append(
                     IntegrationPermission(
@@ -181,4 +185,3 @@ class Microsoft365Connector(IntegrationConnector):
             )
             resp.raise_for_status()
         return {"provider": self.provider_id, "action": "disable_connection", "dry_run": False, "target": connection_external_id}
-

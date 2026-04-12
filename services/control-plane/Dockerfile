@@ -11,5 +11,10 @@ COPY services/control-plane/db.py ./db.py
 COPY services/control-plane/models.py ./models.py
 COPY scripts/security/run_uvicorn_tls.py ./run_uvicorn_tls.py
 
+RUN useradd --create-home --shell /usr/sbin/nologin appuser && \
+    chown -R appuser:appuser /app
+
+USER appuser
+
 EXPOSE 8000
 CMD ["python", "run_uvicorn_tls.py", "main:app", "8000"]

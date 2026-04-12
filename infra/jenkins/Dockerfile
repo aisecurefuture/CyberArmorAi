@@ -15,4 +15,8 @@ RUN apt-get update \
 COPY plugins.txt /usr/share/jenkins/ref/plugins.txt
 RUN jenkins-plugin-cli --plugin-file /usr/share/jenkins/ref/plugins.txt
 
+COPY start-jenkins-security.sh /usr/local/bin/start-jenkins-security.sh
+RUN chmod +x /usr/local/bin/start-jenkins-security.sh
+COPY init.groovy.d/seed-security-job.groovy /usr/share/jenkins/ref/init.groovy.d/seed-security-job.groovy
+
 USER jenkins

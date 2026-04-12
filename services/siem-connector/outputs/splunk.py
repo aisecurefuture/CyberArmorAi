@@ -41,6 +41,22 @@ class SplunkOutput(SIEMOutput):
             "Content-Type": "application/json",
         }
 
+    @property
+    def _verify_tls(self) -> bool | str:
+        """Return httpx TLS verification config.
+
+        Verification is enabled by default. For local labs only, set
+        SPLUNK_TLS_VERIFY=false. For private CAs, prefer SPLUNK_CA_BUNDLE.
+        """
+        verify = self._config.get("SPLUNK_TLS_VERIFY", "true").strip().lower()
+        if verify in {"false", "0", "no", "off"}:
+            logger.warning(
+                "Splunk TLS certificate verification disabled; use only for local/dev endpoints."
+            )
+            return False
+        ca_bundle = self._config.get("SPLUNK_CA_BUNDLE")
+        return ca_bundle or True
+
     def _build_hec_payload(self, event: dict[str, Any]) -> dict[str, Any]:
         """Build a Splunk HEC JSON payload from a normalized event."""
         payload: dict[str, Any] = {
@@ -62,7 +78,7 @@ class SplunkOutput(SIEMOutput):
 
     async def send_event(self, event: dict[str, Any]) -> None:
         payload = self._build_hec_payload(event)
-        async with httpx.AsyncClient(verify=False, timeout=30.0) as client:
+        async with httpx.AsyncClient(verify=self._verify_tls, timeout=30.0) as client:
             resp = await client.post(
                 self._hec_url,
                 headers=self._headers,
@@ -85,7 +101,7 @@ class SplunkOutput(SIEMOutput):
             lines.append(json.dumps(payload))
         body = "\n".join(lines)
 
-        async with httpx.AsyncClient(verify=False, timeout=60.0) as client:
+        async with httpx.AsyncClient(verify=self._verify_tls, timeout=60.0) as client:
             resp = await client.post(
                 self._batch_url,
                 headers=self._headers,
@@ -104,7 +120,7 @@ class SplunkOutput(SIEMOutput):
         """Send a health check to the HEC endpoint."""
         health_url = self._config["SPLUNK_HEC_URL"].rstrip("/") + "/services/collector/health/1.0"
         try:
-            async with httpx.AsyncClient(verify=False, timeout=10.0) as client:
+            async with httpx.AsyncClient(verify=self._verify_tls, timeout=10.0) as client:
                 resp = await client.get(health_url, headers=self._headers)
                 return resp.status_code == 200
         except Exception as exc:
@@ -136,6 +152,14 @@ class SplunkOutput(SIEMOutput):
                 "SPLUNK_SOURCETYPE": {
                     "type": "string",
                     "description": "Source type (default: _json)",
+                },
+                "SPLUNK_TLS_VERIFY": {
+                    "type": "string",
+                    "description": "Verify Splunk HEC TLS certificate (default: true; set false only for local/dev).",
+                },
+                "SPLUNK_CA_BUNDLE": {
+                    "type": "string",
+                    "description": "Optional CA bundle path for private Splunk TLS certificates.",
                 },
             },
         }

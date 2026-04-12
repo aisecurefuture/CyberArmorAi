@@ -258,39 +258,20 @@ class AWSIAMIdentityCenterProvider(IdentityProviderBase):
         """Validate an AWS SSO bearer token.
 
         AWS IAM Identity Center does not expose a standard token introspection
-        endpoint.  This method decodes the JWT locally to extract claims and
-        then enriches with Identity Store data.
+        endpoint. We fail closed here instead of treating unverified JWT
+        payload parsing as successful authentication.
         """
-        try:
-            import jwt as pyjwt  # type: ignore
-
-            claims = pyjwt.decode(
-                credential,
-                options={"verify_signature": False, "verify_aud": False},
-            )
-
-            sub = claims.get("sub", "")
-            user_info = await self.get_user_info(sub) if sub else None
-
-            if user_info is None:
-                user_info = UserInfo(
-                    id=sub,
-                    email=claims.get("email", ""),
-                    display_name=claims.get("name", ""),
-                    provider=self.provider_type.value,
-                )
-
-            return AuthResult(
-                success=True,
-                user=user_info,
-                token_claims=claims,
-                expires_at=str(claims.get("exp", "")),
-            )
-        except ImportError:
-            return AuthResult(success=False, error="PyJWT library not installed")
-        except Exception as exc:
-            logger.exception("aws_auth_error")
-            return AuthResult(success=False, error=str(exc))
+        logger.warning(
+            "aws_auth_verification_unavailable: rejecting bearer token because "
+            "AWS IAM Identity Center token verification is not implemented"
+        )
+        return AuthResult(
+            success=False,
+            error=(
+                "AWS IAM Identity Center token verification is not implemented. "
+                "Refusing unverified JWT fallback."
+            ),
+        )
 
     # ------------------------------------------------------------------
     # Context enrichment

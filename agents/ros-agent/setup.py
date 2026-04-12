@@ -10,7 +10,7 @@ setup(
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
     ],
-    install_requires=["setuptools", "pyyaml", "requests"],
+    install_requires=["setuptools", "pyyaml", "requests", "defusedxml"],
     zip_safe=True,
     maintainer="CyberArmor Security Team",
     maintainer_email="security@cyberarmor.ai",

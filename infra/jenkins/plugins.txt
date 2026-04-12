@@ -9,3 +9,5 @@ matrix-auth
 plain-credentials
 job-dsl
 configuration-as-code
+ansicolor
+timestamper

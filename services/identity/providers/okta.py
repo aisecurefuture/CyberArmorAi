@@ -232,34 +232,14 @@ class OktaProvider(IdentityProviderBase):
         except Exception:
             logger.exception("okta_auth_error")
 
-        # Fallback: local JWT decode
-        try:
-            import jwt as pyjwt  # type: ignore
-
-            claims = pyjwt.decode(
-                credential,
-                options={"verify_signature": False, "verify_aud": False},
-            )
-            uid = claims.get("uid", claims.get("sub", ""))
-            user_info = await self.get_user_info(uid) if uid else None
-
-            if user_info is None:
-                user_info = UserInfo(
-                    id=uid,
-                    email=claims.get("sub", ""),
-                    provider=self.provider_type.value,
-                )
-
-            return AuthResult(
-                success=True,
-                user=user_info,
-                token_claims=claims,
-                expires_at=str(claims.get("exp", "")),
-            )
-        except ImportError:
-            return AuthResult(success=False, error="PyJWT library not installed")
-        except Exception as exc:
-            return AuthResult(success=False, error=str(exc))
+        logger.warning(
+            "okta_auth_verification_required: introspection failed and "
+            "unverified JWT fallback is disabled"
+        )
+        return AuthResult(
+            success=False,
+            error="Okta token introspection failed. Refusing unverified JWT fallback.",
+        )
 
     # ------------------------------------------------------------------
     # Context enrichment

@@ -7,37 +7,89 @@ require_cmd docker
 git_fetch_base_ref
 
 log "running PR/CI security gate"
+mkdir -p "$REPORT_DIR"
+find "$REPORT_DIR" -mindepth 1 -maxdepth 1 -delete
+
+print_gitleaks_summary() {
+  local report_file="$1"
+  [[ -f "$report_file" ]] || return 0
+  if ! command -v jq >/dev/null 2>&1; then
+    return 0
+  fi
+  log "gitleaks findings summary"
+  jq -r '
+    .runs[0].results[]? |
+    "- rule=" + (.ruleId // "unknown") +
+    " file=" + (.locations[0].physicalLocation.artifactLocation.uri // "unknown") +
+    " line=" + ((.locations[0].physicalLocation.region.startLine // 0) | tostring) +
+    " message=" + (.message.text // "")
+  ' "$report_file" || true
+}
+
+print_semgrep_summary() {
+  local report_file="$1"
+  [[ -f "$report_file" ]] || return 0
+  if ! command -v jq >/dev/null 2>&1; then
+    return 0
+  fi
+  log "semgrep findings summary"
+  jq -r '
+    .runs[0].results[:20][]? |
+    "- rule=" + (.ruleId // "unknown") +
+    " file=" + (.locations[0].physicalLocation.artifactLocation.uri // "unknown") +
+    " line=" + ((.locations[0].physicalLocation.region.startLine // 0) | tostring) +
+    " message=" + (.message.text // "")
+  ' "$report_file" || true
+}
 
 log "gitleaks secret scan"
-docker run --rm \
-  -v "$ROOT_DIR:/repo" \
+if ! docker run --rm \
+  -v "$ROOT_DIR:/src" \
   ghcr.io/gitleaks/gitleaks:latest \
   detect \
-  --source /repo \
-  --config "/repo/${GITLEAKS_CONFIG_FILE#$ROOT_DIR/}" \
+  --source /src \
+  --config "/src/${GITLEAKS_CONFIG_FILE#$ROOT_DIR/}" \
   --redact \
   --no-git \
   --report-format sarif \
-  --report-path "/repo/${REPORT_DIR#$ROOT_DIR/}/gitleaks-pr.sarif"
+  --report-path "/src/${REPORT_DIR#$ROOT_DIR/}/gitleaks-pr.sarif"; then
+  print_gitleaks_summary "$REPORT_DIR/gitleaks-pr.sarif"
+  exit 1
+fi
 
 log "trufflehog secret scan"
 trufflehog_args=()
 if [[ -f "$TRUFFLEHOG_EXCLUDE_PATHS_FILE" ]]; then
-  trufflehog_args+=(--exclude-paths "/repo/${TRUFFLEHOG_EXCLUDE_PATHS_FILE#$ROOT_DIR/}")
+  trufflehog_args+=(--exclude-paths "/src/${TRUFFLEHOG_EXCLUDE_PATHS_FILE#$ROOT_DIR/}")
 fi
-docker run --rm \
-  -v "$ROOT_DIR:/repo" \
-  trufflesecurity/trufflehog:latest \
-  git "file:///repo" \
-  --since-commit "$(git_base_ref)" \
-  --branch HEAD \
-  --only-verified \
-  --fail \
-  "${trufflehog_args[@]}" \
-  --json >"$REPORT_DIR/trufflehog-pr.json"
+if [[ -d "$ROOT_DIR/.git" ]]; then
+  docker run --rm \
+    -v "$ROOT_DIR:/src" \
+    trufflesecurity/trufflehog:latest \
+    git "file:///src" \
+    --since-commit "$(git_base_ref)" \
+    --branch HEAD \
+    --only-verified \
+    --fail \
+    "${trufflehog_args[@]}" \
+    --json >"$REPORT_DIR/trufflehog-pr.json"
+else
+  log "no .git directory in workdir; using trufflehog filesystem scan"
+  docker run --rm \
+    -v "$ROOT_DIR:/src" \
+    trufflesecurity/trufflehog:latest \
+    filesystem /src \
+    --only-verified \
+    --fail \
+    "${trufflehog_args[@]}" \
+    --json >"$REPORT_DIR/trufflehog-pr.json"
+fi
 
 log "semgrep tuned rules"
-run_semgrep_configs pr "$REPORT_DIR/semgrep-pr.sarif"
+if ! run_semgrep_configs pr "$REPORT_DIR/semgrep-pr.sarif"; then
+  print_semgrep_summary "$REPORT_DIR/semgrep-pr.sarif"
+  exit 1
+fi
 
 log "bandit high-severity scan"
 bandit_baseline_arg=()

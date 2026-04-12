@@ -218,44 +218,20 @@ class EntraIDProvider(IdentityProviderBase):
     async def authenticate_user(self, credential: str, **kwargs: Any) -> AuthResult:
         """Validate a bearer token issued by Entra ID.
 
-        This performs a lightweight decode of the JWT to extract claims,
-        then enriches the result with Graph API user data.
+        Refuse unverified JWT claim parsing. Tokens must be verified via JWKS
+        or another trusted validation path before they are accepted.
         """
-        try:
-            import jwt as pyjwt  # type: ignore
-
-            # Decode without full signature verification for claim extraction.
-            # In production, configure jwks_uri verification via PyJWT or MSAL.
-            claims = pyjwt.decode(
-                credential,
-                options={"verify_signature": False, "verify_aud": False},
-            )
-
-            upn = claims.get("upn") or claims.get("preferred_username") or claims.get("email", "")
-            oid = claims.get("oid", "")
-
-            user_info = await self.get_user_info(upn or oid) if (upn or oid) else None
-
-            if user_info is None:
-                user_info = UserInfo(
-                    id=oid,
-                    email=upn,
-                    display_name=claims.get("name", ""),
-                    provider=self.provider_type.value,
-                )
-
-            return AuthResult(
-                success=True,
-                user=user_info,
-                token_claims=claims,
-                expires_at=claims.get("exp"),
-            )
-        except ImportError:
-            logger.warning("PyJWT not installed; Entra authentication unavailable")
-            return AuthResult(success=False, error="PyJWT library not installed")
-        except Exception as exc:
-            logger.exception("entra_auth_error")
-            return AuthResult(success=False, error=str(exc))
+        logger.warning(
+            "entra_auth_verification_required: rejecting bearer token because "
+            "signature verification is not configured"
+        )
+        return AuthResult(
+            success=False,
+            error=(
+                "Entra ID token verification is not configured. "
+                "Refusing unverified JWT fallback."
+            ),
+        )
 
     # ------------------------------------------------------------------
     # Context enrichment

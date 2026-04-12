@@ -135,7 +135,10 @@ run_semgrep_configs() {
     args+=(--severity "$sev")
   done < <(comma_to_lines "$severity_list")
   if [[ -f "$SEMGREP_IGNORE_FILE" ]]; then
-    args+=(--exclude-from "$SEMGREP_IGNORE_FILE")
+    while IFS= read -r pattern; do
+      [[ -n "$pattern" ]] || continue
+      args+=(--exclude "$pattern")
+    done < <(non_comment_lines "$SEMGREP_IGNORE_FILE")
   fi
 
   docker run --rm \

@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TrustOps for SaaS</title>
+  <meta
+    name="description"
+    content="TrustOps for SaaS helps lean B2B software teams complete security questionnaires, due diligence packets, and trust requests in 24-72 hours."
+  >
+  <style>
+    :root {
+      --bg: #f4efe4;
+      --paper: rgba(255, 252, 247, 0.88);
+      --ink: #13211d;
+      --muted: #51615c;
+      --line: rgba(19, 33, 29, 0.12);
+      --accent: #0f766e;
+      --accent-strong: #115e59;
+      --accent-soft: rgba(15, 118, 110, 0.12);
+      --warm: #d97706;
+      --shadow: 0 24px 60px rgba(19, 33, 29, 0.12);
+      --radius-lg: 28px;
+      --radius-md: 18px;
+      --radius-sm: 12px;
+      --max: 1160px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      font-family: "Avenir Next", Avenir, "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(217, 119, 6, 0.14), transparent 34%),
+        radial-gradient(circle at top right, rgba(15, 118, 110, 0.18), transparent 30%),
+        linear-gradient(180deg, #f7f2e9 0%, #f2ecde 100%);
+      color: var(--ink);
+      line-height: 1.55;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    .shell {
+      width: min(calc(100% - 2rem), var(--max));
+      margin: 0 auto;
+    }
+
+    .nav {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 1.2rem 0;
+      gap: 1rem;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.85rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+
+    .brand-mark {
+      width: 2.4rem;
+      height: 2.4rem;
+      border-radius: 999px;
+      background: linear-gradient(135deg, var(--accent), var(--warm));
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.4);
+      position: relative;
+    }
+
+    .brand-mark::after {
+      content: "";
+      position: absolute;
+      inset: 0.42rem;
+      border-radius: 999px;
+      border: 2px solid rgba(255, 255, 255, 0.8);
+    }
+
+    .nav-links {
+      display: flex;
+      gap: 1.2rem;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    .button-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.9rem;
+      margin-top: 1.75rem;
+    }
+
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.55rem;
+      padding: 0.95rem 1.35rem;
+      border-radius: 999px;
+      border: 1px solid transparent;
+      font-weight: 700;
+      transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
+    }
+
+    .button:hover {
+      transform: translateY(-2px);
+    }
+
+    .button-primary {
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+      color: #fffdf8;
+      box-shadow: 0 14px 30px rgba(15, 118, 110, 0.24);
+    }
+
+    .button-secondary {
+      background: rgba(255, 255, 255, 0.55);
+      border-color: var(--line);
+      color: var(--ink);
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.15fr) minmax(300px, 0.85fr);
+      gap: 2rem;
+      align-items: center;
+      padding: 2.5rem 0 4.5rem;
+    }
+
+    .hero-card,
+    .panel,
+    .pricing-card,
+    .proof-card {
+      background: var(--paper);
+      border: 1px solid rgba(255, 255, 255, 0.55);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(16px);
+    }
+
+    .hero-copy h1,
+    h2 {
+      font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Palatino, Georgia, serif;
+      letter-spacing: -0.03em;
+      line-height: 0.95;
+      margin: 0;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.55rem;
+      margin-bottom: 1rem;
+      padding: 0.45rem 0.8rem;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent-strong);
+      font-size: 0.84rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .hero-copy h1 {
+      font-size: clamp(3rem, 8vw, 6.2rem);
+      max-width: 10ch;
+    }
+
+    .hero-copy p {
+      max-width: 38rem;
+      font-size: 1.1rem;
+      color: var(--muted);
+      margin: 1.3rem 0 0;
+    }
+
+    .hero-card {
+      padding: 1.4rem;
+      border-radius: var(--radius-lg);
+      transform: rotate(1.2deg);
+    }
+
+    .stack {
+      display: grid;
+      gap: 1rem;
+    }
+
+    .metric {
+      padding: 1.15rem 1.2rem;
+      border-radius: var(--radius-md);
+      background: rgba(255, 255, 255, 0.72);
+      border: 1px solid var(--line);
+    }
+
+    .metric strong {
+      display: block;
+      font-size: 2rem;
+      font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+      margin-bottom: 0.2rem;
+    }
+
+    .metric span {
+      color: var(--muted);
+    }
+
+    .section {
+      padding: 1.5rem 0 4.5rem;
+    }
+
+    .section-header {
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      align-items: end;
+      margin-bottom: 1.5rem;
+    }
+
+    .section-header h2 {
+      font-size: clamp(2rem, 5vw, 3.5rem);
+      max-width: 8ch;
+    }
+
+    .section-header p {
+      max-width: 33rem;
+      color: var(--muted);
+      margin: 0;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 1rem;
+    }
+
+    .panel {
+      padding: 1.4rem;
+      border-radius: var(--radius-md);
+    }
+
+    .panel h3,
+    .pricing-card h3,
+    .proof-card h3 {
+      margin: 0 0 0.6rem;
+      font-size: 1.1rem;
+    }
+
+    .panel p,
+    .pricing-card p,
+    .proof-card p,
+    li {
+      color: var(--muted);
+    }
+
+    ul {
+      margin: 0.8rem 0 0;
+      padding-left: 1.1rem;
+    }
+
+    li + li {
+      margin-top: 0.45rem;
+    }
+
+    .process {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 1rem;
+      counter-reset: step;
+    }
+
+    .process .panel {
+      position: relative;
+      overflow: hidden;
+      min-height: 220px;
+    }
+
+    .process .panel::before {
+      counter-increment: step;
+      content: "0" counter(step);
+      position: absolute;
+      top: 1rem;
+      right: 1rem;
+      color: rgba(19, 33, 29, 0.08);
+      font-size: 3rem;
+      font-weight: 800;
+      line-height: 1;
+    }
+
+    .pricing {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+      gap: 1rem;
+      align-items: stretch;
+    }
+
+    .pricing-card {
+      padding: 1.6rem;
+      border-radius: var(--radius-lg);
+    }
+
+    .price {
+      display: flex;
+      align-items: baseline;
+      gap: 0.4rem;
+      margin: 0.75rem 0 1rem;
+    }
+
+    .price strong {
+      font-size: 3.2rem;
+      line-height: 1;
+      font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+    }
+
+    .proof-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 1rem;
+    }
+
+    .proof-card {
+      border-radius: var(--radius-md);
+      padding: 1.3rem;
+    }
+
+    .cta {
+      padding-bottom: 5.5rem;
+    }
+
+    .cta .hero-card {
+      transform: none;
+      padding: 2rem;
+    }
+
+    footer {
+      padding: 1.2rem 0 2.2rem;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    @media (max-width: 980px) {
+      .hero,
+      .pricing,
+      .grid-3,
+      .process,
+      .proof-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .section-header {
+        display: block;
+      }
+
+      .hero-card {
+        transform: none;
+      }
+
+      .nav {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+
+      .nav-links {
+        flex-wrap: wrap;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header class="nav">
+      <a class="brand" href="#top">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span>TrustOps for SaaS</span>
+      </a>
+      <nav class="nav-links" aria-label="Primary">
+        <a href="#problem">Problem</a>
+        <a href="#process">Process</a>
+        <a href="#pilot">Pilot</a>
+        <a href="#faq">FAQ</a>
+      </nav>
+    </header>
+
+    <main id="top">
+      <section class="hero">
+        <div class="hero-copy">
+          <div class="eyebrow">Lean team. Enterprise ready.</div>
+          <h1>Close enterprise deals without building a GRC department.</h1>
+          <p>
+            We complete security questionnaires, due diligence packets, and trust requests in
+            24-72 hours for B2B SaaS teams that need to move faster without burning founder,
+            engineering, or sales time.
+          </p>
+          <div class="button-row">
+            <a class="button button-primary" href="mailto:founder@example.com?subject=TrustOps%20Pilot%20Inquiry">Book a 20-minute intro</a>
+            <a class="button button-secondary" href="#pilot">See the pilot package</a>
+          </div>
+        </div>
+
+        <aside class="hero-card" aria-label="Highlights">
+          <div class="stack">
+            <div class="metric">
+              <strong>24-72 hrs</strong>
+              <span>Target turnaround once materials are in hand</span>
+            </div>
+            <div class="metric">
+              <strong>1 workflow</strong>
+              <span>Questionnaires, evidence requests, and reusable answer libraries in one lane</span>
+            </div>
+            <div class="metric">
+              <strong>0 extra hires</strong>
+              <span>Built for founder-led teams that are not ready for dedicated GRC headcount</span>
+            </div>
+          </div>
+        </aside>
+      </section>
+
+      <section class="section" id="problem">
+        <div class="section-header">
+          <h2>Security reviews should not own your sales cycle.</h2>
+          <p>
+            Enterprise buyers keep asking the same questions. Lean SaaS teams keep answering them
+            from scratch across old spreadsheets, docs, Slack threads, and memory.
+          </p>
+        </div>
+
+        <div class="grid-3">
+          <article class="panel">
+            <h3>What stalls deals</h3>
+            <ul>
+              <li>Questionnaires arrive late in the process and become a hidden blocker.</li>
+              <li>Founders or engineers get dragged into repetitive documentation work.</li>
+              <li>Answers differ between customers because there is no source of truth.</li>
+            </ul>
+          </article>
+
+          <article class="panel">
+            <h3>What buyers want</h3>
+            <ul>
+              <li>Clear answers about access control, backups, encryption, and incident response.</li>
+              <li>Evidence that is organized enough to review quickly.</li>
+              <li>Fast follow-up when procurement or security asks for clarification.</li>
+            </ul>
+          </article>
+
+          <article class="panel">
+            <h3>What we change</h3>
+            <ul>
+              <li>We turn scattered materials into a reusable answer base.</li>
+              <li>We complete the questionnaire and package the evidence cleanly.</li>
+              <li>You keep a repeatable TrustOps workflow for the next deal.</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section class="section" id="process">
+        <div class="section-header">
+          <h2>Built as an execution layer, not vague advice.</h2>
+          <p>
+            This is a hands-on delivery service. We take in your materials, draft source-backed
+            answers, flag gaps, and return customer-ready outputs.
+          </p>
+        </div>
+
+        <div class="process">
+          <article class="panel">
+            <h3>Intake</h3>
+            <p>
+              You send the questionnaire, prior answers, security docs, architecture notes, and
+              any existing trust materials.
+            </p>
+          </article>
+
+          <article class="panel">
+            <h3>Source-backed drafting</h3>
+            <p>
+              We build a working answer set grounded in your real policies, controls, and prior
+              evidence. Unknowns stay clearly marked.
+            </p>
+          </article>
+
+          <article class="panel">
+            <h3>Gap review</h3>
+            <p>
+              We send a concise clarification list, resolve contradictions, and tighten the
+              response tone across the whole packet.
+            </p>
+          </article>
+
+          <article class="panel">
+            <h3>Reusable outputs</h3>
+            <p>
+              You get the completed questionnaire, evidence index, reusable answer library, and a
+              short next-steps memo for future requests.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section" id="pilot">
+        <div class="section-header">
+          <h2>Start with a fixed-scope pilot.</h2>
+          <p>
+            Enough scope to save time immediately, small enough to buy quickly, and structured to
+            become a long-term response system if the fit is right.
+          </p>
+        </div>
+
+        <div class="pricing">
+          <article class="pricing-card">
+            <div class="eyebrow">TrustOps Pilot</div>
+            <div class="price">
+              <strong>$2,500</strong>
+              <span>fixed scope</span>
+            </div>
+            <p>One security questionnaire, one evidence pack, and one seeded answer library.</p>
+            <ul>
+              <li>1 customer questionnaire or due diligence form</li>
+              <li>1 evidence request pack or document index</li>
+              <li>1 reusable answer library organized by topic</li>
+              <li>1 gap memo with unresolved items and recommended next steps</li>
+              <li>Target turnaround: 3 business days after full intake</li>
+            </ul>
+            <div class="button-row">
+              <a class="button button-primary" href="mailto:founder@example.com?subject=TrustOps%20Pilot">Start the pilot</a>
+            </div>
+          </article>
+
+          <aside class="pricing-card">
+            <h3>Best fit</h3>
+            <ul>
+              <li>B2B SaaS teams with 10-150 employees</li>
+              <li>Founder-led sales or lean GTM teams</li>
+              <li>Mid-market or enterprise deals in flight</li>
+              <li>No dedicated GRC or security-response function yet</li>
+            </ul>
+            <h3 style="margin-top: 1.4rem;">Not this</h3>
+            <ul>
+              <li>Formal certification work</li>
+              <li>Legal advice</li>
+              <li>Inventing security claims you cannot support</li>
+            </ul>
+          </aside>
+        </div>
+      </section>
+
+      <section class="section" id="faq">
+        <div class="section-header">
+          <h2>What clients actually get.</h2>
+          <p>
+            The aim is immediate deal support plus a reusable system that makes the second
+            questionnaire easier than the first.
+          </p>
+        </div>
+
+        <div class="proof-grid">
+          <article class="proof-card">
+            <h3>Deliverables</h3>
+            <p>
+              Completed questionnaire draft, evidence index, reusable answer base, and a concise
+              memo of gaps or follow-up items.
+            </p>
+          </article>
+
+          <article class="proof-card">
+            <h3>Client effort</h3>
+            <p>
+              One point of contact, one intake package, one review loop. We keep clarification
+              requests narrow and avoid death-by-questionnaire on your side.
+            </p>
+          </article>
+
+          <article class="proof-card">
+            <h3>Quality bar</h3>
+            <p>
+              Every material claim should tie back to source evidence. Unknowns stay unknown until
+              confirmed. Consistency matters as much as speed.
+            </p>
+          </article>
+
+          <article class="proof-card">
+            <h3>Next step</h3>
+            <p>
+              After the pilot, clients can move into a monthly TrustOps retainer for future
+              questionnaires, evidence maintenance, and buyer follow-up support.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section class="cta">
+        <div class="hero-card">
+          <div class="section-header" style="margin-bottom: 0.6rem;">
+            <h2 style="max-width: 10ch;">Make the next enterprise deal easier than the last one.</h2>
+            <p>
+              If security reviews are starting to interrupt momentum, the pilot is the fastest way
+              to see whether a dedicated TrustOps layer is worth keeping.
+            </p>
+          </div>
+          <div class="button-row">
+            <a class="button button-primary" href="mailto:founder@example.com?subject=TrustOps%20Intro">Book a 20-minute intro</a>
+            <a class="button button-secondary" href="mailto:founder@example.com?subject=Sample%20Deliverables">Request sample deliverables</a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      TrustOps for SaaS. Specialized execution support for customer security reviews and trust
+      documentation.
+    </footer>
+  </div>
+</body>
+</html>
