@@ -101,6 +101,29 @@ function saveSettingsToStorage(s) { localStorage.setItem("cyberarmor_settings", 
 let settings = loadSettings();
 let pendingApiKeyReveal = null;
 
+async function hydrateDashboardAuth() {
+  try {
+    const res = await fetch("/auth/me", { credentials: "same-origin" });
+    if (!res.ok) return;
+    const data = await res.json();
+    const userEl = $("#dashboardUser");
+    const logoutEl = $("#dashboardLogout");
+    if (userEl && data.email) {
+      userEl.textContent = data.email;
+      userEl.classList.remove("hidden");
+    }
+    if (logoutEl) {
+      logoutEl.classList.remove("hidden");
+      logoutEl.onclick = async () => {
+        await fetch("/auth/logout", { method: "POST", credentials: "same-origin" }).catch(() => {});
+        window.location.replace("/login.html");
+      };
+    }
+  } catch {
+    // Nginx already enforces access; this is only header decoration.
+  }
+}
+
 // ─── Utilities ───────────────────────────────────────────
 function esc(str = "") {
   return String(str).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#039;");
@@ -1502,9 +1525,9 @@ async function viewAudit() {
       <tr class="hover:bg-slate-900/50">
         <td class="py-2 px-3 text-xs">${esc(l.timestamp||l.created_at||"")}</td>
         <td class="py-2 px-3">${esc(l.tenant_id||"")}</td>
-        <td class="py-2 px-3">${esc(l.action||l.event||"")}</td>
-        <td class="py-2 px-3 text-xs max-w-xs truncate">${esc(JSON.stringify(l.details||l.metadata||""))}</td>
-        <td class="py-2 px-3">${esc(l.user||l.actor||"")}</td>
+        <td class="py-2 px-3">${esc(l.action||l.event||(l.method&&l.path?`${l.method} ${l.path}${l.status?" → "+l.status:""}`:""))}</td>
+        <td class="py-2 px-3 text-xs max-w-xs truncate">${esc(JSON.stringify(l.details||l.metadata||l.meta||""))}</td>
+        <td class="py-2 px-3">${esc(l.user||l.actor||l.principal||"")}</td>
       </tr>
     `).join("");
     app.innerHTML = card(`
@@ -2383,6 +2406,7 @@ buildNav();
 buildServiceStatus();
 buildSettingsFields();
 setConnectionLabels();
+hydrateDashboardAuth();
 
 function setConnectionLabels() {
   $("#tenantScope").value = settings.tenantScope || "";
@@ -2407,6 +2431,51 @@ $("#resetSettings").onclick = () => { settings = { ...DEFAULTS }; saveSettingsTo
 // Tenant scope
 $("#applyScope").onclick = () => { settings.tenantScope = $("#tenantScope").value.trim(); saveSettingsToStorage(settings); toast(`Tenant: ${settings.tenantScope||"default"}`); route(); };
 $("#tenantScope").addEventListener("keydown", e => { if (e.key === "Enter") $("#applyScope").click(); });
+
+function openCreateTenantModal() {
+  $("#createTenantMessage").textContent = "";
+  $("#createTenantForm").reset();
+  $("#createTenantModal").classList.remove("hidden");
+  $("#createTenantModal").classList.add("flex");
+  $("#newTenantId").focus();
+}
+
+function closeCreateTenantModal() {
+  $("#createTenantModal").classList.add("hidden");
+  $("#createTenantModal").classList.remove("flex");
+}
+
+document.addEventListener("createTenant", openCreateTenantModal);
+$("#closeCreateTenant").onclick = closeCreateTenantModal;
+$("#cancelCreateTenant").onclick = closeCreateTenantModal;
+$("#createTenantForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const id = $("#newTenantId").value.trim();
+  const name = $("#newTenantName").value.trim();
+  const firstAdminEmail = $("#newTenantAdminEmail").value.trim().toLowerCase();
+  $("#createTenantMessage").className = "text-sm text-slate-400";
+  $("#createTenantMessage").textContent = "Creating tenant...";
+  try {
+    await apiFetch(`${svcUrl("cp")}/tenants`, {
+      method: "POST",
+      headers: svcHeaders("cp"),
+      body: JSON.stringify({
+        id,
+        name,
+        first_admin_email: firstAdminEmail,
+      }),
+    });
+    settings.tenantScope = id;
+    saveSettingsToStorage(settings);
+    $("#tenantScope").value = settings.tenantScope;
+    closeCreateTenantModal();
+    toast("Tenant created and customer admin bootstrapped", "success");
+    route();
+  } catch (error) {
+    $("#createTenantMessage").className = "text-sm text-rose-300";
+    $("#createTenantMessage").textContent = error.message;
+  }
+});
 
 // Health ping
 $("#pingAll").onclick = pingAll;

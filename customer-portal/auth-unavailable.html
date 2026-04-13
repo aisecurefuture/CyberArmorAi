@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CyberArmor Customer Auth Unavailable</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <meta name="color-scheme" content="dark light" />
+</head>
+<body class="min-h-screen bg-slate-950 text-slate-100">
+  <main class="min-h-screen flex items-center justify-center p-6">
+    <section class="w-full max-w-lg overflow-hidden rounded-3xl border border-amber-500/30 bg-slate-950/95 shadow-2xl shadow-amber-950/20">
+      <div class="h-2 bg-gradient-to-r from-amber-300 via-orange-400 to-rose-500"></div>
+      <div class="p-8">
+        <div class="mb-6 flex items-center gap-3">
+          <img src="CyberArmorAILogo.png" alt="CyberArmor" class="h-12 w-12 rounded-2xl" />
+          <div>
+            <h1 class="text-xl font-semibold">Authentication service unavailable</h1>
+            <p class="text-sm text-slate-400">The customer portal is failing closed.</p>
+          </div>
+        </div>
+        <p class="text-sm leading-6 text-slate-300">
+          CyberArmor could not validate your tenant-scoped customer session, so access is temporarily blocked until authentication is healthy again.
+        </p>
+        <a href="/login.html" class="mt-6 inline-flex rounded-2xl border border-slate-700 px-4 py-3 text-sm text-slate-200 hover:bg-slate-900">Try login again</a>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

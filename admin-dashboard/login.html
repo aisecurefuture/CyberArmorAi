@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CyberArmor Admin Login</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <meta name="color-scheme" content="dark light" />
+</head>
+<body class="min-h-screen bg-slate-950 text-slate-100">
+  <main class="min-h-screen flex items-center justify-center p-6">
+    <section class="w-full max-w-md rounded-3xl border border-slate-800 bg-slate-950/95 shadow-2xl shadow-cyan-950/30 overflow-hidden">
+      <div class="h-2 bg-gradient-to-r from-cyan-400 via-emerald-400 to-amber-300"></div>
+      <div class="p-8">
+        <div class="flex items-center gap-3 mb-8">
+          <img src="CyberArmorAILogo.png" alt="CyberArmor" class="w-12 h-12 rounded-2xl" />
+          <div>
+            <h1 class="text-xl font-semibold">CyberArmor Platform Admin</h1>
+            <p class="text-sm text-slate-400">Global operator email-code access gate</p>
+          </div>
+        </div>
+
+        <div id="message" class="hidden mb-5 rounded-2xl border px-4 py-3 text-sm"></div>
+
+        <form id="emailStep" class="space-y-4">
+          <div>
+            <label for="email" class="block text-sm font-medium text-slate-200 mb-2">Authorized email</label>
+            <input id="email" name="email" type="email" autocomplete="email" required
+              class="w-full rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 text-slate-100 outline-none focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/20"
+              placeholder="you@company.com" />
+          </div>
+          <button class="w-full rounded-2xl bg-cyan-500 px-4 py-3 font-semibold text-slate-950 hover:bg-cyan-400" type="submit">
+            Send login code
+          </button>
+          <p class="text-xs leading-5 text-slate-500">Only platform operator emails in the configured allowlist can access this global admin console.</p>
+        </form>
+
+        <form id="codeStep" class="space-y-4 hidden">
+          <div>
+            <label for="code" class="block text-sm font-medium text-slate-200 mb-2">Six-digit code</label>
+            <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" required maxlength="12"
+              class="w-full rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 text-center text-2xl tracking-[0.35em] text-slate-100 outline-none focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/20"
+              placeholder="000000" />
+          </div>
+          <button class="w-full rounded-2xl bg-emerald-400 px-4 py-3 font-semibold text-slate-950 hover:bg-emerald-300" type="submit">
+            Verify and enter
+          </button>
+          <button id="changeEmail" class="w-full rounded-2xl border border-slate-800 px-4 py-3 text-sm text-slate-300 hover:bg-slate-900" type="button">
+            Use a different email
+          </button>
+        </form>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const emailStep = document.querySelector("#emailStep");
+    const codeStep = document.querySelector("#codeStep");
+    const message = document.querySelector("#message");
+    const emailInput = document.querySelector("#email");
+    const codeInput = document.querySelector("#code");
+    const changeEmail = document.querySelector("#changeEmail");
+    let pendingEmail = "";
+
+    function showMessage(text, tone = "info") {
+      const tones = {
+        info: "border-slate-700 bg-slate-900 text-slate-200",
+        success: "border-emerald-700 bg-emerald-950/70 text-emerald-100",
+        error: "border-rose-700 bg-rose-950/70 text-rose-100",
+      };
+      message.className = `mb-5 rounded-2xl border px-4 py-3 text-sm ${tones[tone] || tones.info}`;
+      message.textContent = text;
+      message.classList.remove("hidden");
+    }
+
+    async function authFetch(path, body) {
+      const res = await fetch(`/auth${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Authentication failed");
+      return data;
+    }
+
+    emailStep.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      pendingEmail = emailInput.value.trim().toLowerCase();
+      try {
+        const data = await authFetch("/request-code", { email: pendingEmail });
+        emailStep.classList.add("hidden");
+        codeStep.classList.remove("hidden");
+        codeInput.focus();
+        showMessage(data.dev_code ? `Development code: ${data.dev_code}` : data.message, "success");
+      } catch (error) {
+        showMessage(error.message, "error");
+      }
+    });
+
+    codeStep.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      try {
+        await authFetch("/verify-code", { email: pendingEmail, code: codeInput.value });
+        window.location.replace("/");
+      } catch (error) {
+        showMessage(error.message, "error");
+      }
+    });
+
+    changeEmail.addEventListener("click", () => {
+      codeStep.classList.add("hidden");
+      emailStep.classList.remove("hidden");
+      codeInput.value = "";
+      emailInput.focus();
+      showMessage("Enter the email address you want to use.", "info");
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CyberArmor Dashboard Auth Unavailable</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <meta name="color-scheme" content="dark light" />
+</head>
+<body class="min-h-screen bg-slate-950 text-slate-100">
+  <main class="min-h-screen flex items-center justify-center p-6">
+    <section class="w-full max-w-lg rounded-3xl border border-amber-500/30 bg-slate-950/95 shadow-2xl shadow-amber-950/20 overflow-hidden">
+      <div class="h-2 bg-gradient-to-r from-amber-300 via-orange-400 to-rose-500"></div>
+      <div class="p-8">
+        <div class="flex items-center gap-3 mb-6">
+          <img src="CyberArmorAILogo.png" alt="CyberArmor" class="w-12 h-12 rounded-2xl" />
+          <div>
+            <h1 class="text-xl font-semibold">Authentication service unavailable</h1>
+            <p class="text-sm text-slate-400">The platform admin console is failing closed.</p>
+          </div>
+        </div>
+        <p class="text-sm leading-6 text-slate-300">
+          CyberArmor could not reach the dashboard authentication service, so access to the dashboard is temporarily blocked.
+          This protects the global platform admin surface until authentication is healthy again.
+        </p>
+        <div class="mt-6 rounded-2xl border border-slate-800 bg-slate-900/70 p-4 text-sm text-slate-300">
+          <p class="font-medium text-slate-100 mb-2">Operator checks</p>
+          <p>Verify the <code class="rounded bg-slate-800 px-1.5 py-0.5 text-amber-200">dashboard-auth</code> container is running and healthy, then review its logs for startup or SMTP/configuration errors.</p>
+        </div>
+        <a href="/login.html" class="mt-6 inline-flex rounded-2xl border border-slate-700 px-4 py-3 text-sm text-slate-200 hover:bg-slate-900">
+          Try login again
+        </a>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

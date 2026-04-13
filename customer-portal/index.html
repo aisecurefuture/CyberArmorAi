@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CyberArmor Customer Portal</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <meta name="color-scheme" content="dark light" />
+  <style>
+    .nav-item { transition: all 0.15s ease; }
+  </style>
+</head>
+<body class="min-h-screen bg-slate-950 text-slate-100">
+  <div class="min-h-screen flex">
+    <aside class="hidden w-72 flex-col border-r border-slate-800 bg-slate-950/90 p-4 md:flex">
+      <div class="mb-8 flex items-center gap-3">
+        <img src="CyberArmorAILogo.png" alt="CyberArmor" class="h-10 w-10 rounded-2xl" />
+        <div>
+          <div class="font-semibold leading-tight">CyberArmor</div>
+          <div class="text-xs text-slate-400">Customer Portal</div>
+        </div>
+      </div>
+      <nav id="nav" class="space-y-1"></nav>
+      <div class="mt-auto rounded-3xl border border-slate-800 bg-slate-900/60 p-4">
+        <div class="text-xs uppercase tracking-[0.18em] text-slate-500">Tenant</div>
+        <div id="tenantName" class="mt-2 break-all font-mono text-sm text-cyan-100">loading</div>
+        <div class="mt-4 text-xs uppercase tracking-[0.18em] text-slate-500">Signed in</div>
+        <div id="customerUser" class="mt-2 break-all text-sm">loading</div>
+        <div id="customerRole" class="mt-3"></div>
+        <button id="logout" class="mt-4 w-full rounded-2xl border border-slate-700 px-4 py-3 text-sm text-slate-200 hover:bg-slate-800">Log out</button>
+      </div>
+    </aside>
+    <main class="min-w-0 flex-1">
+      <header class="sticky top-0 z-10 border-b border-slate-800 bg-slate-950/80 backdrop-blur">
+        <div class="flex items-center justify-between px-4 py-4 md:px-8">
+          <div>
+            <h1 id="pageTitle" class="text-xl font-semibold">Customer Portal</h1>
+            <p id="pageSubtitle" class="text-sm text-slate-400">Tenant-scoped workspace</p>
+          </div>
+          <span class="hidden rounded-full border border-emerald-900 bg-emerald-950/40 px-3 py-1 text-[11px] uppercase tracking-[0.18em] text-emerald-100 md:inline-flex">Tenant Scoped</span>
+        </div>
+      </header>
+      <div id="app" class="px-4 py-6 md:px-8">
+        <section class="rounded-3xl border border-slate-800 bg-slate-950/80 p-5 text-slate-400">Loading...</section>
+      </div>
+    </main>
+  </div>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

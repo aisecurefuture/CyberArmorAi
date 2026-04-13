@@ -2,20 +2,37 @@ import json
 import logging
 import os
 import html as htmlmod
+import hashlib
+import hmac
+import secrets
+import smtplib
 import time
+import base64
 from datetime import datetime, timezone, timedelta
+from email.message import EmailMessage
 from typing import Annotated, Dict, Optional, Any, List
+from urllib.parse import urlencode
 
 import jwt
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse, HTMLResponse, PlainTextResponse
+from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse, HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
 from db import Base, SessionLocal, engine
-from models import ApiKey, AuditLog, TelemetryRecord, Tenant
+from models import (
+    ApiKey,
+    AuditLog,
+    CustomerLoginCode,
+    CustomerSession,
+    CustomerSsoConfig,
+    CustomerSsoState,
+    TelemetryRecord,
+    Tenant,
+    TenantUser,
+)
 from uuid import uuid4
 
 import httpx
@@ -57,6 +74,14 @@ TLS_KEY_FILE = os.getenv("CYBERARMOR_TLS_KEY_FILE")
 COMPLIANCE_URL = os.getenv("COMPLIANCE_URL", "http://compliance:8006")
 INTEGRATION_CONTROL_URL = os.getenv("INTEGRATION_CONTROL_URL", "http://integration-control:8012")
 INTEGRATION_CONTROL_API_KEY = os.getenv("INTEGRATION_CONTROL_API_SECRET", DEFAULT_API_KEY)
+CUSTOMER_SESSION_COOKIE = "ca_customer_session"
+CUSTOMER_CODE_TTL_SECONDS = int(os.getenv("CUSTOMER_PORTAL_CODE_TTL_SECONDS", "600"))
+CUSTOMER_SESSION_TTL_SECONDS = int(os.getenv("CUSTOMER_PORTAL_SESSION_TTL_SECONDS", "28800"))
+CUSTOMER_MAX_CODE_ATTEMPTS = int(os.getenv("CUSTOMER_PORTAL_MAX_CODE_ATTEMPTS", "5"))
+CUSTOMER_DEV_CODE_ECHO = os.getenv("CUSTOMER_PORTAL_AUTH_DEV_CODE_ECHO", "false").strip().lower() in {"1", "true", "yes", "on"}
+CUSTOMER_COOKIE_SECURE = os.getenv("CUSTOMER_PORTAL_COOKIE_SECURE", "false").strip().lower() in {"1", "true", "yes", "on"}
+CUSTOMER_SESSION_SECRET = os.getenv("CUSTOMER_PORTAL_SESSION_SECRET") or JWT_SECRET
+CUSTOMER_PORTAL_PUBLIC_URL = os.getenv("CUSTOMER_PORTAL_PUBLIC_URL", "http://localhost:3001").rstrip("/")
 
 
 def _enforce_secure_secrets() -> None:
@@ -167,6 +192,78 @@ class TenantOut(BaseModel):
         from_attributes = True
 
 
+class TenantUserOut(BaseModel):
+    id: str
+    tenant_id: str
+    email: str
+    role: str
+    status: str
+    invited_by: Optional[str] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    last_login_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class CustomerCodeRequest(BaseModel):
+    email: str
+
+
+class CustomerCodeVerify(BaseModel):
+    email: str
+    code: str
+
+
+class CustomerUserCreate(BaseModel):
+    email: str
+    role: str = "tenant_viewer"
+    status: str = "active"
+
+
+class CustomerUserUpdate(BaseModel):
+    role: Optional[str] = None
+    status: Optional[str] = None
+
+
+class CustomerSsoConfigIn(BaseModel):
+    provider_name: str = "oidc"
+    issuer: str
+    client_id: str
+    client_secret: Optional[str] = None
+    authorization_endpoint: str
+    token_endpoint: str
+    jwks_uri: str
+    redirect_uri: Optional[str] = None
+    scopes: str = "openid email profile"
+    enabled: bool = True
+
+
+class CustomerSsoConfigOut(BaseModel):
+    tenant_id: str
+    provider_name: str
+    issuer: str
+    client_id: str
+    authorization_endpoint: str
+    token_endpoint: str
+    jwks_uri: str
+    redirect_uri: Optional[str] = None
+    scopes: str
+    enabled: bool
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class CustomerContext(BaseModel):
+    email: str
+    tenant_id: str
+    role: str
+
+
 class AuditLogOut(BaseModel):
     id: str
     tenant_id: Optional[str] = None
@@ -253,12 +350,193 @@ def _encode_meta_for_db(val: Optional[Dict[str, Any]]) -> Any:
     return val
 
 
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _as_aware_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _normalize_email(email: str) -> str:
+    return email.strip().lower()
+
+
+def _valid_email(email: str) -> bool:
+    return bool(email) and "@" in email and "." in email.rsplit("@", 1)[-1]
+
+
+def _valid_customer_role(role: str) -> str:
+    normalized = role.strip().lower()
+    allowed = {"tenant_admin", "tenant_analyst", "tenant_viewer"}
+    if normalized not in allowed:
+        raise HTTPException(status_code=400, detail=f"Invalid role. Allowed roles: {', '.join(sorted(allowed))}")
+    return normalized
+
+
+def _valid_customer_status(status: str) -> str:
+    normalized = status.strip().lower()
+    allowed = {"active", "invited", "disabled"}
+    if normalized not in allowed:
+        raise HTTPException(status_code=400, detail=f"Invalid status. Allowed statuses: {', '.join(sorted(allowed))}")
+    return normalized
+
+
+def _hash_customer_code(email: str, code: str) -> str:
+    material = f"{email}:{code}:{CUSTOMER_SESSION_SECRET}".encode("utf-8")
+    return hashlib.sha256(material).hexdigest()
+
+
+def _hash_customer_session_token(token: str) -> str:
+    return hmac.new(CUSTOMER_SESSION_SECRET.encode("utf-8"), token.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _base64url_sha256(value: str) -> str:
+    digest = hashlib.sha256(value.encode("utf-8")).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def _customer_redirect_uri(config: CustomerSsoConfig) -> str:
+    return config.redirect_uri or f"{CUSTOMER_PORTAL_PUBLIC_URL}/auth/sso/callback"
+
+
+def _safe_sso_config(config: CustomerSsoConfig) -> CustomerSsoConfigOut:
+    return CustomerSsoConfigOut(
+        tenant_id=config.tenant_id,
+        provider_name=config.provider_name,
+        issuer=config.issuer,
+        client_id=config.client_id,
+        authorization_endpoint=config.authorization_endpoint,
+        token_endpoint=config.token_endpoint,
+        jwks_uri=config.jwks_uri,
+        redirect_uri=config.redirect_uri,
+        scopes=config.scopes,
+        enabled=config.enabled,
+        created_at=config.created_at,
+        updated_at=config.updated_at,
+    )
+
+
+def _issue_customer_session(response: Response, db: Session, user: TenantUser) -> None:
+    token = secrets.token_urlsafe(48)
+    db.add(
+        CustomerSession(
+            token_hash=_hash_customer_session_token(token),
+            tenant_id=user.tenant_id,
+            email=user.email,
+            role=user.role,
+            expires_at=_utcnow() + timedelta(seconds=CUSTOMER_SESSION_TTL_SECONDS),
+        )
+    )
+    user.last_login_at = _utcnow()
+    response.set_cookie(
+        CUSTOMER_SESSION_COOKIE,
+        token,
+        max_age=CUSTOMER_SESSION_TTL_SECONDS,
+        httponly=True,
+        secure=CUSTOMER_COOKIE_SECURE,
+        samesite="lax",
+        path="/",
+    )
+
+
+def _send_customer_login_code(email: str, code: str) -> None:
+    smtp_host = os.getenv("CUSTOMER_PORTAL_SMTP_HOST", "").strip()
+    smtp_port = int(os.getenv("CUSTOMER_PORTAL_SMTP_PORT", "587"))
+    smtp_user = os.getenv("CUSTOMER_PORTAL_SMTP_USER", "").strip()
+    smtp_password = os.getenv("CUSTOMER_PORTAL_SMTP_PASSWORD", "")
+    smtp_from = os.getenv("CUSTOMER_PORTAL_SMTP_FROM", smtp_user or "no-reply@localhost").strip()
+    use_tls = os.getenv("CUSTOMER_PORTAL_SMTP_TLS", "true").strip().lower() in {"1", "true", "yes", "on"}
+
+    if not smtp_host:
+        logger.warning("Customer portal login code for %s: %s", email, code)
+        return
+
+    msg = EmailMessage()
+    msg["Subject"] = "Your CyberArmor customer portal login code"
+    msg["From"] = smtp_from
+    msg["To"] = email
+    msg.set_content(
+        "Your CyberArmor customer portal login code is:\n\n"
+        f"{code}\n\n"
+        f"This code expires in {CUSTOMER_CODE_TTL_SECONDS // 60} minutes."
+    )
+    with smtplib.SMTP(smtp_host, smtp_port, timeout=10) as smtp:
+        if use_tls:
+            smtp.starttls()
+        if smtp_user:
+            smtp.login(smtp_user, smtp_password)
+        smtp.send_message(msg)
+
+
+def _active_tenant_users_for_email(db: Session, email: str) -> List[TenantUser]:
+    return (
+        db.query(TenantUser)
+        .filter(TenantUser.email == email, TenantUser.status == "active")
+        .order_by(TenantUser.created_at.asc())
+        .all()
+    )
+
+
+def _resolve_customer_session(db: Session, token: Optional[str]) -> Optional[CustomerContext]:
+    if not token:
+        return None
+    token_hash = _hash_customer_session_token(token)
+    session = db.query(CustomerSession).filter(CustomerSession.token_hash == token_hash).first()
+    if not session:
+        return None
+    if _as_aware_utc(session.expires_at) < _utcnow():
+        db.delete(session)
+        db.commit()
+        return None
+    user = (
+        db.query(TenantUser)
+        .filter(
+            TenantUser.tenant_id == session.tenant_id,
+            TenantUser.email == session.email,
+            TenantUser.status == "active",
+        )
+        .first()
+    )
+    if not user:
+        db.delete(session)
+        db.commit()
+        return None
+    session.role = user.role
+    session.last_seen_at = _utcnow()
+    db.commit()
+    return CustomerContext(email=user.email, tenant_id=user.tenant_id, role=user.role)
+
+
 def get_db():
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
+
+
+def get_customer_context(
+    db: Annotated[Session, Depends(get_db)],
+    ca_customer_session: Annotated[Optional[str], Cookie()] = None,
+) -> CustomerContext:
+    ctx = _resolve_customer_session(db, ca_customer_session)
+    if not ctx:
+        raise HTTPException(status_code=401, detail="Customer authentication required")
+    return ctx
+
+
+def require_customer_role(*allowed_roles: str):
+    allowed = set(allowed_roles)
+
+    def checker(ctx: Annotated[CustomerContext, Depends(get_customer_context)]) -> CustomerContext:
+        if ctx.role not in allowed:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        return ctx
+
+    return checker
 
 
 def verify_api_key(
@@ -288,14 +566,14 @@ def verify_bearer_token(authorization: Annotated[Optional[str], Header()] = None
 def get_auth_context(
     api_key_role: Annotated[Optional[str], Depends(verify_api_key)],
     bearer_identity: Annotated[Optional[Dict], Depends(verify_bearer_token)],
-    tenant_id: Annotated[Optional[str], Header(alias="x-tenant-id")] = None,
+    tenant_header_id: Annotated[Optional[str], Header(alias="x-tenant-id")] = None,
     role: Annotated[Optional[str], Header(alias="x-role")] = None,
 ) -> AuthContext:
     identity = bearer_identity or api_key_role
     if not identity:
         raise HTTPException(status_code=401, detail="Unauthorized")
     resolved_role = role or api_key_role or (bearer_identity.get("role") if bearer_identity else None) or "analyst"
-    tenant_header = tenant_id or (bearer_identity.get("tenant") if bearer_identity else None)
+    tenant_header = tenant_header_id or (bearer_identity.get("tenant") if bearer_identity else None)
     return AuthContext(principal="api-key" if api_key_role else "jwt-user", role=resolved_role, tenant_id=tenant_header)
 
 
@@ -328,11 +606,24 @@ def on_startup():
 
 @app.middleware("http")
 async def audit_middleware(request: Request, call_next):
+    # Skip noisy infrastructure paths that have no security value in the audit log.
+    _SKIP_PATHS = {"/health", "/ready", "/metrics", "/pki/public-key", "/favicon.ico"}
+    if request.url.path in _SKIP_PATHS:
+        return await call_next(request)
+
     start = datetime.now(timezone.utc)
     client_ip = request.headers.get("x-forwarded-for", request.client.host if request.client else "unknown")
     principal = request.headers.get("authorization") or request.headers.get("x-api-key", "anonymous")
-    tenant = request.headers.get("x-tenant-id", "unknown")
+    # Prefer explicit header; fall back to state set by auth handlers; last resort is None.
+    tenant = (
+        request.headers.get("x-tenant-id")
+        or getattr(request.state, "tenant_id", None)
+        or None
+    )
     response = await call_next(request)
+    # Skip writing if we still have no tenant context (e.g. unauthenticated probes).
+    if not tenant:
+        return response
     duration = (datetime.now(timezone.utc) - start).total_seconds()
     # Best-effort audit write: never break request handling if the DB is unavailable.
     try:
@@ -403,6 +694,7 @@ def list_tenants(ctx: Annotated[AuthContext, Depends(require_role("analyst"))], 
 class TenantCreate(BaseModel):
     id: str
     name: str
+    first_admin_email: Optional[str] = None
 
 
 @app.post("/tenants", response_model=TenantOut)
@@ -412,9 +704,624 @@ def create_tenant(payload: TenantCreate, ctx: Annotated[AuthContext, Depends(req
         raise HTTPException(status_code=409, detail="Tenant exists")
     tenant = Tenant(id=payload.id, name=payload.name)
     db.add(tenant)
+    if payload.first_admin_email:
+        email = _normalize_email(payload.first_admin_email)
+        if not _valid_email(email):
+            raise HTTPException(status_code=400, detail="first_admin_email must be a valid email")
+        db.add(
+            TenantUser(
+                tenant_id=payload.id,
+                email=email,
+                role="tenant_admin",
+                status="active",
+                invited_by=ctx.principal,
+            )
+        )
     db.commit()
     db.refresh(tenant)
     return tenant
+
+
+@app.get("/tenant-users", response_model=list[TenantUserOut])
+def list_tenant_users_admin(
+    ctx: Annotated[AuthContext, Depends(require_role("admin"))],
+    db: Annotated[Session, Depends(get_db)],
+    tenant_id: str,
+):
+    """Platform-admin tenant user view used for tenant bootstrap and support."""
+    if ctx.tenant_id and ctx.tenant_id != tenant_id:
+        raise HTTPException(status_code=403, detail="Tenant scope mismatch")
+    return (
+        db.query(TenantUser)
+        .filter(TenantUser.tenant_id == tenant_id)
+        .order_by(TenantUser.created_at.desc())
+        .all()
+    )
+
+
+@app.post("/tenant-users", response_model=TenantUserOut)
+def create_tenant_user_admin(
+    payload: CustomerUserCreate,
+    ctx: Annotated[AuthContext, Depends(require_role("admin"))],
+    db: Annotated[Session, Depends(get_db)],
+    tenant_id: str,
+):
+    """Platform-admin endpoint for adding the first or support-managed tenant users."""
+    if ctx.tenant_id and ctx.tenant_id != tenant_id:
+        raise HTTPException(status_code=403, detail="Tenant scope mismatch")
+    tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    email = _normalize_email(payload.email)
+    if not _valid_email(email):
+        raise HTTPException(status_code=400, detail="A valid email is required")
+    existing = db.query(TenantUser).filter(TenantUser.tenant_id == tenant_id, TenantUser.email == email).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="Tenant user already exists")
+    user = TenantUser(
+        tenant_id=tenant_id,
+        email=email,
+        role=_valid_customer_role(payload.role),
+        status=_valid_customer_status(payload.status),
+        invited_by=ctx.principal,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@app.get("/tenant-sso/{tenant_id}", response_model=CustomerSsoConfigOut)
+def get_tenant_sso_admin(
+    tenant_id: str,
+    ctx: Annotated[AuthContext, Depends(require_role("admin"))],
+    db: Annotated[Session, Depends(get_db)],
+):
+    if ctx.tenant_id and ctx.tenant_id != tenant_id:
+        raise HTTPException(status_code=403, detail="Tenant scope mismatch")
+    config = db.query(CustomerSsoConfig).filter(CustomerSsoConfig.tenant_id == tenant_id).first()
+    if not config:
+        raise HTTPException(status_code=404, detail="SSO is not configured for this tenant")
+    return _safe_sso_config(config)
+
+
+@app.put("/tenant-sso/{tenant_id}", response_model=CustomerSsoConfigOut)
+def upsert_tenant_sso_admin(
+    tenant_id: str,
+    payload: CustomerSsoConfigIn,
+    ctx: Annotated[AuthContext, Depends(require_role("admin"))],
+    db: Annotated[Session, Depends(get_db)],
+):
+    if ctx.tenant_id and ctx.tenant_id != tenant_id:
+        raise HTTPException(status_code=403, detail="Tenant scope mismatch")
+    if not db.query(Tenant).filter(Tenant.id == tenant_id).first():
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    config = db.query(CustomerSsoConfig).filter(CustomerSsoConfig.tenant_id == tenant_id).first()
+    if not config:
+        if not payload.client_secret:
+            raise HTTPException(status_code=400, detail="client_secret is required when creating SSO configuration")
+        config = CustomerSsoConfig(tenant_id=tenant_id)
+        db.add(config)
+    for field, value in payload.model_dump().items():
+        if field == "client_secret" and not value:
+            continue
+        setattr(config, field, value)
+    db.commit()
+    db.refresh(config)
+    return _safe_sso_config(config)
+
+
+@app.get("/customer-auth/session")
+def customer_session_check(
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+) -> Response:
+    return Response(
+        status_code=204,
+        headers={
+            "x-customer-email": ctx.email,
+            "x-customer-tenant-id": ctx.tenant_id,
+            "x-customer-role": ctx.role,
+        },
+    )
+
+
+@app.get("/customer-auth/me")
+def customer_me(ctx: Annotated[CustomerContext, Depends(get_customer_context)]) -> Dict[str, str]:
+    return {"email": ctx.email, "tenant_id": ctx.tenant_id, "role": ctx.role}
+
+
+@app.post("/customer-auth/request-code")
+def customer_request_code(body: CustomerCodeRequest, db: Annotated[Session, Depends(get_db)]) -> Dict[str, Any]:
+    email = _normalize_email(body.email)
+    if not _valid_email(email):
+        raise HTTPException(status_code=400, detail="A valid email is required")
+
+    active_users = _active_tenant_users_for_email(db, email)
+    if active_users:
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        db.add(
+            CustomerLoginCode(
+                email=email,
+                code_hash=_hash_customer_code(email, code),
+                expires_at=_utcnow() + timedelta(seconds=CUSTOMER_CODE_TTL_SECONDS),
+            )
+        )
+        db.commit()
+        _send_customer_login_code(email, code)
+        if CUSTOMER_DEV_CODE_ECHO:
+            return {"ok": True, "message": "Code generated for authorized customer user.", "dev_code": code}
+    else:
+        logger.warning("Customer portal login requested for unknown or inactive email: %s", email)
+
+    return {"ok": True, "message": "If this email is authorized, a login code has been sent."}
+
+
+@app.post("/customer-auth/verify-code")
+def customer_verify_code(
+    body: CustomerCodeVerify,
+    response: Response,
+    db: Annotated[Session, Depends(get_db)],
+) -> Dict[str, Any]:
+    email = _normalize_email(body.email)
+    if not _valid_email(email):
+        raise HTTPException(status_code=400, detail="A valid email is required")
+    code = "".join(ch for ch in body.code if ch.isdigit())
+    active_users = _active_tenant_users_for_email(db, email)
+    if not active_users or len(code) != 6:
+        raise HTTPException(status_code=401, detail="Invalid or expired code")
+    if len(active_users) > 1:
+        raise HTTPException(status_code=409, detail="This email belongs to multiple tenants; tenant selection is not enabled yet")
+
+    login_code = (
+        db.query(CustomerLoginCode)
+        .filter(CustomerLoginCode.email == email, CustomerLoginCode.consumed_at.is_(None))
+        .order_by(CustomerLoginCode.created_at.desc())
+        .first()
+    )
+    if not login_code or _as_aware_utc(login_code.expires_at) < _utcnow():
+        raise HTTPException(status_code=401, detail="Invalid or expired code")
+    if not hmac.compare_digest(login_code.code_hash, _hash_customer_code(email, code)):
+        login_code.attempts = (login_code.attempts or 0) + 1
+        if login_code.attempts >= CUSTOMER_MAX_CODE_ATTEMPTS:
+            login_code.consumed_at = _utcnow()
+        db.commit()
+        raise HTTPException(status_code=401, detail="Invalid or expired code")
+
+    login_code.consumed_at = _utcnow()
+    user = active_users[0]
+    _issue_customer_session(response, db, user)
+    db.commit()
+    return {"ok": True, "email": user.email, "tenant_id": user.tenant_id, "role": user.role}
+
+
+@app.post("/customer-auth/logout")
+def customer_logout(
+    response: Response,
+    db: Annotated[Session, Depends(get_db)],
+    ca_customer_session: Annotated[Optional[str], Cookie()] = None,
+) -> Dict[str, bool]:
+    if ca_customer_session:
+        token_hash = _hash_customer_session_token(ca_customer_session)
+        session = db.query(CustomerSession).filter(CustomerSession.token_hash == token_hash).first()
+        if session:
+            db.delete(session)
+            db.commit()
+    response.delete_cookie(CUSTOMER_SESSION_COOKIE, path="/")
+    return {"ok": True}
+
+
+@app.get("/customer-auth/sso/start")
+def customer_sso_start(
+    db: Annotated[Session, Depends(get_db)],
+    email: str = Query(...),
+) -> RedirectResponse:
+    email = _normalize_email(email)
+    if not _valid_email(email):
+        raise HTTPException(status_code=400, detail="A valid email is required")
+    active_users = _active_tenant_users_for_email(db, email)
+    if not active_users:
+        raise HTTPException(status_code=404, detail="No active customer user found for this email")
+    if len(active_users) > 1:
+        raise HTTPException(status_code=409, detail="This email belongs to multiple tenants; tenant selection is not enabled yet")
+    user = active_users[0]
+    config = (
+        db.query(CustomerSsoConfig)
+        .filter(CustomerSsoConfig.tenant_id == user.tenant_id, CustomerSsoConfig.enabled.is_(True))
+        .first()
+    )
+    if not config:
+        raise HTTPException(status_code=404, detail="SSO is not configured for this tenant")
+
+    state = secrets.token_urlsafe(32)
+    nonce = secrets.token_urlsafe(32)
+    code_verifier = secrets.token_urlsafe(64)
+    redirect_uri = _customer_redirect_uri(config)
+    db.add(
+        CustomerSsoState(
+            state=state,
+            tenant_id=user.tenant_id,
+            email_hint=email,
+            nonce=nonce,
+            code_verifier=code_verifier,
+            redirect_uri=redirect_uri,
+            expires_at=_utcnow() + timedelta(minutes=10),
+        )
+    )
+    db.commit()
+    auth_params = {
+        "response_type": "code",
+        "client_id": config.client_id,
+        "redirect_uri": redirect_uri,
+        "scope": config.scopes,
+        "state": state,
+        "nonce": nonce,
+        "login_hint": email,
+        "code_challenge": _base64url_sha256(code_verifier),
+        "code_challenge_method": "S256",
+    }
+    return RedirectResponse(f"{config.authorization_endpoint}?{urlencode(auth_params)}", status_code=302)
+
+
+@app.get("/customer-auth/sso/callback")
+def customer_sso_callback(
+    db: Annotated[Session, Depends(get_db)],
+    code: str = Query(...),
+    state: str = Query(...),
+) -> RedirectResponse:
+    state_record = db.query(CustomerSsoState).filter(CustomerSsoState.state == state).first()
+    if not state_record or _as_aware_utc(state_record.expires_at) < _utcnow():
+        raise HTTPException(status_code=401, detail="Invalid or expired SSO state")
+    config = (
+        db.query(CustomerSsoConfig)
+        .filter(CustomerSsoConfig.tenant_id == state_record.tenant_id, CustomerSsoConfig.enabled.is_(True))
+        .first()
+    )
+    if not config:
+        raise HTTPException(status_code=404, detail="SSO is not configured for this tenant")
+
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            token_resp = client.post(
+                config.token_endpoint,
+                data={
+                    "grant_type": "authorization_code",
+                    "code": code,
+                    "redirect_uri": state_record.redirect_uri,
+                    "client_id": config.client_id,
+                    "client_secret": config.client_secret,
+                    "code_verifier": state_record.code_verifier,
+                },
+                headers={"Accept": "application/json"},
+            )
+        if token_resp.status_code >= 300:
+            logger.warning("customer_sso_token_exchange_failed tenant=%s status=%s body=%s", config.tenant_id, token_resp.status_code, token_resp.text[:500])
+            raise HTTPException(status_code=502, detail="SSO token exchange failed")
+        token_body = token_resp.json()
+        id_token = token_body.get("id_token")
+        if not id_token:
+            raise HTTPException(status_code=502, detail="SSO provider did not return an ID token")
+        signing_key = jwt.PyJWKClient(config.jwks_uri).get_signing_key_from_jwt(id_token)
+        claims = jwt.decode(
+            id_token,
+            signing_key.key,
+            algorithms=["RS256", "RS384", "RS512", "ES256", "ES384", "ES512"],
+            audience=config.client_id,
+            issuer=config.issuer,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("customer_sso_callback_failed tenant=%s err=%s", config.tenant_id, exc)
+        raise HTTPException(status_code=502, detail="SSO verification failed")
+
+    if claims.get("nonce") != state_record.nonce:
+        raise HTTPException(status_code=401, detail="SSO nonce mismatch")
+    email = _normalize_email(str(claims.get("email") or claims.get("preferred_username") or state_record.email_hint or ""))
+    if not _valid_email(email):
+        raise HTTPException(status_code=401, detail="SSO response did not include a valid email")
+    user = (
+        db.query(TenantUser)
+        .filter(
+            TenantUser.tenant_id == state_record.tenant_id,
+            TenantUser.email == email,
+            TenantUser.status == "active",
+        )
+        .first()
+    )
+    if not user:
+        raise HTTPException(status_code=403, detail="SSO user is not registered for this tenant")
+
+    db.delete(state_record)
+    response = RedirectResponse("/", status_code=302)
+    _issue_customer_session(response, db, user)
+    db.commit()
+    return response
+
+
+@app.get("/customer/settings")
+def customer_settings(
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    db: Annotated[Session, Depends(get_db)],
+) -> Dict[str, Any]:
+    tenant = db.query(Tenant).filter(Tenant.id == ctx.tenant_id).first()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    return {
+        "tenant": {"id": tenant.id, "name": tenant.name, "active": tenant.active},
+        "user": {"email": ctx.email, "role": ctx.role},
+        "tenant_scope": "server_enforced",
+    }
+
+
+def _fetch_policy_service(path: str, tenant_id: str) -> Any:
+    policy_url = os.getenv("POLICY_SERVICE_URL", "http://policy:8001")
+    policy_key = os.getenv("POLICY_API_SECRET", DEFAULT_API_KEY)
+    try:
+        resp = httpx.get(
+            f"{policy_url.rstrip('/')}{path}",
+            headers={**build_auth_headers(policy_url, policy_key), "x-tenant-id": tenant_id},
+            timeout=6.0,
+        )
+        if resp.status_code >= 300:
+            logger.warning("customer_policy_proxy_failed tenant=%s path=%s status=%s", tenant_id, path, resp.status_code)
+            return []
+        return resp.json()
+    except Exception as exc:
+        logger.warning("customer_policy_proxy_error tenant=%s path=%s err=%s", tenant_id, path, exc)
+        return []
+
+
+def _fetch_ai_router(path: str, tenant_id: str) -> Any:
+    router_url = os.getenv("AI_ROUTER_URL", "http://ai-router:8009")
+    router_key = os.getenv("AI_ROUTER_API_SECRET", DEFAULT_API_KEY)
+    try:
+        resp = httpx.get(
+            f"{router_url.rstrip('/')}{path}",
+            headers={**build_auth_headers(router_url, router_key), "x-tenant-id": tenant_id},
+            timeout=6.0,
+        )
+        if resp.status_code >= 300:
+            logger.warning("customer_ai_router_proxy_failed tenant=%s path=%s status=%s", tenant_id, path, resp.status_code)
+            return {}
+        return resp.json()
+    except Exception as exc:
+        logger.warning("customer_ai_router_proxy_error tenant=%s path=%s err=%s", tenant_id, path, exc)
+        return {}
+
+
+def _tenant_agent_rows(db: Session, tenant_id: str, limit: int = 200) -> List[Dict[str, Any]]:
+    agents_by_id: Dict[str, Dict[str, Any]] = {
+        a.get("agent_id"): dict(a)
+        for a in _AGENTS.values()
+        if a.get("agent_id") and a.get("tenant_id") == tenant_id
+    }
+    telemetry_rows = (
+        db.query(
+            TelemetryRecord.agent_id,
+            func.max(TelemetryRecord.occurred_at).label("last_seen"),
+        )
+        .filter(TelemetryRecord.tenant_id == tenant_id)
+        .filter(TelemetryRecord.source == "endpoint")
+        .filter(TelemetryRecord.agent_id.isnot(None))
+        .group_by(TelemetryRecord.agent_id)
+        .all()
+    )
+    for row in telemetry_rows:
+        if not row.agent_id or row.agent_id in agents_by_id:
+            continue
+        latest = (
+            db.query(TelemetryRecord)
+            .filter(TelemetryRecord.tenant_id == tenant_id, TelemetryRecord.agent_id == row.agent_id)
+            .order_by(desc(TelemetryRecord.occurred_at), desc(TelemetryRecord.created_at))
+            .first()
+        )
+        payload = _coerce_meta(latest.payload) or {} if latest else {}
+        agents_by_id[row.agent_id] = {
+            "agent_id": row.agent_id,
+            "tenant_id": tenant_id,
+            "hostname": latest.hostname if latest and latest.hostname else payload.get("hostname", ""),
+            "username": latest.user_id if latest and latest.user_id else payload.get("username", ""),
+            "last_seen": row.last_seen.isoformat() if row.last_seen else None,
+            "status": "telemetry_only",
+            "os": payload.get("os", ""),
+            "version": payload.get("version") or payload.get("agent_version", ""),
+        }
+    agents = list(agents_by_id.values())
+    agents.sort(key=lambda a: a.get("last_seen", ""), reverse=True)
+    return agents[:limit]
+
+
+@app.get("/customer/overview")
+def customer_overview(
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    db: Annotated[Session, Depends(get_db)],
+) -> Dict[str, Any]:
+    policies = _fetch_policy_service(f"/policies/{ctx.tenant_id}", ctx.tenant_id)
+    agents = _tenant_agent_rows(db, ctx.tenant_id, limit=1000)
+    audit_count = db.query(AuditLog).filter(AuditLog.tenant_id == ctx.tenant_id).count()
+    telemetry_count = db.query(TelemetryRecord).filter(TelemetryRecord.tenant_id == ctx.tenant_id).count()
+    incidents = list(_INCIDENTS.get(ctx.tenant_id, {}).values())
+    providers = _fetch_ai_router("/ai/providers", ctx.tenant_id)
+    return {
+        "tenant_id": ctx.tenant_id,
+        "policy_count": len(policies) if isinstance(policies, list) else 0,
+        "agent_count": len(agents),
+        "audit_count": audit_count,
+        "telemetry_count": telemetry_count,
+        "incident_count": len(incidents),
+        "provider_count": len((providers or {}).get("providers", [])) if isinstance(providers, dict) else 0,
+    }
+
+
+@app.get("/customer/policies")
+def customer_policies(ctx: Annotated[CustomerContext, Depends(get_customer_context)]) -> Any:
+    return _fetch_policy_service(f"/policies/{ctx.tenant_id}", ctx.tenant_id)
+
+
+@app.get("/customer/agents")
+def customer_agents(
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    db: Annotated[Session, Depends(get_db)],
+    limit: int = 200,
+) -> List[Dict[str, Any]]:
+    return _tenant_agent_rows(db, ctx.tenant_id, limit=max(1, min(limit, 1000)))
+
+
+@app.get("/customer/telemetry")
+def customer_telemetry(
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    db: Annotated[Session, Depends(get_db)],
+    limit: int = 200,
+) -> List[Dict[str, Any]]:
+    limit = max(1, min(limit, 1000))
+    rows = (
+        db.query(TelemetryRecord)
+        .filter(TelemetryRecord.tenant_id == ctx.tenant_id)
+        .order_by(desc(TelemetryRecord.occurred_at), desc(TelemetryRecord.created_at))
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "id": r.id,
+            "tenant_id": r.tenant_id,
+            "agent_id": r.agent_id,
+            "hostname": r.hostname,
+            "user_id": r.user_id,
+            "event_type": r.event_type,
+            "source": r.source,
+            "payload": _coerce_meta(r.payload) or {},
+            "occurred_at": r.occurred_at.isoformat() if r.occurred_at else None,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in rows
+    ]
+
+
+@app.get("/customer/audit", response_model=List[AuditLogOut])
+def customer_audit(
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    db: Annotated[Session, Depends(get_db)],
+    limit: int = 100,
+) -> List[AuditLog]:
+    limit = max(1, min(limit, 500))
+    rows = (
+        db.query(AuditLog)
+        .filter(AuditLog.tenant_id == ctx.tenant_id)
+        .order_by(AuditLog.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    for r in rows:
+        r.meta = _coerce_meta(r.meta)
+    return rows
+
+
+@app.get("/customer/incidents")
+def customer_incidents(
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    limit: int = 100,
+) -> List[Dict[str, Any]]:
+    incidents = sorted(
+        _INCIDENTS.get(ctx.tenant_id, {}).values(),
+        key=lambda x: x.get("received_at", ""),
+        reverse=True,
+    )
+    return incidents[: max(1, min(limit, 500))]
+
+
+@app.get("/customer/providers")
+def customer_providers(ctx: Annotated[CustomerContext, Depends(get_customer_context)]) -> Any:
+    return _fetch_ai_router("/ai/providers", ctx.tenant_id)
+
+
+@app.get("/customer/sso", response_model=CustomerSsoConfigOut)
+def customer_get_sso(
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+    db: Annotated[Session, Depends(get_db)],
+):
+    config = db.query(CustomerSsoConfig).filter(CustomerSsoConfig.tenant_id == ctx.tenant_id).first()
+    if not config:
+        raise HTTPException(status_code=404, detail="SSO is not configured for this tenant")
+    return _safe_sso_config(config)
+
+
+@app.put("/customer/sso", response_model=CustomerSsoConfigOut)
+def customer_upsert_sso(
+    payload: CustomerSsoConfigIn,
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+    db: Annotated[Session, Depends(get_db)],
+):
+    config = db.query(CustomerSsoConfig).filter(CustomerSsoConfig.tenant_id == ctx.tenant_id).first()
+    if not config:
+        if not payload.client_secret:
+            raise HTTPException(status_code=400, detail="client_secret is required when creating SSO configuration")
+        config = CustomerSsoConfig(tenant_id=ctx.tenant_id)
+        db.add(config)
+    for field, value in payload.model_dump().items():
+        if field == "client_secret" and not value:
+            continue
+        setattr(config, field, value)
+    db.commit()
+    db.refresh(config)
+    return _safe_sso_config(config)
+
+
+@app.get("/customer/users", response_model=list[TenantUserOut])
+def customer_list_users(
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+    db: Annotated[Session, Depends(get_db)],
+):
+    return (
+        db.query(TenantUser)
+        .filter(TenantUser.tenant_id == ctx.tenant_id)
+        .order_by(TenantUser.created_at.desc())
+        .all()
+    )
+
+
+@app.post("/customer/users", response_model=TenantUserOut)
+def customer_create_user(
+    payload: CustomerUserCreate,
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+    db: Annotated[Session, Depends(get_db)],
+):
+    email = _normalize_email(payload.email)
+    if not _valid_email(email):
+        raise HTTPException(status_code=400, detail="A valid email is required")
+    existing = db.query(TenantUser).filter(TenantUser.tenant_id == ctx.tenant_id, TenantUser.email == email).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="Tenant user already exists")
+    user = TenantUser(
+        tenant_id=ctx.tenant_id,
+        email=email,
+        role=_valid_customer_role(payload.role),
+        status=_valid_customer_status(payload.status),
+        invited_by=ctx.email,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@app.patch("/customer/users/{user_id}", response_model=TenantUserOut)
+def customer_update_user(
+    user_id: str,
+    payload: CustomerUserUpdate,
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+    db: Annotated[Session, Depends(get_db)],
+):
+    user = db.query(TenantUser).filter(TenantUser.id == user_id, TenantUser.tenant_id == ctx.tenant_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Tenant user not found")
+    if payload.role is not None:
+        user.role = _valid_customer_role(payload.role)
+    if payload.status is not None:
+        user.status = _valid_customer_status(payload.status)
+    db.commit()
+    db.refresh(user)
+    return user
 
 @app.get("/apikeys", response_model=list[ApiKeyOut])
 def list_apikeys(
