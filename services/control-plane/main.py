@@ -76,6 +76,8 @@ COMPLIANCE_URL = os.getenv("COMPLIANCE_URL", "http://compliance:8006")
 INTEGRATION_CONTROL_URL = os.getenv("INTEGRATION_CONTROL_URL", "http://integration-control:8012")
 INTEGRATION_CONTROL_API_KEY = os.getenv("INTEGRATION_CONTROL_API_SECRET", DEFAULT_API_KEY)
 CUSTOMER_SESSION_COOKIE = "ca_customer_session"
+CUSTOMER_CSRF_COOKIE = "ca_customer_csrf"
+CUSTOMER_CSRF_HEADER = "x-csrf-token"
 CUSTOMER_CODE_TTL_SECONDS = int(os.getenv("CUSTOMER_PORTAL_CODE_TTL_SECONDS", "600"))
 CUSTOMER_SESSION_TTL_SECONDS = int(os.getenv("CUSTOMER_PORTAL_SESSION_TTL_SECONDS", "28800"))
 CUSTOMER_MAX_CODE_ATTEMPTS = int(os.getenv("CUSTOMER_PORTAL_MAX_CODE_ATTEMPTS", "5"))
@@ -488,6 +490,28 @@ def _issue_customer_session(response: Response, db: Session, user: TenantUser) -
         samesite="lax",
         path="/",
     )
+    # Double-submit CSRF token. The SPA reads this cookie via
+    # document.cookie and echoes it in the x-csrf-token header on every
+    # state-changing request — attackers on another origin can set the
+    # session cookie (via stolen credentials) but cannot read the csrf
+    # cookie to forge a matching header.
+    csrf_token = secrets.token_urlsafe(32)
+    response.set_cookie(
+        CUSTOMER_CSRF_COOKIE,
+        csrf_token,
+        max_age=CUSTOMER_SESSION_TTL_SECONDS,
+        httponly=False,
+        secure=CUSTOMER_COOKIE_SECURE,
+        samesite="lax",
+        path="/",
+    )
+
+
+def _clear_customer_session_cookies(response: Response) -> None:
+    response.delete_cookie(CUSTOMER_SESSION_COOKIE, path="/")
+    response.delete_cookie(CUSTOMER_CSRF_COOKIE, path="/")
+
+
 
 
 def _send_customer_login_code(email: str, code: str) -> None:
@@ -650,6 +674,32 @@ app.add_middleware(
 def on_startup():
     wait_for_db()
     init_db()
+
+
+@app.middleware("http")
+async def customer_csrf_middleware(request: Request, call_next):
+    """Double-submit CSRF guard for cookie-authenticated customer endpoints.
+
+    Enforced on any state-changing request to /customer/* or to
+    /customer-auth/logout when the session cookie is present. Auth
+    bootstrap paths (request-code, verify-code) are intentionally
+    excluded because no session exists yet.
+    """
+    path = request.url.path
+    method = request.method
+    is_mutating = method in {"POST", "PUT", "PATCH", "DELETE"}
+    needs_csrf = is_mutating and (
+        path.startswith("/customer/") or path == "/customer-auth/logout"
+    )
+    if needs_csrf and request.cookies.get(CUSTOMER_SESSION_COOKIE):
+        cookie_token = request.cookies.get(CUSTOMER_CSRF_COOKIE)
+        header_token = request.headers.get(CUSTOMER_CSRF_HEADER)
+        if not cookie_token or not header_token or not secrets.compare_digest(cookie_token, header_token):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "CSRF token missing or invalid"},
+            )
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -954,7 +1004,7 @@ def customer_logout(
         if session:
             db.delete(session)
             db.commit()
-    response.delete_cookie(CUSTOMER_SESSION_COOKIE, path="/")
+    _clear_customer_session_cookies(response)
     return {"ok": True}
 
 

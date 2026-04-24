@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import logging
 import os
 import secrets
@@ -9,19 +10,35 @@ import smtplib
 import time
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
-from typing import Annotated, Optional
+from typing import Annotated, List, Optional
 
-from fastapi import Cookie, Depends, FastAPI, HTTPException, Response, status
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from db import Base, SessionLocal, engine, ensure_sqlite_dir
-from models import DashboardSession, LoginCode
+from models import AdminUser, DashboardSession, LoginCode
+from totp import (
+    TOTPCipher,
+    generate_backup_codes,
+    generate_secret,
+    hash_backup_code,
+    otpauth_uri,
+    qr_svg,
+    verify_totp,
+)
 
 logger = logging.getLogger("dashboard_auth")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
 SESSION_COOKIE = "ca_dashboard_session"
+CSRF_COOKIE = "ca_dashboard_csrf"
+CSRF_HEADER = "x-csrf-token"
+MFA_TICKET_COOKIE = "ca_dashboard_mfa"
+MFA_TICKET_TTL_SECONDS = int(os.getenv("ADMIN_DASHBOARD_MFA_TICKET_TTL_SECONDS", "300"))
+MFA_ISSUER = os.getenv("ADMIN_DASHBOARD_MFA_ISSUER", "CyberArmor Admin")
+MFA_REQUIRED = os.getenv("ADMIN_DASHBOARD_MFA_REQUIRED", "false").strip().lower() in {"1", "true", "yes", "on"}
 CODE_TTL_SECONDS = int(os.getenv("ADMIN_DASHBOARD_CODE_TTL_SECONDS", "600"))
 SESSION_TTL_SECONDS = int(os.getenv("ADMIN_DASHBOARD_SESSION_TTL_SECONDS", "28800"))
 MAX_CODE_ATTEMPTS = int(os.getenv("ADMIN_DASHBOARD_MAX_CODE_ATTEMPTS", "5"))
@@ -44,7 +61,37 @@ ALLOWED_EMAILS = {
 ensure_sqlite_dir()
 Base.metadata.create_all(bind=engine)
 
+_cipher = TOTPCipher(SESSION_SECRET)
+
 app = FastAPI(title="CyberArmor Dashboard Auth", version="0.2.0")
+
+
+_CSRF_PROTECTED_PATHS = {
+    "/logout",
+    "/me/totp/enroll",
+    "/me/totp/confirm",
+    "/me/totp",
+    "/me/totp/backup-codes",
+}
+
+
+@app.middleware("http")
+async def csrf_middleware(request: Request, call_next):
+    """Double-submit CSRF guard for cookie-authenticated mutating routes.
+
+    Bootstrap paths (request-code, verify-code, verify-totp) are
+    intentionally exempt — no full session cookie exists yet at those
+    points.
+    """
+    if request.method in {"GET", "HEAD", "OPTIONS"}:
+        return await call_next(request)
+    path = request.url.path
+    if path in _CSRF_PROTECTED_PATHS and request.cookies.get(SESSION_COOKIE):
+        cookie_token = request.cookies.get(CSRF_COOKIE)
+        header_token = request.headers.get(CSRF_HEADER)
+        if not cookie_token or not header_token or not hmac.compare_digest(cookie_token, header_token):
+            return JSONResponse(status_code=403, content={"detail": "CSRF token missing or invalid"})
+    return await call_next(request)
 
 
 def get_db() -> Session:
@@ -152,6 +199,122 @@ def _send_code(email: str, code: str) -> None:
         smtp.send_message(msg)
 
 
+def _sign_mfa_ticket(email: str, expires: int) -> str:
+    payload = f"{email}|{expires}"
+    sig = hmac.new(
+        SESSION_SECRET.encode("utf-8"),
+        f"mfa:{payload}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{payload}|{sig}"
+
+
+def _verify_mfa_ticket(ticket: Optional[str]) -> Optional[str]:
+    if not ticket:
+        return None
+    parts = ticket.split("|")
+    if len(parts) != 3:
+        return None
+    email, expires_str, supplied_sig = parts
+    try:
+        expires = int(expires_str)
+    except ValueError:
+        return None
+    if expires < int(time.time()):
+        return None
+    expected = hmac.new(
+        SESSION_SECRET.encode("utf-8"),
+        f"mfa:{email}|{expires}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(expected, supplied_sig):
+        return None
+    return email
+
+
+def _load_admin(db: Session, email: str) -> Optional[AdminUser]:
+    return db.get(AdminUser, email)
+
+
+def _ensure_admin_row(db: Session, email: str) -> AdminUser:
+    row = _load_admin(db, email)
+    if row is None:
+        row = AdminUser(email=email)
+        db.add(row)
+        db.flush()
+    return row
+
+
+def _issue_full_session(db: Session, response: Response, email: str) -> dict:
+    token = secrets.token_urlsafe(48)
+    now = _utcnow()
+    db.add(DashboardSession(
+        token=token,
+        email=email,
+        expires_at=now + timedelta(seconds=SESSION_TTL_SECONDS),
+        created_at=now,
+        last_seen_at=now,
+    ))
+    db.commit()
+    response.set_cookie(
+        SESSION_COOKIE,
+        _pack_session(token),
+        max_age=SESSION_TTL_SECONDS,
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite="lax",
+        path="/",
+    )
+    response.set_cookie(
+        CSRF_COOKIE,
+        secrets.token_urlsafe(32),
+        max_age=SESSION_TTL_SECONDS,
+        httponly=False,
+        secure=COOKIE_SECURE,
+        samesite="lax",
+        path="/",
+    )
+    response.delete_cookie(MFA_TICKET_COOKIE, path="/")
+    return {"ok": True, "email": email}
+
+
+def _issue_mfa_ticket(response: Response, email: str) -> dict:
+    expires = int(time.time()) + MFA_TICKET_TTL_SECONDS
+    ticket = _sign_mfa_ticket(email, expires)
+    response.set_cookie(
+        MFA_TICKET_COOKIE,
+        ticket,
+        max_age=MFA_TICKET_TTL_SECONDS,
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite="lax",
+        path="/",
+    )
+    return {"ok": True, "mfa_required": True, "email": email}
+
+
+def _load_backup_hashes(row: AdminUser) -> List[str]:
+    if not row.backup_codes_hash:
+        return []
+    try:
+        value = json.loads(row.backup_codes_hash)
+        return list(value) if isinstance(value, list) else []
+    except (ValueError, TypeError):
+        return []
+
+
+def _consume_backup_code(row: AdminUser, code: str) -> bool:
+    hashes = _load_backup_hashes(row)
+    if not hashes:
+        return False
+    target = hash_backup_code(SESSION_SECRET, code)
+    if target not in hashes:
+        return False
+    hashes.remove(target)
+    row.backup_codes_hash = json.dumps(hashes)
+    return True
+
+
 def _purge_expired(db: Session) -> None:
     now = _utcnow()
     db.query(DashboardSession).filter(DashboardSession.expires_at < now).delete(synchronize_session=False)
@@ -247,26 +410,162 @@ def verify_code(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired code")
 
     db.delete(row)
-    token = secrets.token_urlsafe(48)
-    now = _utcnow()
-    db.add(DashboardSession(
-        token=token,
-        email=email,
-        expires_at=now + timedelta(seconds=SESSION_TTL_SECONDS),
-        created_at=now,
-        last_seen_at=now,
-    ))
     db.commit()
-    response.set_cookie(
-        SESSION_COOKIE,
-        _pack_session(token),
-        max_age=SESSION_TTL_SECONDS,
-        httponly=True,
-        secure=COOKIE_SECURE,
-        samesite="lax",
-        path="/",
-    )
-    return {"ok": True, "email": email}
+
+    admin = _load_admin(db, email)
+    mfa_enabled = bool(admin and admin.totp_enabled and admin.totp_secret_enc)
+    if mfa_enabled:
+        return _issue_mfa_ticket(response, email)
+    if MFA_REQUIRED:
+        # Allow a first-time login so the operator can enroll, but the
+        # UI routes them directly into the enrollment flow.
+        session_payload = _issue_full_session(db, response, email)
+        session_payload["mfa_enrollment_required"] = True
+        return session_payload
+    return _issue_full_session(db, response, email)
+
+
+class TOTPVerify(BaseModel):
+    code: str
+
+
+@app.post("/verify-totp")
+def verify_totp_endpoint(
+    body: TOTPVerify,
+    response: Response,
+    db: Annotated[Session, Depends(get_db)],
+    ca_dashboard_mfa: Annotated[str | None, Cookie()] = None,
+) -> dict:
+    email = _verify_mfa_ticket(ca_dashboard_mfa)
+    if not email or email not in ALLOWED_EMAILS:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="MFA ticket missing or expired")
+    admin = _load_admin(db, email)
+    if not admin or not admin.totp_enabled or not admin.totp_secret_enc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="MFA not enrolled")
+
+    code = body.code or ""
+    secret = _cipher.decrypt(admin.totp_secret_enc)
+    if verify_totp(secret, code):
+        return _issue_full_session(db, response, email)
+    if _consume_backup_code(admin, code):
+        db.commit()
+        return _issue_full_session(db, response, email)
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid MFA code")
+
+
+class TOTPConfirm(BaseModel):
+    code: str
+
+
+@app.get("/me/totp/status")
+def totp_status(
+    db: Annotated[Session, Depends(get_db)],
+    ca_dashboard_session: Annotated[str | None, Cookie()] = None,
+) -> dict:
+    email = _session_email(db, ca_dashboard_session)
+    if not email:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    admin = _load_admin(db, email)
+    hashes = _load_backup_hashes(admin) if admin else []
+    return {
+        "email": email,
+        "totp_enabled": bool(admin and admin.totp_enabled),
+        "enrollment_in_progress": bool(admin and admin.totp_pending_enc),
+        "backup_codes_remaining": len(hashes),
+        "mfa_required": MFA_REQUIRED,
+    }
+
+
+@app.post("/me/totp/enroll")
+def totp_enroll(
+    db: Annotated[Session, Depends(get_db)],
+    ca_dashboard_session: Annotated[str | None, Cookie()] = None,
+) -> dict:
+    email = _session_email(db, ca_dashboard_session)
+    if not email:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    admin = _ensure_admin_row(db, email)
+    secret = generate_secret()
+    admin.totp_pending_enc = _cipher.encrypt(secret)
+    db.commit()
+    uri = otpauth_uri(secret, email, MFA_ISSUER)
+    return {
+        "secret": secret,
+        "otpauth_uri": uri,
+        "qr_svg": qr_svg(uri),
+    }
+
+
+@app.post("/me/totp/confirm")
+def totp_confirm(
+    body: TOTPConfirm,
+    db: Annotated[Session, Depends(get_db)],
+    ca_dashboard_session: Annotated[str | None, Cookie()] = None,
+) -> dict:
+    email = _session_email(db, ca_dashboard_session)
+    if not email:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    admin = _load_admin(db, email)
+    if not admin or not admin.totp_pending_enc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No enrollment in progress")
+    pending = _cipher.decrypt(admin.totp_pending_enc)
+    if not verify_totp(pending, body.code or ""):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid code")
+    admin.totp_secret_enc = admin.totp_pending_enc
+    admin.totp_pending_enc = None
+    admin.totp_enabled = True
+    backup_codes = generate_backup_codes()
+    admin.backup_codes_hash = json.dumps([hash_backup_code(SESSION_SECRET, c) for c in backup_codes])
+    db.commit()
+    return {"ok": True, "backup_codes": backup_codes}
+
+
+class TOTPDisable(BaseModel):
+    code: str
+
+
+@app.delete("/me/totp")
+def totp_disable(
+    body: TOTPDisable,
+    db: Annotated[Session, Depends(get_db)],
+    ca_dashboard_session: Annotated[str | None, Cookie()] = None,
+) -> dict:
+    email = _session_email(db, ca_dashboard_session)
+    if not email:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    admin = _load_admin(db, email)
+    if not admin or not admin.totp_enabled or not admin.totp_secret_enc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="MFA is not enabled")
+    secret = _cipher.decrypt(admin.totp_secret_enc)
+    if not (verify_totp(secret, body.code or "") or _consume_backup_code(admin, body.code or "")):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid code")
+    admin.totp_secret_enc = None
+    admin.totp_pending_enc = None
+    admin.totp_enabled = False
+    admin.backup_codes_hash = None
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/me/totp/backup-codes")
+def totp_regenerate_backup_codes(
+    body: TOTPVerify,
+    db: Annotated[Session, Depends(get_db)],
+    ca_dashboard_session: Annotated[str | None, Cookie()] = None,
+) -> dict:
+    email = _session_email(db, ca_dashboard_session)
+    if not email:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    admin = _load_admin(db, email)
+    if not admin or not admin.totp_enabled or not admin.totp_secret_enc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="MFA is not enabled")
+    secret = _cipher.decrypt(admin.totp_secret_enc)
+    if not verify_totp(secret, body.code or ""):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid code")
+    new_codes = generate_backup_codes()
+    admin.backup_codes_hash = json.dumps([hash_backup_code(SESSION_SECRET, c) for c in new_codes])
+    db.commit()
+    return {"ok": True, "backup_codes": new_codes}
 
 
 @app.post("/logout")
@@ -282,4 +581,5 @@ def logout(
             db.delete(row)
             db.commit()
     response.delete_cookie(SESSION_COOKIE, path="/")
+    response.delete_cookie(CSRF_COOKIE, path="/")
     return {"ok": True}

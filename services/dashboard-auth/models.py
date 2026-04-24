@@ -7,7 +7,7 @@ can scale beyond a single replica.
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, Integer, String
+from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text
 
 from db import Base
 
@@ -38,3 +38,17 @@ class DashboardSession(Base):
     expires_at = Column(DateTime(timezone=True), nullable=False)
     created_at = Column(DateTime(timezone=True), default=now_utc, nullable=False)
     last_seen_at = Column(DateTime(timezone=True), default=now_utc, nullable=False)
+
+
+class AdminUser(Base):
+    """Per-operator MFA state. Row is lazily created on first enroll."""
+
+    __tablename__ = "dashboard_admin_users"
+
+    email = Column(String, primary_key=True)
+    totp_secret_enc = Column(Text, nullable=True)        # active secret, Fernet-encrypted
+    totp_pending_enc = Column(Text, nullable=True)       # enrollment-in-progress secret
+    totp_enabled = Column(Boolean, nullable=False, default=False)
+    backup_codes_hash = Column(Text, nullable=True)      # JSON list of sha256 hashes
+    created_at = Column(DateTime(timezone=True), default=now_utc, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=now_utc, onupdate=now_utc, nullable=False)

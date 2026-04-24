@@ -70,10 +70,27 @@ function badge(text, tone = "cyan") {
   return `<span class="inline-flex rounded-full border px-2.5 py-1 text-xs ${colors[tone] || colors.slate}">${esc(text)}</span>`;
 }
 
+function readCookie(name) {
+  const prefix = `${name}=`;
+  for (const part of document.cookie.split(";")) {
+    const trimmed = part.trim();
+    if (trimmed.startsWith(prefix)) {
+      return decodeURIComponent(trimmed.slice(prefix.length));
+    }
+  }
+  return "";
+}
+
 async function api(path, options = {}) {
+  const method = (options.method || "GET").toUpperCase();
+  const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+  if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
+    const csrf = readCookie("ca_customer_csrf");
+    if (csrf) headers["x-csrf-token"] = csrf;
+  }
   const res = await fetch(path, {
     credentials: "same-origin",
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    headers,
     ...options,
   });
   const data = await res.json().catch(() => ({}));
@@ -1362,7 +1379,7 @@ async function route() {
 }
 
 async function logout() {
-  await fetch("/auth/logout", { method: "POST", credentials: "same-origin" }).catch(() => {});
+  await api("/auth/logout", { method: "POST" }).catch(() => {});
   window.location.replace("/login.html");
 }
 

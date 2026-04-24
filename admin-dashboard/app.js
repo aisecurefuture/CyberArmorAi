@@ -8,6 +8,15 @@ import { mountPolicyBuilder } from "/shared/policy-builder.js";
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
+function readDashboardCsrf() {
+  const prefix = "ca_dashboard_csrf=";
+  for (const part of document.cookie.split(";")) {
+    const trimmed = part.trim();
+    if (trimmed.startsWith(prefix)) return decodeURIComponent(trimmed.slice(prefix.length));
+  }
+  return "";
+}
+
 // ─── Navigation ──────────────────────────────────────────
 const NAV = [
   { id: "overview",       label: "Overview",          icon: "📊", hash: "#/overview" },
@@ -118,7 +127,12 @@ async function hydrateDashboardAuth() {
     if (logoutEl) {
       logoutEl.classList.remove("hidden");
       logoutEl.onclick = async () => {
-        await fetch("/auth/logout", { method: "POST", credentials: "same-origin" }).catch(() => {});
+        const csrf = readDashboardCsrf();
+        await fetch("/auth/logout", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: csrf ? { "x-csrf-token": csrf } : {},
+        }).catch(() => {});
         window.location.replace("/login.html");
       };
     }
