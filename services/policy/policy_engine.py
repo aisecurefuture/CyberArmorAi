@@ -374,5 +374,81 @@ class PolicyEngine:
         return self._python.evaluate_first_match(policies, context)
 
 
+# ---------------------------------------------------------------------------
+# Artifact reference resolution
+# ---------------------------------------------------------------------------
+
+
+_ARTIFACT_PREFIX = "$artifact:"
+
+
+def _artifact_ref(value: Any) -> Optional[str]:
+    if isinstance(value, str) and value.startswith(_ARTIFACT_PREFIX):
+        return value[len(_ARTIFACT_PREFIX):].strip()
+    return None
+
+
+def _resolve_value(value: Any, operator: str, artifacts: Dict[str, Any]) -> tuple[Any, str]:
+    """Resolve $artifact:<name> references in a rule value.
+
+    Returns (resolved_value, effective_operator). The operator is overridden
+    to ``regex`` when the referenced artifact is of kind ``regex``.
+    """
+    name = _artifact_ref(value)
+    if name:
+        art = artifacts.get(name) or {}
+        kind = art.get("kind")
+        items = list(art.get("items") or [])
+        if kind == "regex":
+            joined = "|".join(f"(?:{p})" for p in items) if items else "(?!)"
+            return joined, "regex"
+        return items, operator
+    if isinstance(value, list):
+        expanded: List[Any] = []
+        for item in value:
+            ref = _artifact_ref(item)
+            if ref:
+                expanded.extend((artifacts.get(ref) or {}).get("items") or [])
+            else:
+                expanded.append(item)
+        return expanded, operator
+    return value, operator
+
+
+def resolve_artifact_references(
+    conditions: Optional[Dict[str, Any]],
+    artifacts: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Return a deep-copied condition tree with $artifact: references resolved.
+
+    The original input is not mutated. If ``artifacts`` is empty or no
+    reference is found, a structural copy is still returned for safety.
+    """
+    if not conditions:
+        return conditions
+
+    def walk(node: Any) -> Any:
+        if isinstance(node, dict):
+            # Condition group: {operator, rules: [...]}
+            if "rules" in node and isinstance(node["rules"], list):
+                return {**{k: v for k, v in node.items() if k != "rules"},
+                        "rules": [walk(r) for r in node["rules"]]}
+            # Leaf rule: {field, operator, value}
+            if "field" in node or "value" in node:
+                value = node.get("value")
+                op = node.get("operator", "equals")
+                resolved_value, effective_op = _resolve_value(value, op, artifacts)
+                out = dict(node)
+                out["value"] = resolved_value
+                out["operator"] = effective_op
+                return out
+            return {k: walk(v) for k, v in node.items()}
+        if isinstance(node, list):
+            return [walk(x) for x in node]
+        return node
+
+    return walk(conditions)
+
+
 # Singleton instance (consumed by main.py via ``from policy_engine import engine``)
 engine = PolicyEngine()

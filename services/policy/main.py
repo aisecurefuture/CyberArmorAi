@@ -29,8 +29,8 @@ from sqlalchemy.orm import Session
 from fastapi.responses import PlainTextResponse
 
 from db import Base, SessionLocal, engine
-from models import Policy
-from policy_engine import EvaluationContext, engine as policy_eval_engine
+from models import ARTIFACT_KINDS, Artifact, Policy
+from policy_engine import EvaluationContext, engine as policy_eval_engine, resolve_artifact_references
 import opa_client
 from rego_compiler import RegoCompiler
 from cyberarmor_core.crypto import get_public_key_info, verify_shared_secret
@@ -119,6 +119,30 @@ def verify_api_key(api_key: Annotated[str | None, Header(alias="x-api-key")] = N
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    _apply_lightweight_migrations()
+
+
+def _apply_lightweight_migrations() -> None:
+    """Add columns introduced after initial release (idempotent).
+
+    Avoids requiring Alembic for small additive schema changes while still
+    letting running deployments pick up new columns automatically.
+    """
+    try:
+        from sqlalchemy import inspect
+
+        inspector = inspect(engine)
+        if "policies" in inspector.get_table_names():
+            existing = {col["name"] for col in inspector.get_columns("policies")}
+            with engine.begin() as conn:
+                if "scope" not in existing:
+                    conn.exec_driver_sql(
+                        "ALTER TABLE policies ADD COLUMN scope VARCHAR DEFAULT 'general' NOT NULL"
+                    )
+                if "archived_at" not in existing:
+                    conn.exec_driver_sql("ALTER TABLE policies ADD COLUMN archived_at TIMESTAMP NULL")
+    except Exception as exc:
+        logger.warning("lightweight_migration_failed err=%s", exc)
 
 
 def wait_for_db(max_wait_s: int = 45) -> None:
@@ -168,6 +192,7 @@ class PolicyCreate(BaseModel):
     tenant_id: str
     enabled: bool = True
     action: str = "monitor"  # monitor, block, warn, allow
+    scope: str = "general"  # general, proxy, ...
     priority: int = 100
     conditions: Optional[Dict] = None
     rules: Dict = Field(default_factory=dict)
@@ -180,6 +205,7 @@ class PolicyUpdate(BaseModel):
     description: Optional[str] = None
     enabled: Optional[bool] = None
     action: Optional[str] = None
+    scope: Optional[str] = None
     priority: Optional[int] = None
     conditions: Optional[Dict] = None
     rules: Optional[Dict] = None
@@ -195,11 +221,13 @@ class PolicyOut(BaseModel):
     version: str
     enabled: bool = True
     action: str = "monitor"
+    scope: str = "general"
     priority: int = 100
     conditions: Optional[Dict] = None
     rules: Dict = Field(default_factory=dict)
     compliance_frameworks: Optional[List[str]] = None
     tags: Optional[List[str]] = None
+    archived_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     created_by: Optional[str] = None
@@ -209,6 +237,47 @@ class PolicyOut(BaseModel):
 
 
 class PolicyToggle(BaseModel):
+    enabled: bool
+
+
+class ArtifactCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    tenant_id: str
+    kind: str  # must be in ARTIFACT_KINDS
+    items: List[str] = Field(default_factory=list)
+    enabled: bool = True
+    tags: Optional[List[str]] = None
+
+
+class ArtifactUpdate(BaseModel):
+    description: Optional[str] = None
+    kind: Optional[str] = None
+    items: Optional[List[str]] = None
+    enabled: Optional[bool] = None
+    tags: Optional[List[str]] = None
+
+
+class ArtifactOut(BaseModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+    tenant_id: str
+    kind: str
+    items: List[str] = Field(default_factory=list)
+    enabled: bool = True
+    archived_at: Optional[datetime] = None
+    version: str
+    tags: Optional[List[str]] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    created_by: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class ArtifactToggle(BaseModel):
     enabled: bool
 
 
@@ -291,7 +360,11 @@ def _resolve_tenant_mode(tenant_id: str) -> tuple[str, str]:
 def _load_active_policies_for_tenant(db: Session, tenant_id: str) -> List[Dict[str, Any]]:
     rows = (
         db.query(Policy)
-        .filter(Policy.tenant_id == tenant_id, Policy.enabled.is_(True))
+        .filter(
+            Policy.tenant_id == tenant_id,
+            Policy.enabled.is_(True),
+            Policy.archived_at.is_(None),
+        )
         .order_by(Policy.priority.asc(), Policy.updated_at.desc())
         .all()
     )
@@ -303,6 +376,7 @@ def _load_active_policies_for_tenant(db: Session, tenant_id: str) -> List[Dict[s
                 "name": row.name,
                 "enabled": row.enabled,
                 "action": row.action,
+                "scope": getattr(row, "scope", "general"),
                 "priority": row.priority,
                 "conditions": _coerce_json_field(row.conditions),
                 "rules": _coerce_json_field(row.rules) or {},
@@ -392,6 +466,11 @@ def _normalize_policy_decision(
 def _evaluate_policy_decision(db: Session, body: EvaluateRequest) -> PolicyDecisionOut:
     started = time.perf_counter()
     policies = _load_active_policies_for_tenant(db, body.tenant_id)
+    artifacts = _load_tenant_artifacts(db, body.tenant_id)
+    if artifacts:
+        for p in policies:
+            if p.get("conditions"):
+                p["conditions"] = resolve_artifact_references(p["conditions"], artifacts)
     context_dict = body.context or {}
     context = EvaluationContext(
         request=context_dict.get("request", {}),
@@ -503,6 +582,8 @@ def get_policies_for_tenant(
     _: Annotated[None, Depends(verify_api_key)],
     enabled_only: bool = Query(False),
     action: Optional[str] = Query(None),
+    scope: Optional[str] = Query(None),
+    include_archived: bool = Query(False),
     tag: Optional[str] = Query(None),
 ):
     """Return all policies for a tenant with optional filters."""
@@ -511,6 +592,10 @@ def get_policies_for_tenant(
         q = q.filter(Policy.enabled.is_(True))
     if action:
         q = q.filter(Policy.action == action)
+    if scope:
+        q = q.filter(Policy.scope == scope)
+    if not include_archived:
+        q = q.filter(Policy.archived_at.is_(None))
     rows = q.order_by(Policy.priority.asc(), Policy.updated_at.desc()).all()
     if not rows:
         return []
@@ -563,6 +648,7 @@ def upsert_policy(
         record.conditions = _encode_json_for_db(payload.conditions)
         record.enabled = payload.enabled
         record.action = payload.action
+        record.scope = payload.scope or "general"
         record.priority = payload.priority
         record.compliance_frameworks = _encode_json_for_db(payload.compliance_frameworks)
         record.tags = _encode_json_for_db(payload.tags)
@@ -577,6 +663,7 @@ def upsert_policy(
             version=version,
             enabled=payload.enabled,
             action=payload.action,
+            scope=payload.scope or "general",
             priority=payload.priority,
             conditions=_encode_json_for_db(payload.conditions),
             rules=_encode_json_for_db(payload.rules),
@@ -614,6 +701,8 @@ def update_policy(
         record.enabled = payload.enabled
     if payload.action is not None:
         record.action = payload.action
+    if payload.scope is not None:
+        record.scope = payload.scope
     if payload.priority is not None:
         record.priority = payload.priority
     if payload.conditions is not None:
@@ -672,6 +761,302 @@ def bulk_toggle_policies(
     )
     db.commit()
     return {"status": "ok", "updated": count}
+
+
+@app.patch("/policies/{policy_id}/archive", response_model=PolicyOut)
+@app.patch("/policies/id/{policy_id}/archive", response_model=PolicyOut)
+def archive_policy(
+    policy_id: str,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[None, Depends(verify_api_key)],
+):
+    record = db.query(Policy).filter(Policy.id == policy_id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="Policy not found")
+    record.archived_at = datetime.now(timezone.utc)
+    record.enabled = False
+    record.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(record)
+    record.conditions = _coerce_json_field(record.conditions)
+    record.rules = _coerce_json_field(record.rules) or {}
+    record.compliance_frameworks = _coerce_json_field(record.compliance_frameworks)
+    record.tags = _coerce_json_field(record.tags)
+    logger.info("policy archived id=%s", policy_id)
+    _opa_delete_policy(policy_id)  # stop evaluating archived policies in OPA
+    return record
+
+
+@app.patch("/policies/{policy_id}/unarchive", response_model=PolicyOut)
+@app.patch("/policies/id/{policy_id}/unarchive", response_model=PolicyOut)
+def unarchive_policy(
+    policy_id: str,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[None, Depends(verify_api_key)],
+):
+    record = db.query(Policy).filter(Policy.id == policy_id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="Policy not found")
+    record.archived_at = None
+    record.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(record)
+    record.conditions = _coerce_json_field(record.conditions)
+    record.rules = _coerce_json_field(record.rules) or {}
+    record.compliance_frameworks = _coerce_json_field(record.compliance_frameworks)
+    record.tags = _coerce_json_field(record.tags)
+    logger.info("policy unarchived id=%s", policy_id)
+    _opa_sync_policy(record)
+    return record
+
+
+# --- Artifacts (tenant-scoped reusable lists and regex patterns) ----------
+
+
+def _artifact_out(record: Artifact) -> ArtifactOut:
+    items = _coerce_json_field(record.items)
+    if isinstance(items, str):
+        try:
+            items = json.loads(items)
+        except (json.JSONDecodeError, ValueError):
+            items = [items]
+    if items is None:
+        items = []
+    if not isinstance(items, list):
+        items = [str(items)]
+    return ArtifactOut(
+        id=record.id,
+        name=record.name,
+        description=record.description,
+        tenant_id=record.tenant_id,
+        kind=record.kind,
+        items=[str(i) for i in items],
+        enabled=record.enabled,
+        archived_at=record.archived_at,
+        version=record.version,
+        tags=_coerce_json_field(record.tags),
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+        created_by=record.created_by,
+    )
+
+
+def _validate_artifact(kind: str, items: List[str]) -> None:
+    if kind not in ARTIFACT_KINDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid kind '{kind}'; must be one of {sorted(ARTIFACT_KINDS)}",
+        )
+    if kind == "regex":
+        import re as _re
+
+        for pattern in items:
+            try:
+                _re.compile(pattern)
+            except _re.error as exc:
+                raise HTTPException(status_code=400, detail=f"invalid regex '{pattern}': {exc}")
+
+
+@app.get("/artifacts/kinds")
+def list_artifact_kinds(_: Annotated[None, Depends(verify_api_key)]):
+    return {"kinds": sorted(ARTIFACT_KINDS)}
+
+
+@app.get("/artifacts/{tenant_id}", response_model=List[ArtifactOut])
+def list_artifacts(
+    tenant_id: str,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[None, Depends(verify_api_key)],
+    kind: Optional[str] = Query(None),
+    enabled_only: bool = Query(False),
+    include_archived: bool = Query(False),
+):
+    q = db.query(Artifact).filter(Artifact.tenant_id == tenant_id)
+    if kind:
+        q = q.filter(Artifact.kind == kind)
+    if enabled_only:
+        q = q.filter(Artifact.enabled.is_(True))
+    if not include_archived:
+        q = q.filter(Artifact.archived_at.is_(None))
+    rows = q.order_by(Artifact.kind.asc(), Artifact.name.asc()).all()
+    return [_artifact_out(r) for r in rows]
+
+
+@app.get("/artifacts/{tenant_id}/by-name/{name}", response_model=ArtifactOut)
+def get_artifact_by_name(
+    tenant_id: str,
+    name: str,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[None, Depends(verify_api_key)],
+):
+    record = (
+        db.query(Artifact)
+        .filter(Artifact.tenant_id == tenant_id, Artifact.name == name)
+        .first()
+    )
+    if not record:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    return _artifact_out(record)
+
+
+@app.post("/artifacts", response_model=ArtifactOut)
+def upsert_artifact(
+    payload: ArtifactCreate,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[None, Depends(verify_api_key)],
+):
+    _validate_artifact(payload.kind, payload.items)
+    record = (
+        db.query(Artifact)
+        .filter(Artifact.tenant_id == payload.tenant_id, Artifact.name == payload.name)
+        .first()
+    )
+    version = f"v{int(datetime.utcnow().timestamp())}"
+    if record:
+        record.description = payload.description
+        record.kind = payload.kind
+        record.items = _encode_json_for_db(list(payload.items))
+        record.enabled = payload.enabled
+        record.tags = _encode_json_for_db(payload.tags)
+        record.version = version
+        record.archived_at = None  # upserting revives the artifact
+        record.updated_at = datetime.now(timezone.utc)
+    else:
+        record = Artifact(
+            id=str(uuid4()),
+            name=payload.name,
+            description=payload.description,
+            tenant_id=payload.tenant_id,
+            kind=payload.kind,
+            items=_encode_json_for_db(list(payload.items)),
+            enabled=payload.enabled,
+            version=version,
+            tags=_encode_json_for_db(payload.tags),
+        )
+        db.add(record)
+    db.commit()
+    db.refresh(record)
+    logger.info(
+        "artifact upserted tenant=%s name=%s kind=%s items=%d",
+        payload.tenant_id, payload.name, payload.kind, len(payload.items),
+    )
+    return _artifact_out(record)
+
+
+@app.put("/artifacts/id/{artifact_id}", response_model=ArtifactOut)
+def update_artifact(
+    artifact_id: str,
+    payload: ArtifactUpdate,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[None, Depends(verify_api_key)],
+):
+    record = db.query(Artifact).filter(Artifact.id == artifact_id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    kind = payload.kind if payload.kind is not None else record.kind
+    items = payload.items if payload.items is not None else _coerce_json_field(record.items) or []
+    _validate_artifact(kind, items)
+    if payload.description is not None:
+        record.description = payload.description
+    if payload.kind is not None:
+        record.kind = payload.kind
+    if payload.items is not None:
+        record.items = _encode_json_for_db(list(payload.items))
+    if payload.enabled is not None:
+        record.enabled = payload.enabled
+    if payload.tags is not None:
+        record.tags = _encode_json_for_db(payload.tags)
+    record.version = f"v{int(datetime.utcnow().timestamp())}"
+    record.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(record)
+    logger.info("artifact updated id=%s name=%s", artifact_id, record.name)
+    return _artifact_out(record)
+
+
+@app.patch("/artifacts/id/{artifact_id}/toggle", response_model=ArtifactOut)
+def toggle_artifact(
+    artifact_id: str,
+    body: ArtifactToggle,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[None, Depends(verify_api_key)],
+):
+    record = db.query(Artifact).filter(Artifact.id == artifact_id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    record.enabled = body.enabled
+    record.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(record)
+    return _artifact_out(record)
+
+
+@app.patch("/artifacts/id/{artifact_id}/archive", response_model=ArtifactOut)
+def archive_artifact(
+    artifact_id: str,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[None, Depends(verify_api_key)],
+):
+    record = db.query(Artifact).filter(Artifact.id == artifact_id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    record.archived_at = datetime.now(timezone.utc)
+    record.enabled = False
+    record.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(record)
+    return _artifact_out(record)
+
+
+@app.patch("/artifacts/id/{artifact_id}/unarchive", response_model=ArtifactOut)
+def unarchive_artifact(
+    artifact_id: str,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[None, Depends(verify_api_key)],
+):
+    record = db.query(Artifact).filter(Artifact.id == artifact_id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    record.archived_at = None
+    record.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(record)
+    return _artifact_out(record)
+
+
+@app.delete("/artifacts/id/{artifact_id}")
+def delete_artifact(
+    artifact_id: str,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[None, Depends(verify_api_key)],
+):
+    record = db.query(Artifact).filter(Artifact.id == artifact_id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    db.delete(record)
+    db.commit()
+    logger.info("artifact deleted id=%s name=%s", artifact_id, record.name)
+    return {"status": "deleted", "id": artifact_id}
+
+
+def _load_tenant_artifacts(db: Session, tenant_id: str) -> Dict[str, Dict[str, Any]]:
+    """Return enabled, non-archived artifacts keyed by name for engine resolution."""
+    rows = (
+        db.query(Artifact)
+        .filter(
+            Artifact.tenant_id == tenant_id,
+            Artifact.enabled.is_(True),
+            Artifact.archived_at.is_(None),
+        )
+        .all()
+    )
+    out: Dict[str, Dict[str, Any]] = {}
+    for r in rows:
+        items = _coerce_json_field(r.items) or []
+        if not isinstance(items, list):
+            items = [str(items)]
+        out[r.name] = {"kind": r.kind, "items": [str(i) for i in items]}
+    return out
 
 
 @app.delete("/policies/{policy_id}")
@@ -888,6 +1273,11 @@ async def ext_authz_check(
         user={"client_ip": request.headers.get("x-forwarded-for", "")},
     )
     policies = _load_active_policies_for_tenant(db, tenant_id)
+    artifacts = _load_tenant_artifacts(db, tenant_id)
+    if artifacts:
+        for p in policies:
+            if p.get("conditions"):
+                p["conditions"] = resolve_artifact_references(p["conditions"], artifacts)
     match = policy_eval_engine.evaluate_first_match(policies, context) if policies else None
     if not match:
         response.headers["x-cyberarmor-authz"] = "allow_no_match"

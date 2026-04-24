@@ -1,9 +1,12 @@
+import { mountPolicyBuilder } from "/shared/policy-builder.js";
+
 const $ = (selector) => document.querySelector(selector);
 
 const navItems = [
   { id: "overview", label: "Overview", hash: "#/overview" },
   { id: "policies", label: "Policies", hash: "#/policies" },
   { id: "policy-builder", label: "Policy Builder", hash: "#/policy-builder" },
+  { id: "artifacts", label: "Artifacts", hash: "#/artifacts" },
   { id: "api-keys", label: "API Keys", hash: "#/api-keys" },
   { id: "proxy", label: "Proxy Controls", hash: "#/proxy" },
   { id: "scan", label: "Scan Tools", hash: "#/scan" },
@@ -647,11 +650,247 @@ async function viewOverview() {
 }
 
 async function viewPolicyBuilder() {
-  await tenantScopedConfigPage("policy-builder", "Policy Builder", "Create tenant policies with grouped conditions", [
-    { title: "Condition Groups", body: "Build AND/OR logic for tenant-scoped enforcement rules without exposing platform-wide policy scope.", badge: "tenant policy workspace", tone: "green" },
-    { title: "Decision Actions", body: "Model allow, monitor, redact, and block outcomes for this tenant before promoting them into active policies.", badge: "draft mode", tone: "cyan" },
-    { title: "Framework Tags", body: "Attach SOC 2, NIST CSF, GDPR, or custom tenant tags to policy drafts for reporting.", badge: "compliance mapping", tone: "slate" },
-  ], { drafts: [], default_decision: "monitor", frameworks: ["SOC 2", "NIST CSF"] }, true);
+  $("#pageTitle").textContent = "Policy Builder";
+  $("#pageSubtitle").textContent = "Author tenant-scoped policies with grouped conditions and artifact references";
+  const isAdmin = session.role === "tenant_admin";
+  const container = $("#app");
+  container.innerHTML = card(`<div class="text-slate-400">Loading policy builder...</div>`);
+  mountPolicyBuilder({
+    container,
+    tenantId: session.tenant_id,
+    fetchJson: (path, init) => api(path, init),
+    paths: {
+      artifacts: "/api/customer/artifacts",
+      createPolicy: "/api/customer/policies",
+    },
+    readOnly: !isAdmin,
+    notify: ({ message }) => {
+      const el = container.querySelector("#cpb_message");
+      if (el) el.textContent = message;
+    },
+    onSaved: () => { location.hash = "#/policies"; },
+  });
+}
+
+const ARTIFACT_KIND_META = {
+  user_list: { label: "User IDs", placeholder: "alice@corp.com\nbob@corp.com" },
+  email_list: { label: "Emails", placeholder: "alice@corp.com" },
+  group_list: { label: "Groups", placeholder: "engineering\nsecurity-admins" },
+  domain_list: { label: "Domains", placeholder: "chat.openai.com\nclaude.ai" },
+  host_list: { label: "Hostnames", placeholder: "dev-laptop-01\ndev-laptop-02" },
+  ip_list: { label: "IP addresses", placeholder: "10.0.0.5" },
+  cidr_list: { label: "CIDR ranges", placeholder: "10.0.0.0/24" },
+  keyword_list: { label: "Keywords", placeholder: "password\napi_key" },
+  regex: { label: "Regex patterns", placeholder: "\\b[0-9]{3}-[0-9]{2}-[0-9]{4}\\b" },
+};
+
+async function viewArtifacts() {
+  $("#pageTitle").textContent = "Artifacts";
+  $("#pageSubtitle").textContent = "Tenant-scoped reusable lists and regex patterns for policy rules";
+  const isAdmin = session.role === "tenant_admin";
+  let includeArchived = false;
+  let editing = null;
+
+  function kindOptions(selected) {
+    return Object.keys(ARTIFACT_KIND_META).map((k) =>
+      `<option value="${k}" ${selected === k ? "selected" : ""}>${esc(ARTIFACT_KIND_META[k].label)} (${k})</option>`
+    ).join("");
+  }
+
+  async function refresh() {
+    try {
+      const qs = includeArchived ? "?include_archived=true" : "";
+      const rows = await api(`/api/customer/artifacts${qs}`);
+      render(Array.isArray(rows) ? rows : []);
+    } catch (error) {
+      $("#app").innerHTML = card(`<div class="text-rose-300">${esc(error.message)}</div>`);
+    }
+  }
+
+  function render(rows) {
+    const tableRows = rows.map((r) => {
+      const archived = !!r.archived_at;
+      const enabled = r.enabled !== false;
+      const count = Array.isArray(r.items) ? r.items.length : 0;
+      const refName = `$artifact:${r.name}`;
+      const status = archived
+        ? badge("archived", "slate")
+        : enabled ? badge("active", "green") : badge("disabled", "amber");
+      const actions = !isAdmin ? "" : `
+        <button class="artEdit rounded-xl border border-slate-700 bg-slate-900 px-2.5 py-1 text-xs hover:bg-slate-800 mr-1" data-id="${esc(r.id)}">Edit</button>
+        ${archived
+          ? `<button class="artUnarchive rounded-xl border border-emerald-900 bg-emerald-950/40 px-2.5 py-1 text-xs text-emerald-100 mr-1" data-id="${esc(r.id)}">Unarchive</button>`
+          : `<button class="artToggle rounded-xl border ${enabled ? "border-amber-900 bg-amber-950/40 text-amber-100" : "border-emerald-900 bg-emerald-950/40 text-emerald-100"} px-2.5 py-1 text-xs mr-1" data-id="${esc(r.id)}" data-enabled="${enabled}">${enabled ? "Disable" : "Enable"}</button>`}
+        ${archived
+          ? `<button class="artDelete rounded-xl border border-rose-900 bg-rose-950/40 px-2.5 py-1 text-xs text-rose-100" data-id="${esc(r.id)}">Delete</button>`
+          : `<button class="artArchive rounded-xl border border-slate-700 bg-slate-900 px-2.5 py-1 text-xs hover:bg-slate-800" data-id="${esc(r.id)}">Archive</button>`}
+      `;
+      return `<tr class="border-t border-slate-800">
+        <td class="px-3 py-3 font-medium">${esc(r.name)}</td>
+        <td class="px-3 py-3 text-xs text-slate-400">${esc(r.description || "")}</td>
+        <td class="px-3 py-3">${badge(r.kind, "cyan")}</td>
+        <td class="px-3 py-3 text-xs">${count} item${count === 1 ? "" : "s"}</td>
+        <td class="px-3 py-3">${status}</td>
+        <td class="px-3 py-3 font-mono text-xs text-slate-400">${esc(refName)}</td>
+        <td class="px-3 py-3 text-right whitespace-nowrap">${actions}</td>
+      </tr>`;
+    }).join("");
+
+    const isEditing = !!editing;
+    const form = !isAdmin ? "" : card(`
+      <div class="flex items-center justify-between mb-3">
+        <div class="font-semibold">${isEditing ? `Edit artifact: ${esc(editing.name)}` : "New artifact"}</div>
+        ${isEditing ? `<button id="artCancel" class="text-xs text-slate-400 hover:text-slate-200" type="button">Cancel</button>` : ""}
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+        <div class="space-y-1">
+          <label class="text-xs text-slate-300">Name (referenced in policy rules as <span class="font-mono">$artifact:name</span>)</label>
+          <input id="artName" class="w-full rounded-2xl border border-slate-800 bg-slate-950 px-3 py-2 text-sm" placeholder="engineering_users" value="${esc(editing?.name || "")}" ${isEditing ? "disabled" : ""} />
+        </div>
+        <div class="space-y-1">
+          <label class="text-xs text-slate-300">Kind</label>
+          <select id="artKind" class="w-full rounded-2xl border border-slate-800 bg-slate-950 px-3 py-2 text-sm">${kindOptions(editing?.kind)}</select>
+        </div>
+        <div class="md:col-span-2 space-y-1">
+          <label class="text-xs text-slate-300">Description</label>
+          <input id="artDesc" class="w-full rounded-2xl border border-slate-800 bg-slate-950 px-3 py-2 text-sm" placeholder="Optional description" value="${esc(editing?.description || "")}" />
+        </div>
+        <div class="md:col-span-2 space-y-1">
+          <label class="text-xs text-slate-300">Items (one per line)</label>
+          <textarea id="artItems" rows="8" class="w-full rounded-2xl border border-slate-800 bg-slate-950 px-3 py-2 font-mono text-xs" placeholder="${esc(ARTIFACT_KIND_META[editing?.kind || "user_list"].placeholder)}">${esc((editing?.items || []).join("\n"))}</textarea>
+        </div>
+      </div>
+      <div class="flex items-center gap-3">
+        <button id="artSave" class="rounded-2xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400" type="button">${isEditing ? "Save" : "Create"}</button>
+        <div id="artMessage" class="text-sm text-slate-400"></div>
+      </div>
+    `);
+
+    $("#app").innerHTML = `
+      <div class="mb-4 flex items-center justify-between">
+        <div class="text-sm text-slate-400">${isAdmin ? "Artifacts are tenant-scoped lists and regex patterns reused across policy rules." : "Tenant admins can create and edit artifacts. Analysts have read-only access."}</div>
+        <label class="flex items-center gap-2 text-xs text-slate-300">
+          <input id="artShowArchived" type="checkbox" ${includeArchived ? "checked" : ""} /> Show archived
+        </label>
+      </div>
+      ${form}
+      <div class="mt-4">${card(`
+        <div class="overflow-x-auto rounded-2xl border border-slate-800">
+          <table class="w-full text-left text-sm">
+            <thead class="text-xs uppercase tracking-[0.18em] text-slate-500">
+              <tr>
+                <th class="px-3 py-2">Name</th>
+                <th class="px-3 py-2">Description</th>
+                <th class="px-3 py-2">Kind</th>
+                <th class="px-3 py-2">Items</th>
+                <th class="px-3 py-2">Status</th>
+                <th class="px-3 py-2">Reference</th>
+                <th class="px-3 py-2"></th>
+              </tr>
+            </thead>
+            <tbody>${tableRows || emptyRow("No artifacts yet.", 7)}</tbody>
+          </table>
+        </div>
+      `)}</div>
+    `;
+
+    $("#artShowArchived").addEventListener("change", (event) => {
+      includeArchived = event.target.checked;
+      refresh();
+    });
+
+    if (!isAdmin) return;
+
+    $("#artKind").addEventListener("change", (event) => {
+      const meta = ARTIFACT_KIND_META[event.target.value];
+      if (meta) $("#artItems").setAttribute("placeholder", meta.placeholder);
+    });
+    if (isEditing) {
+      $("#artCancel").addEventListener("click", () => { editing = null; refresh(); });
+    }
+    $("#artSave").addEventListener("click", async () => {
+      const name = ($("#artName").value || "").trim();
+      const kind = $("#artKind").value;
+      const description = ($("#artDesc").value || "").trim();
+      const items = ($("#artItems").value || "").split("\n").map((s) => s.trim()).filter(Boolean);
+      const message = $("#artMessage");
+      message.className = "text-sm text-slate-400";
+      if (!name) { message.className = "text-sm text-rose-300"; message.textContent = "Name required."; return; }
+      if (!items.length) { message.className = "text-sm text-rose-300"; message.textContent = "At least one item required."; return; }
+      message.textContent = isEditing ? "Saving..." : "Creating...";
+      try {
+        if (isEditing) {
+          await api(`/api/customer/artifacts/id/${encodeURIComponent(editing.id)}`, {
+            method: "PUT",
+            body: JSON.stringify({ description, kind, items }),
+          });
+        } else {
+          await api("/api/customer/artifacts", {
+            method: "POST",
+            body: JSON.stringify({ name, description, kind, items }),
+          });
+        }
+        editing = null;
+        refresh();
+      } catch (error) {
+        message.className = "text-sm text-rose-300";
+        message.textContent = error.message;
+      }
+    });
+    document.querySelectorAll(".artEdit").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        editing = rows.find((r) => r.id === btn.dataset.id) || null;
+        render(rows);
+      });
+    });
+    document.querySelectorAll(".artToggle").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        try {
+          await api(`/api/customer/artifacts/id/${encodeURIComponent(btn.dataset.id)}/toggle`, {
+            method: "PATCH",
+            body: JSON.stringify({ enabled: btn.dataset.enabled !== "true" }),
+          });
+          refresh();
+        } catch (error) {
+          $("#app").innerHTML = card(`<div class="text-rose-300">${esc(error.message)}</div>`);
+        }
+      });
+    });
+    document.querySelectorAll(".artArchive").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        if (!window.confirm("Archive this artifact? Policies that reference it will stop matching until unarchived or replaced.")) return;
+        try {
+          await api(`/api/customer/artifacts/id/${encodeURIComponent(btn.dataset.id)}/archive`, { method: "PATCH" });
+          refresh();
+        } catch (error) {
+          $("#app").innerHTML = card(`<div class="text-rose-300">${esc(error.message)}</div>`);
+        }
+      });
+    });
+    document.querySelectorAll(".artUnarchive").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        try {
+          await api(`/api/customer/artifacts/id/${encodeURIComponent(btn.dataset.id)}/unarchive`, { method: "PATCH" });
+          refresh();
+        } catch (error) {
+          $("#app").innerHTML = card(`<div class="text-rose-300">${esc(error.message)}</div>`);
+        }
+      });
+    });
+    document.querySelectorAll(".artDelete").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        if (!window.confirm("Permanently delete this artifact? This cannot be undone.")) return;
+        try {
+          await api(`/api/customer/artifacts/id/${encodeURIComponent(btn.dataset.id)}`, { method: "DELETE" });
+          refresh();
+        } catch (error) {
+          $("#app").innerHTML = card(`<div class="text-rose-300">${esc(error.message)}</div>`);
+        }
+      });
+    });
+  }
+
+  await refresh();
 }
 
 async function viewApiKeys() {
@@ -1093,6 +1332,7 @@ async function route() {
   try {
     if (routeName === "policies") return await viewPolicies();
     if (routeName === "policy-builder") return await viewPolicyBuilder();
+    if (routeName === "artifacts") return await viewArtifacts();
     if (routeName === "api-keys") return await viewApiKeys();
     if (routeName === "proxy") return await viewProxy();
     if (routeName === "scan") return await viewScan();

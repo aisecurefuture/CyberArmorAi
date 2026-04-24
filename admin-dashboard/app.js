@@ -3,6 +3,8 @@
 //   #/scan, #/audit, #/compliance, #/siem, #/identity, #/endpoints, #/dlp,
 //   #/incidents, #/telemetry, #/api-keys, #/reports
 
+import { mountPolicyBuilder } from "/shared/policy-builder.js";
+
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
@@ -12,6 +14,7 @@ const NAV = [
   { id: "tenants",        label: "Tenants",           icon: "🏢", hash: "#/tenants" },
   { id: "policies",       label: "Policies",          icon: "📋", hash: "#/policies" },
   { id: "policy-builder", label: "Policy Builder",    icon: "🔧", hash: "#/policy-builder" },
+  { id: "artifacts",      label: "Artifacts",         icon: "🧩", hash: "#/artifacts" },
   { id: "api-keys",       label: "API Keys",          icon: "🔑", hash: "#/api-keys" },
   { id: "proxy",          label: "Proxy Controls",    icon: "🔀", hash: "#/proxy" },
   { id: "scan",           label: "Scan Tools",        icon: "🔍", hash: "#/scan" },
@@ -491,193 +494,224 @@ async function viewPolicies() {
 // ---------- Policy Builder (AND/OR condition groups) ----------
 function viewPolicyBuilder() {
   const app = $("#app");
-  let conditionState = { operator: "AND", conditions: [] };
+  const polBase = svcUrl("pol");
+  const polHdrs = svcHeaders("pol");
+  const tenant = getTenant();
+  app.innerHTML = loading();
+  mountPolicyBuilder({
+    container: app,
+    tenantId: tenant,
+    fetchJson: async (path, init = {}) => {
+      const url = path.startsWith("http") ? path : `${polBase}${path}`;
+      return apiFetch(url, {
+        ...init,
+        headers: { ...polHdrs, ...(init.headers || {}) },
+      });
+    },
+    paths: {
+      artifacts: `/artifacts/${encodeURIComponent(tenant)}`,
+      createPolicy: "/policies",
+    },
+    notify: ({ type, message }) => { if (message) toast(message, type === "error" ? "error" : "success"); },
+    onSaved: () => { location.hash = "#/policies"; },
+  });
+}
 
-  function renderConditionGroup(group, path = "") {
-    const isOr = group.operator === "OR";
-    const cls = isOr ? "or-group" : "";
-    let html = `<div class="condition-group ${cls} mb-3 py-2">
-      <div class="flex items-center gap-2 mb-2">
-        <select class="text-xs px-2 py-1 rounded-lg bg-slate-900 border border-slate-800" data-path="${path}" data-field="operator">
-          <option value="AND" ${!isOr?"selected":""}>AND</option>
-          <option value="OR" ${isOr?"selected":""}>OR</option>
-        </select>
-        <button class="text-xs px-2 py-1 rounded-lg bg-indigo-900/40 text-indigo-200 border border-indigo-900" data-add-rule="${path}">+ Rule</button>
-        <button class="text-xs px-2 py-1 rounded-lg bg-amber-900/40 text-amber-200 border border-amber-900" data-add-group="${path}">+ Group</button>
-        ${path ? `<button class="text-xs px-2 py-1 rounded-lg bg-rose-900/40 text-rose-200 border border-rose-900" data-remove-group="${path}">Remove</button>` : ""}
-      </div>`;
+// ---------- Artifacts ----------
+const ARTIFACT_KIND_META = {
+  user_list:    { label: "User IDs",    placeholder: "alice@corp.com\nbob@corp.com" },
+  email_list:   { label: "Emails",      placeholder: "alice@corp.com" },
+  group_list:   { label: "Groups",      placeholder: "engineering\nsecurity-admins" },
+  domain_list:  { label: "Domains",     placeholder: "chat.openai.com\nclaude.ai" },
+  host_list:    { label: "Hostnames",   placeholder: "dev-laptop-01\ndev-laptop-02" },
+  ip_list:      { label: "IP addresses", placeholder: "10.0.0.5" },
+  cidr_list:    { label: "CIDR ranges", placeholder: "10.0.0.0/24" },
+  keyword_list: { label: "Keywords",    placeholder: "password\napi_key" },
+  regex:        { label: "Regex patterns", placeholder: "\\b[0-9]{3}-[0-9]{2}-[0-9]{4}\\b" },
+};
 
-    (group.conditions || []).forEach((cond, i) => {
-      const cp = path ? `${path}.${i}` : String(i);
-      if (cond.operator) {
-        html += renderConditionGroup(cond, cp);
-      } else {
-        html += `<div class="flex items-center gap-2 mb-1 ml-4">
-          <input class="w-32 text-xs px-2 py-1 rounded-lg bg-slate-900 border border-slate-800" placeholder="field" value="${esc(cond.field||"")}" data-path="${cp}" data-field="field" />
-          <select class="text-xs px-2 py-1 rounded-lg bg-slate-900 border border-slate-800" data-path="${cp}" data-field="op">
-            ${["equals","not_equals","contains","not_contains","matches","regex","in","not_in","gt","gte","lt","lte","exists","not_exists"].map(o=>`<option ${cond.op===o?"selected":""}>${o}</option>`).join("")}
-          </select>
-          <input class="w-40 text-xs px-2 py-1 rounded-lg bg-slate-900 border border-slate-800" placeholder="value" value="${esc(cond.value||"")}" data-path="${cp}" data-field="value" />
-          <button class="text-xs text-rose-400 hover:text-rose-300" data-remove-rule="${cp}">✕</button>
-        </div>`;
-      }
-    });
+async function viewArtifacts() {
+  const app = $("#app");
+  app.innerHTML = loading();
+  const polBase = svcUrl("pol");
+  const polHdrs = svcHeaders("pol");
+  const tenant = getTenant();
+  let includeArchived = false;
+  let editing = null; // null = creating, {id,...} = editing
 
-    html += `</div>`;
-    return html;
+  async function refresh() {
+    try {
+      const qs = includeArchived ? "?include_archived=true" : "";
+      const rows = await apiFetch(`${polBase}/artifacts/${tenant}${qs}`, { headers: polHdrs });
+      render(Array.isArray(rows) ? rows : []);
+    } catch (e) {
+      app.innerHTML = card(`<div class="text-rose-400">Error: ${esc(e.message)}</div>`);
+    }
   }
 
-  function getGroupAtPath(path) {
-    if (!path) return conditionState;
-    const parts = path.split(".");
-    let node = conditionState;
-    for (const p of parts) node = node.conditions[parseInt(p)];
-    return node;
+  function renderKindOptions(selected) {
+    return Object.keys(ARTIFACT_KIND_META).map(k =>
+      `<option value="${k}" ${selected === k ? "selected" : ""}>${esc(ARTIFACT_KIND_META[k].label)} (${k})</option>`
+    ).join("");
   }
 
-  function render() {
-    app.innerHTML = card(`
-      <div class="font-semibold mb-4">Policy Builder</div>
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-        <div class="space-y-2">
-          <label class="text-xs text-slate-300">Policy Name</label>
-          <input id="pb_name" class="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800" placeholder="e.g. block-prompt-injection" />
+  function render(rows) {
+    const tableRows = rows.map(r => {
+      const archived = !!r.archived_at;
+      const enabled = r.enabled !== false;
+      const count = Array.isArray(r.items) ? r.items.length : 0;
+      const refName = `$artifact:${r.name}`;
+      const status = archived
+        ? badge("Archived", "slate")
+        : enabled ? badge("Active", "green") : badge("Disabled", "amber");
+      return `<tr class="hover:bg-slate-900/50">
+        <td class="py-2 px-3 font-medium">${esc(r.name)}</td>
+        <td class="py-2 px-3 text-xs text-slate-400">${esc(r.description || "")}</td>
+        <td class="py-2 px-3">${badge(r.kind, "indigo")}</td>
+        <td class="py-2 px-3 text-xs">${count} item${count === 1 ? "" : "s"}</td>
+        <td class="py-2 px-3">${status}</td>
+        <td class="py-2 px-3 text-xs font-mono text-slate-400">${esc(refName)}</td>
+        <td class="py-2 px-3 text-right whitespace-nowrap">
+          <button class="text-xs px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 mr-1" data-edit="${esc(r.id)}">Edit</button>
+          ${archived
+            ? `<button class="text-xs px-2 py-1 rounded-lg bg-emerald-900/40 text-emerald-200 border border-emerald-900 mr-1" data-unarchive="${esc(r.id)}">Unarchive</button>`
+            : `<button class="text-xs px-2 py-1 rounded-lg ${enabled?'bg-amber-900/40 text-amber-200 border-amber-900':'bg-emerald-900/40 text-emerald-200 border-emerald-900'} border mr-1" data-toggle="${esc(r.id)}" data-enabled="${enabled}">${enabled?'Disable':'Enable'}</button>`}
+          ${archived
+            ? `<button class="text-xs px-2 py-1 rounded-lg bg-rose-900/40 text-rose-200 border border-rose-900" data-delete="${esc(r.id)}">Delete</button>`
+            : `<button class="text-xs px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700" data-archive="${esc(r.id)}">Archive</button>`}
+        </td>
+      </tr>`;
+    }).join("");
+
+    const isEditing = !!editing;
+    const formTitle = isEditing ? `Edit artifact: ${esc(editing.name)}` : "New artifact";
+    const form = card(`
+      <div class="flex items-center justify-between mb-3">
+        <div class="font-semibold">${formTitle}</div>
+        ${isEditing ? `<button id="art_cancel" class="text-xs text-slate-400 hover:text-slate-200">Cancel</button>` : ""}
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+        <div class="space-y-1">
+          <label class="text-xs text-slate-300">Name (used in policy rules as <span class="font-mono">$artifact:name</span>)</label>
+          <input id="art_name" class="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-sm" placeholder="e.g. engineering_users" value="${esc(editing?.name || "")}" ${isEditing ? "disabled" : ""} />
         </div>
-        <div class="space-y-2">
+        <div class="space-y-1">
+          <label class="text-xs text-slate-300">Kind</label>
+          <select id="art_kind" class="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-sm">
+            ${renderKindOptions(editing?.kind)}
+          </select>
+        </div>
+        <div class="md:col-span-2 space-y-1">
           <label class="text-xs text-slate-300">Description</label>
-          <input id="pb_desc" class="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800" placeholder="Description" />
+          <input id="art_desc" class="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-sm" placeholder="Optional description" value="${esc(editing?.description || "")}" />
         </div>
-        <div class="space-y-2">
-          <label class="text-xs text-slate-300">Action</label>
-          <select id="pb_action" class="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800">
-            <option value="monitor">Monitor</option><option value="warn">Warn</option><option value="block">Block</option><option value="allow">Allow</option>
-          </select>
-        </div>
-        <div class="space-y-2">
-          <label class="text-xs text-slate-300">Priority (0=highest)</label>
-          <input id="pb_priority" type="number" class="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800" value="100" />
+        <div class="md:col-span-2 space-y-1">
+          <label class="text-xs text-slate-300">Items (one per line)</label>
+          <textarea id="art_items" rows="8" class="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 font-mono text-xs"
+            placeholder="${esc(ARTIFACT_KIND_META[editing?.kind || 'user_list'].placeholder)}">${esc((editing?.items || []).join("\n"))}</textarea>
         </div>
       </div>
-      <div class="mb-4">
-        <label class="text-xs text-slate-300 mb-2 block">Compliance Frameworks (comma-separated)</label>
-        <input id="pb_frameworks" class="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800" placeholder="NIST-CSF, PCI-DSS, SOC2, GDPR" />
+      <div class="flex items-center gap-2">
+        <button id="art_save" class="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-sm">${isEditing ? "Save" : "Create"}</button>
+        <div class="text-xs text-slate-400">Tenant: <span class="font-mono text-slate-300">${esc(tenant)}</span></div>
       </div>
-      <div class="font-semibold mb-2 text-sm">Conditions</div>
-      <div id="conditionTree">${renderConditionGroup(conditionState)}</div>
-      <div class="mt-4 flex gap-2">
-        <button id="pb_save" class="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-sm">Create Policy</button>
-        <button id="pb_preview" class="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm">Preview JSON</button>
-      </div>
-      <pre id="pb_json" class="mt-4 p-4 rounded-xl bg-slate-900 border border-slate-800 text-xs font-mono overflow-x-auto hidden"></pre>
     `);
 
-    // Bind events
-    $$("[data-add-rule]").forEach(btn => {
-      btn.onclick = () => {
-        const group = getGroupAtPath(btn.dataset.addRule);
-        group.conditions.push({ field: "", op: "equals", value: "" });
-        render();
-      };
-    });
-    $$("[data-add-group]").forEach(btn => {
-      btn.onclick = () => {
-        const group = getGroupAtPath(btn.dataset.addGroup);
-        group.conditions.push({ operator: "AND", conditions: [] });
-        render();
-      };
-    });
-    $$("[data-remove-rule]").forEach(btn => {
-      btn.onclick = () => {
-        const parts = btn.dataset.removeRule.split(".");
-        const idx = parseInt(parts.pop());
-        const parent = getGroupAtPath(parts.join("."));
-        parent.conditions.splice(idx, 1);
-        render();
-      };
-    });
-    $$("[data-remove-group]").forEach(btn => {
-      btn.onclick = () => {
-        const parts = btn.dataset.removeGroup.split(".");
-        const idx = parseInt(parts.pop());
-        const parent = getGroupAtPath(parts.join("."));
-        parent.conditions.splice(idx, 1);
-        render();
-      };
-    });
+    app.innerHTML = `
+      <div class="flex items-center justify-between mb-4">
+        <div class="text-sm text-slate-400">Artifacts are tenant-scoped lists and regex patterns reused across policy rules.</div>
+        <label class="text-xs text-slate-300 flex items-center gap-2">
+          <input id="art_showArchived" type="checkbox" ${includeArchived ? "checked" : ""} /> Show archived
+        </label>
+      </div>
+      ${form}
+      <div class="mt-4">${card(tableWrap(
+        th("Name") + th("Description") + th("Kind") + th("Items") + th("Status") + th("Reference") + th(""),
+        tableRows || `<tr><td colspan="7">${emptyState("No artifacts yet — create one above.")}</td></tr>`
+      ))}</div>`;
 
-    // Field change handlers
-    $$("[data-path][data-field]").forEach(input => {
-      const handler = () => {
-        const path = input.dataset.path;
-        const field = input.dataset.field;
-        if (field === "operator") {
-          const group = getGroupAtPath(path);
-          group.operator = input.value;
-        } else {
-          const parts = path.split(".");
-          const idx = parseInt(parts.pop());
-          const parent = getGroupAtPath(parts.join("."));
-          parent.conditions[idx][field] = input.value;
-        }
-      };
-      input.oninput = handler;
-      input.onchange = handler;
-    });
-
-    const previewBtn = $("#pb_preview");
-    if (previewBtn) previewBtn.onclick = () => {
-      const json = buildPolicyJson();
-      const pre = $("#pb_json");
-      pre.textContent = JSON.stringify(json, null, 2);
-      pre.classList.toggle("hidden");
+    // Bindings
+    $("#art_showArchived").onchange = (e) => { includeArchived = e.target.checked; refresh(); };
+    $("#art_kind").onchange = (e) => {
+      const meta = ARTIFACT_KIND_META[e.target.value];
+      if (meta) $("#art_items").setAttribute("placeholder", meta.placeholder);
     };
+    if (isEditing) $("#art_cancel").onclick = () => { editing = null; refresh(); };
 
-    const saveBtn = $("#pb_save");
-    if (saveBtn) saveBtn.onclick = async () => {
-      const json = buildPolicyJson();
-      if (!json.name) { toast("Policy name required", "error"); return; }
+    $("#art_save").onclick = async () => {
+      const name = ($("#art_name").value || "").trim();
+      const kind = $("#art_kind").value;
+      const description = ($("#art_desc").value || "").trim();
+      const items = ($("#art_items").value || "").split("\n").map(s => s.trim()).filter(Boolean);
+      if (!name) { toast("Name required", "error"); return; }
+      if (!items.length) { toast("At least one item required", "error"); return; }
       try {
-        await apiFetch(`${svcUrl("pol")}/policies`, {
-          method: "POST", headers: svcHeaders("pol"), body: JSON.stringify(json),
-        });
-        toast("Policy created!", "success");
-        location.hash = "#/policies";
-      } catch (e) { toast(e.message, "error"); }
-    };
-  }
-
-  function buildPolicyJson() {
-    // Policy service expects condition trees under `rules` (not `conditions`).
-    function toEngineTree(node) {
-      const next = { operator: node?.operator || "AND", rules: [] };
-      const children = Array.isArray(node?.conditions) ? node.conditions : [];
-      for (const child of children) {
-        if (Array.isArray(child?.conditions)) {
-          next.rules.push(toEngineTree(child));
+        if (isEditing) {
+          await apiFetch(`${polBase}/artifacts/id/${encodeURIComponent(editing.id)}`, {
+            method: "PUT", headers: polHdrs,
+            body: JSON.stringify({ description, kind, items }),
+          });
         } else {
-          next.rules.push({
-            field: child?.field || "",
-            operator: child?.op || child?.operator || "equals",
-            value: child?.value ?? "",
+          await apiFetch(`${polBase}/artifacts`, {
+            method: "POST", headers: polHdrs,
+            body: JSON.stringify({ name, description, kind, items, tenant_id: tenant }),
           });
         }
-      }
-      return next;
-    }
-
-    return {
-      tenant_id: getTenant(),
-      name: ($("#pb_name")?.value || "").trim(),
-      description: ($("#pb_desc")?.value || "").trim(),
-      action: $("#pb_action")?.value || "monitor",
-      priority: parseInt($("#pb_priority")?.value || "100"),
-      conditions: toEngineTree(conditionState),
-      compliance_frameworks: ($("#pb_frameworks")?.value || "").split(",").map(s=>s.trim()).filter(Boolean),
-      enabled: true,
+        toast(isEditing ? "Artifact updated" : "Artifact created", "success");
+        editing = null;
+        refresh();
+      } catch (e) { toast(e.message, "error"); }
     };
+
+    $$("[data-edit]").forEach(btn => {
+      btn.onclick = () => {
+        editing = rows.find(r => r.id === btn.dataset.edit) || null;
+        render(rows);
+      };
+    });
+    $$("[data-toggle]").forEach(btn => {
+      btn.onclick = async () => {
+        try {
+          await apiFetch(`${polBase}/artifacts/id/${encodeURIComponent(btn.dataset.toggle)}/toggle`, {
+            method: "PATCH", headers: polHdrs,
+            body: JSON.stringify({ enabled: btn.dataset.enabled !== "true" }),
+          });
+          refresh();
+        } catch (e) { toast(e.message, "error"); }
+      };
+    });
+    $$("[data-archive]").forEach(btn => {
+      btn.onclick = async () => {
+        if (!(await confirm("Archive artifact", "Archived artifacts stop being evaluated in policies. You can unarchive later."))) return;
+        try {
+          await apiFetch(`${polBase}/artifacts/id/${encodeURIComponent(btn.dataset.archive)}/archive`, { method: "PATCH", headers: polHdrs });
+          toast("Archived", "success");
+          refresh();
+        } catch (e) { toast(e.message, "error"); }
+      };
+    });
+    $$("[data-unarchive]").forEach(btn => {
+      btn.onclick = async () => {
+        try {
+          await apiFetch(`${polBase}/artifacts/id/${encodeURIComponent(btn.dataset.unarchive)}/unarchive`, { method: "PATCH", headers: polHdrs });
+          toast("Unarchived", "success");
+          refresh();
+        } catch (e) { toast(e.message, "error"); }
+      };
+    });
+    $$("[data-delete]").forEach(btn => {
+      btn.onclick = async () => {
+        if (!(await confirm("Delete artifact", "Permanently remove this artifact. Policies that reference it will match nothing until updated."))) return;
+        try {
+          await apiFetch(`${polBase}/artifacts/id/${encodeURIComponent(btn.dataset.delete)}`, { method: "DELETE", headers: polHdrs });
+          toast("Deleted", "success");
+          refresh();
+        } catch (e) { toast(e.message, "error"); }
+      };
+    });
   }
 
-  render();
+  refresh();
 }
 
 // ---------- API Keys ----------
@@ -2367,6 +2401,7 @@ const ROUTES = {
   "tenants":        { title: "Tenants",            subtitle: "Multi-tenant organization management",     fn: viewTenants },
   "policies":       { title: "Policies",           subtitle: "Policy rules and enforcement configuration", fn: viewPolicies },
   "policy-builder": { title: "Policy Builder",     subtitle: "Create policies with AND/OR conditions",   fn: viewPolicyBuilder },
+  "artifacts":      { title: "Artifacts",           subtitle: "Reusable lists and regex patterns referenced from policies", fn: viewArtifacts },
   "api-keys":       { title: "API Keys",           subtitle: "PQC-encrypted key management and rotation", fn: viewApiKeys },
   "proxy":          { title: "Proxy Controls",     subtitle: "URL filtering and AI traffic inspection",  fn: viewProxy },
   "scan":           { title: "Scan Tools",         subtitle: "Prompt injection, PII, and output safety scanning", fn: viewScan },

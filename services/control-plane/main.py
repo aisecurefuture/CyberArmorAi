@@ -1137,6 +1137,46 @@ def _fetch_ai_router(path: str, tenant_id: str) -> Any:
         return {}
 
 
+def _call_policy_service(
+    method: str,
+    path: str,
+    tenant_id: str,
+    json_body: Optional[Dict[str, Any]] = None,
+    params: Optional[Dict[str, Any]] = None,
+) -> Any:
+    """General-purpose proxy call to the policy service.
+
+    Raises HTTPException on non-2xx so customer-portal clients see accurate
+    upstream errors instead of a silent empty response.
+    """
+    policy_url = os.getenv("POLICY_SERVICE_URL", "http://policy:8001")
+    policy_key = os.getenv("POLICY_API_SECRET", DEFAULT_API_KEY)
+    target = f"{policy_url.rstrip('/')}{path}"
+    headers = {**build_auth_headers(policy_url, policy_key), "x-tenant-id": tenant_id}
+    try:
+        resp = httpx.request(
+            method,
+            target,
+            headers=headers,
+            params=params,
+            json=json_body,
+            timeout=10.0,
+        )
+    except Exception as exc:
+        logger.warning("policy_proxy_error tenant=%s method=%s path=%s err=%s", tenant_id, method, path, exc)
+        raise HTTPException(status_code=502, detail="policy service unavailable")
+    if resp.status_code >= 400:
+        detail: Any
+        try:
+            detail = resp.json().get("detail", resp.text)
+        except Exception:
+            detail = resp.text
+        raise HTTPException(status_code=resp.status_code, detail=detail)
+    if resp.status_code == 204 or not resp.content:
+        return {"status": "ok"}
+    return resp.json()
+
+
 def _tenant_agent_rows(db: Session, tenant_id: str, limit: int = 200) -> List[Dict[str, Any]]:
     agents_by_id: Dict[str, Dict[str, Any]] = {
         a.get("agent_id"): dict(a)
@@ -1204,6 +1244,16 @@ def customer_overview(
 @app.get("/customer/policies")
 def customer_policies(ctx: Annotated[CustomerContext, Depends(get_customer_context)]) -> Any:
     return _fetch_policy_service(f"/policies/{ctx.tenant_id}", ctx.tenant_id)
+
+
+@app.post("/customer/policies")
+def customer_create_policy(
+    payload: Dict[str, Any],
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+) -> Any:
+    payload = dict(payload or {})
+    payload["tenant_id"] = ctx.tenant_id
+    return _call_policy_service("POST", "/policies", ctx.tenant_id, json_body=payload)
 
 
 @app.get("/customer/agents")
@@ -1363,6 +1413,116 @@ def customer_disable_api_key(
     db.commit()
     db.refresh(record)
     return record
+
+
+# --- Customer: Artifacts (tenant-scoped lists and regex) --------------------
+
+
+@app.get("/customer/artifacts/kinds")
+def customer_artifact_kinds(
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+) -> Any:
+    return _call_policy_service("GET", "/artifacts/kinds", ctx.tenant_id)
+
+
+@app.get("/customer/artifacts")
+def customer_list_artifacts(
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    kind: Optional[str] = None,
+    enabled_only: bool = False,
+    include_archived: bool = False,
+) -> Any:
+    params = {"enabled_only": enabled_only, "include_archived": include_archived}
+    if kind:
+        params["kind"] = kind
+    return _call_policy_service(
+        "GET", f"/artifacts/{ctx.tenant_id}", ctx.tenant_id, params=params,
+    )
+
+
+@app.post("/customer/artifacts")
+def customer_upsert_artifact(
+    payload: Dict[str, Any],
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+) -> Any:
+    payload = dict(payload or {})
+    payload["tenant_id"] = ctx.tenant_id  # tenant-scoping is non-negotiable
+    return _call_policy_service("POST", "/artifacts", ctx.tenant_id, json_body=payload)
+
+
+@app.put("/customer/artifacts/id/{artifact_id}")
+def customer_update_artifact(
+    artifact_id: str,
+    payload: Dict[str, Any],
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+) -> Any:
+    # Upstream endpoint doesn't use the tenant header for auth, but verify
+    # tenant scope by reading the artifact first to prevent cross-tenant PUT.
+    existing = _call_policy_service(
+        "GET", f"/artifacts/{ctx.tenant_id}", ctx.tenant_id,
+    )
+    if not any(a.get("id") == artifact_id for a in existing if isinstance(a, dict)):
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    return _call_policy_service(
+        "PUT", f"/artifacts/id/{artifact_id}", ctx.tenant_id, json_body=payload,
+    )
+
+
+@app.patch("/customer/artifacts/id/{artifact_id}/toggle")
+def customer_toggle_artifact(
+    artifact_id: str,
+    payload: Dict[str, Any],
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+) -> Any:
+    existing = _call_policy_service("GET", f"/artifacts/{ctx.tenant_id}", ctx.tenant_id)
+    if not any(a.get("id") == artifact_id for a in existing if isinstance(a, dict)):
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    return _call_policy_service(
+        "PATCH", f"/artifacts/id/{artifact_id}/toggle", ctx.tenant_id, json_body=payload,
+    )
+
+
+@app.patch("/customer/artifacts/id/{artifact_id}/archive")
+def customer_archive_artifact(
+    artifact_id: str,
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+) -> Any:
+    existing = _call_policy_service("GET", f"/artifacts/{ctx.tenant_id}", ctx.tenant_id)
+    if not any(a.get("id") == artifact_id for a in existing if isinstance(a, dict)):
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    return _call_policy_service(
+        "PATCH", f"/artifacts/id/{artifact_id}/archive", ctx.tenant_id,
+    )
+
+
+@app.patch("/customer/artifacts/id/{artifact_id}/unarchive")
+def customer_unarchive_artifact(
+    artifact_id: str,
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+) -> Any:
+    existing = _call_policy_service(
+        "GET", f"/artifacts/{ctx.tenant_id}", ctx.tenant_id,
+        params={"include_archived": True},
+    )
+    if not any(a.get("id") == artifact_id for a in existing if isinstance(a, dict)):
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    return _call_policy_service(
+        "PATCH", f"/artifacts/id/{artifact_id}/unarchive", ctx.tenant_id,
+    )
+
+
+@app.delete("/customer/artifacts/id/{artifact_id}")
+def customer_delete_artifact(
+    artifact_id: str,
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+) -> Any:
+    existing = _call_policy_service(
+        "GET", f"/artifacts/{ctx.tenant_id}", ctx.tenant_id,
+        params={"include_archived": True},
+    )
+    if not any(a.get("id") == artifact_id for a in existing if isinstance(a, dict)):
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    return _call_policy_service("DELETE", f"/artifacts/id/{artifact_id}", ctx.tenant_id)
 
 
 @app.get("/customer/sso", response_model=CustomerSsoConfigOut)
