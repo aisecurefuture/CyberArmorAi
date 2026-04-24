@@ -31,6 +31,7 @@ from models import (
     CustomerSsoState,
     TelemetryRecord,
     Tenant,
+    TenantPortalConfig,
     TenantUser,
 )
 from uuid import uuid4
@@ -82,6 +83,22 @@ CUSTOMER_DEV_CODE_ECHO = os.getenv("CUSTOMER_PORTAL_AUTH_DEV_CODE_ECHO", "false"
 CUSTOMER_COOKIE_SECURE = os.getenv("CUSTOMER_PORTAL_COOKIE_SECURE", "false").strip().lower() in {"1", "true", "yes", "on"}
 CUSTOMER_SESSION_SECRET = os.getenv("CUSTOMER_PORTAL_SESSION_SECRET") or JWT_SECRET
 CUSTOMER_PORTAL_PUBLIC_URL = os.getenv("CUSTOMER_PORTAL_PUBLIC_URL", "http://localhost:3001").rstrip("/")
+CUSTOMER_PORTAL_CONFIG_SECTIONS = {
+    "policy-builder",
+    "proxy",
+    "scan",
+    "shadow-ai",
+    "compliance",
+    "siem",
+    "dlp",
+    "reports",
+    "providers",
+    "policy-studio",
+    "graph",
+    "risk",
+    "delegations",
+    "onboarding",
+}
 
 
 def _enforce_secure_secrets() -> None:
@@ -258,6 +275,19 @@ class CustomerSsoConfigOut(BaseModel):
         from_attributes = True
 
 
+class TenantPortalConfigIn(BaseModel):
+    config: Dict[str, Any] = Field(default_factory=dict)
+
+
+class TenantPortalConfigOut(BaseModel):
+    tenant_id: str
+    section: str
+    config: Dict[str, Any] = Field(default_factory=dict)
+    updated_by: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
 class CustomerContext(BaseModel):
     email: str
     tenant_id: str
@@ -348,6 +378,24 @@ def _encode_meta_for_db(val: Optional[Dict[str, Any]]) -> Any:
         except Exception:
             return json.dumps({"raw": str(val)})
     return val
+
+
+def _valid_customer_config_section(section: str) -> str:
+    cleaned = (section or "").strip().lower()
+    if cleaned not in CUSTOMER_PORTAL_CONFIG_SECTIONS:
+        raise HTTPException(status_code=404, detail="Unknown customer portal config section")
+    return cleaned
+
+
+def _tenant_portal_config_out(record: TenantPortalConfig) -> TenantPortalConfigOut:
+    return TenantPortalConfigOut(
+        tenant_id=record.tenant_id,
+        section=record.section,
+        config=_coerce_meta(record.config) or {},
+        updated_by=record.updated_by,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+    )
 
 
 def _utcnow() -> datetime:
@@ -1233,6 +1281,88 @@ def customer_incidents(
 @app.get("/customer/providers")
 def customer_providers(ctx: Annotated[CustomerContext, Depends(get_customer_context)]) -> Any:
     return _fetch_ai_router("/ai/providers", ctx.tenant_id)
+
+
+@app.get("/customer/config/{section}", response_model=TenantPortalConfigOut)
+def customer_get_portal_config(
+    section: str,
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    db: Annotated[Session, Depends(get_db)],
+) -> TenantPortalConfigOut:
+    section = _valid_customer_config_section(section)
+    record = (
+        db.query(TenantPortalConfig)
+        .filter(TenantPortalConfig.tenant_id == ctx.tenant_id, TenantPortalConfig.section == section)
+        .first()
+    )
+    if not record:
+        return TenantPortalConfigOut(tenant_id=ctx.tenant_id, section=section, config={})
+    return _tenant_portal_config_out(record)
+
+
+@app.put("/customer/config/{section}", response_model=TenantPortalConfigOut)
+def customer_put_portal_config(
+    section: str,
+    payload: TenantPortalConfigIn,
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> TenantPortalConfigOut:
+    section = _valid_customer_config_section(section)
+    record = (
+        db.query(TenantPortalConfig)
+        .filter(TenantPortalConfig.tenant_id == ctx.tenant_id, TenantPortalConfig.section == section)
+        .first()
+    )
+    if not record:
+        record = TenantPortalConfig(tenant_id=ctx.tenant_id, section=section)
+        db.add(record)
+    record.config = _encode_meta_for_db(payload.config or {})
+    record.updated_by = ctx.email
+    db.commit()
+    db.refresh(record)
+    return _tenant_portal_config_out(record)
+
+
+@app.get("/customer/api-keys", response_model=list[ApiKeyOut])
+def customer_list_api_keys(
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> list[ApiKey]:
+    return (
+        db.query(ApiKey)
+        .filter(ApiKey.tenant_id == ctx.tenant_id)
+        .order_by(ApiKey.created_at.desc())
+        .all()
+    )
+
+
+@app.post("/customer/api-keys", response_model=ApiKeyOut)
+def customer_create_api_key(
+    payload: ApiKeyCreate,
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> ApiKey:
+    role = payload.role if payload.role in {"analyst", "admin", "service"} else "analyst"
+    record = ApiKey(key=str(uuid4()).replace("-", ""), tenant_id=ctx.tenant_id, role=role, active=True)
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    return record
+
+
+@app.patch("/customer/api-keys/{key}/disable", response_model=ApiKeyOut)
+def customer_disable_api_key(
+    key: str,
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> ApiKey:
+    record = db.query(ApiKey).filter(ApiKey.key == key, ApiKey.tenant_id == ctx.tenant_id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="API key not found")
+    record.active = False
+    db.commit()
+    db.refresh(record)
+    return record
 
 
 @app.get("/customer/sso", response_model=CustomerSsoConfigOut)

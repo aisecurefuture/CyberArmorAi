@@ -90,6 +90,19 @@ class CustomerSsoState(Base):
     created_at = Column(DateTime(timezone=True), default=now_utc)
 
 
+class TenantPortalConfig(Base):
+    __tablename__ = "tenant_portal_configs"
+    __table_args__ = (UniqueConstraint("tenant_id", "section", name="uq_tenant_portal_config_section"),)
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    tenant_id = Column(String, nullable=False, index=True)
+    section = Column(String, nullable=False, index=True)
+    config = Column(JSONB().with_variant(Text, "sqlite"), nullable=True)
+    updated_by = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=now_utc)
+    updated_at = Column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+
 class ApiKey(Base):
     __tablename__ = "api_keys"
     key = Column(String, primary_key=True)
