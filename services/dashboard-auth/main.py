@@ -7,11 +7,16 @@ import os
 import secrets
 import smtplib
 import time
+from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from typing import Annotated, Optional
 
-from fastapi import Cookie, FastAPI, HTTPException, Response, status
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Response, status
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from db import Base, SessionLocal, engine, ensure_sqlite_dir
+from models import DashboardSession, LoginCode
 
 logger = logging.getLogger("dashboard_auth")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
@@ -26,7 +31,9 @@ COOKIE_SECURE = os.getenv("ADMIN_DASHBOARD_COOKIE_SECURE", "false").strip().lowe
 SESSION_SECRET = os.getenv("ADMIN_DASHBOARD_SESSION_SECRET", "")
 if not SESSION_SECRET:
     SESSION_SECRET = secrets.token_urlsafe(48)
-    logger.warning("ADMIN_DASHBOARD_SESSION_SECRET is unset; sessions will reset on container restart")
+    logger.warning(
+        "ADMIN_DASHBOARD_SESSION_SECRET is unset; cookie signatures will be invalidated on restart"
+    )
 
 ALLOWED_EMAILS = {
     item.strip().lower()
@@ -34,11 +41,18 @@ ALLOWED_EMAILS = {
     if item.strip()
 }
 
-_codes: dict[str, tuple[str, float]] = {}
-_code_attempts: dict[str, int] = {}
-_sessions: dict[str, tuple[str, float]] = {}
+ensure_sqlite_dir()
+Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="CyberArmor Dashboard Auth", version="0.1.0")
+app = FastAPI(title="CyberArmor Dashboard Auth", version="0.2.0")
+
+
+def get_db() -> Session:
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 
 class CodeRequest(BaseModel):
@@ -81,21 +95,32 @@ def _unpack_session(cookie_value: str | None) -> Optional[str]:
     return token
 
 
-def _session_email(cookie_value: str | None) -> Optional[str]:
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _session_email(db: Session, cookie_value: str | None) -> Optional[str]:
     token = _unpack_session(cookie_value)
     if not token:
         return None
-    item = _sessions.get(token)
-    if not item:
+    row = db.get(DashboardSession, token)
+    if not row:
         return None
-    email, expires_at = item
-    if expires_at < time.time():
-        _sessions.pop(token, None)
+    now = _utcnow()
+    expires = row.expires_at
+    if expires is not None and expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    if expires is None or expires < now:
+        db.delete(row)
+        db.commit()
         return None
-    if email not in ALLOWED_EMAILS:
-        _sessions.pop(token, None)
+    if row.email not in ALLOWED_EMAILS:
+        db.delete(row)
+        db.commit()
         return None
-    return email
+    row.last_seen_at = now
+    db.commit()
+    return row.email
 
 
 def _send_code(email: str, code: str) -> None:
@@ -127,36 +152,65 @@ def _send_code(email: str, code: str) -> None:
         smtp.send_message(msg)
 
 
+def _purge_expired(db: Session) -> None:
+    now = _utcnow()
+    db.query(DashboardSession).filter(DashboardSession.expires_at < now).delete(synchronize_session=False)
+    db.query(LoginCode).filter(LoginCode.expires_at < now).delete(synchronize_session=False)
+    db.commit()
+
+
 @app.get("/health")
 def health() -> dict[str, object]:
     return {"status": "ok", "allowed_email_count": len(ALLOWED_EMAILS)}
 
 
 @app.get("/session")
-def session_check(ca_dashboard_session: Annotated[str | None, Cookie()] = None) -> Response:
-    email = _session_email(ca_dashboard_session)
+def session_check(
+    db: Annotated[Session, Depends(get_db)],
+    ca_dashboard_session: Annotated[str | None, Cookie()] = None,
+) -> Response:
+    email = _session_email(db, ca_dashboard_session)
     if not email:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
     return Response(status_code=status.HTTP_204_NO_CONTENT, headers={"x-dashboard-user-email": email})
 
 
 @app.get("/me")
-def me(ca_dashboard_session: Annotated[str | None, Cookie()] = None) -> dict[str, str]:
-    email = _session_email(ca_dashboard_session)
+def me(
+    db: Annotated[Session, Depends(get_db)],
+    ca_dashboard_session: Annotated[str | None, Cookie()] = None,
+) -> dict[str, str]:
+    email = _session_email(db, ca_dashboard_session)
     if not email:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
     return {"email": email}
 
 
 @app.post("/request-code")
-def request_code(body: CodeRequest) -> dict[str, object]:
+def request_code(
+    body: CodeRequest,
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, object]:
     email = _normalize_email(body.email)
     if not _valid_email(email):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="A valid email is required")
+    _purge_expired(db)
     if email in ALLOWED_EMAILS:
         code = f"{secrets.randbelow(1_000_000):06d}"
-        _codes[email] = (_hash_code(email, code), time.time() + CODE_TTL_SECONDS)
-        _code_attempts[email] = 0
+        expires = _utcnow() + timedelta(seconds=CODE_TTL_SECONDS)
+        existing = db.get(LoginCode, email)
+        if existing is None:
+            db.add(LoginCode(
+                email=email,
+                code_hash=_hash_code(email, code),
+                attempts=0,
+                expires_at=expires,
+            ))
+        else:
+            existing.code_hash = _hash_code(email, code)
+            existing.attempts = 0
+            existing.expires_at = expires
+        db.commit()
         _send_code(email, code)
         if DEV_CODE_ECHO:
             return {"ok": True, "message": "Code generated for authorized email.", "dev_code": code}
@@ -166,32 +220,43 @@ def request_code(body: CodeRequest) -> dict[str, object]:
 
 
 @app.post("/verify-code")
-def verify_code(body: CodeVerify, response: Response) -> dict[str, object]:
+def verify_code(
+    body: CodeVerify,
+    response: Response,
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, object]:
     email = _normalize_email(body.email)
     if not _valid_email(email):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="A valid email is required")
     code = "".join(ch for ch in body.code if ch.isdigit())
-    item = _codes.get(email)
-    if email not in ALLOWED_EMAILS or not item or len(code) != 6:
+    row = db.get(LoginCode, email)
+    if email not in ALLOWED_EMAILS or row is None or len(code) != 6:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired code")
-    expected_hash, expires_at = item
-    if expires_at < time.time():
-        _codes.pop(email, None)
-        _code_attempts.pop(email, None)
+    expires = row.expires_at
+    if expires is not None and expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    if expires is None or expires < _utcnow():
+        db.delete(row)
+        db.commit()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired code")
-    if not hmac.compare_digest(expected_hash, _hash_code(email, code)):
-        attempts = _code_attempts.get(email, 0) + 1
-        if attempts >= MAX_CODE_ATTEMPTS:
-            _codes.pop(email, None)
-            _code_attempts.pop(email, None)
-        else:
-            _code_attempts[email] = attempts
+    if not hmac.compare_digest(row.code_hash, _hash_code(email, code)):
+        row.attempts = (row.attempts or 0) + 1
+        if row.attempts >= MAX_CODE_ATTEMPTS:
+            db.delete(row)
+        db.commit()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired code")
 
-    _codes.pop(email, None)
-    _code_attempts.pop(email, None)
+    db.delete(row)
     token = secrets.token_urlsafe(48)
-    _sessions[token] = (email, time.time() + SESSION_TTL_SECONDS)
+    now = _utcnow()
+    db.add(DashboardSession(
+        token=token,
+        email=email,
+        expires_at=now + timedelta(seconds=SESSION_TTL_SECONDS),
+        created_at=now,
+        last_seen_at=now,
+    ))
+    db.commit()
     response.set_cookie(
         SESSION_COOKIE,
         _pack_session(token),
@@ -205,9 +270,16 @@ def verify_code(body: CodeVerify, response: Response) -> dict[str, object]:
 
 
 @app.post("/logout")
-def logout(response: Response, ca_dashboard_session: Annotated[str | None, Cookie()] = None) -> dict[str, bool]:
+def logout(
+    response: Response,
+    db: Annotated[Session, Depends(get_db)],
+    ca_dashboard_session: Annotated[str | None, Cookie()] = None,
+) -> dict[str, bool]:
     token = _unpack_session(ca_dashboard_session)
     if token:
-        _sessions.pop(token, None)
+        row = db.get(DashboardSession, token)
+        if row is not None:
+            db.delete(row)
+            db.commit()
     response.delete_cookie(SESSION_COOKIE, path="/")
     return {"ok": True}
