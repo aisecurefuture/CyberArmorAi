@@ -1292,8 +1292,25 @@ def customer_overview(
 
 
 @app.get("/customer/policies")
-def customer_policies(ctx: Annotated[CustomerContext, Depends(get_customer_context)]) -> Any:
-    return _fetch_policy_service(f"/policies/{ctx.tenant_id}", ctx.tenant_id)
+def customer_policies(
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    enabled_only: bool = False,
+    action: Optional[str] = None,
+    scope: Optional[str] = None,
+    include_archived: bool = False,
+    tag: Optional[str] = None,
+) -> Any:
+    params: Dict[str, Any] = {
+        "enabled_only": enabled_only,
+        "include_archived": include_archived,
+    }
+    if action:
+        params["action"] = action
+    if scope:
+        params["scope"] = scope
+    if tag:
+        params["tag"] = tag
+    return _call_policy_service("GET", f"/policies/{ctx.tenant_id}", ctx.tenant_id, params=params)
 
 
 @app.post("/customer/policies")
@@ -1304,6 +1321,84 @@ def customer_create_policy(
     payload = dict(payload or {})
     payload["tenant_id"] = ctx.tenant_id
     return _call_policy_service("POST", "/policies", ctx.tenant_id, json_body=payload)
+
+
+def _customer_policy_owned(ctx: CustomerContext, policy_id: str, include_archived: bool = True) -> bool:
+    policies = _call_policy_service(
+        "GET",
+        f"/policies/{ctx.tenant_id}",
+        ctx.tenant_id,
+        params={"include_archived": include_archived},
+    )
+    return any(p.get("id") == policy_id for p in policies if isinstance(p, dict))
+
+
+@app.put("/customer/policies/id/{policy_id}")
+def customer_update_policy(
+    policy_id: str,
+    payload: Dict[str, Any],
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+) -> Any:
+    if not _customer_policy_owned(ctx, policy_id):
+        raise HTTPException(status_code=404, detail="Policy not found")
+    payload = dict(payload or {})
+    payload.pop("tenant_id", None)
+    return _call_policy_service("PUT", f"/policies/id/{policy_id}", ctx.tenant_id, json_body=payload)
+
+
+@app.patch("/customer/policies/id/{policy_id}/toggle")
+def customer_toggle_policy(
+    policy_id: str,
+    payload: Dict[str, Any],
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+) -> Any:
+    if not _customer_policy_owned(ctx, policy_id):
+        raise HTTPException(status_code=404, detail="Policy not found")
+    return _call_policy_service(
+        "PATCH",
+        f"/policies/id/{policy_id}/toggle",
+        ctx.tenant_id,
+        json_body=payload,
+    )
+
+
+@app.patch("/customer/policies/id/{policy_id}/archive")
+def customer_archive_policy(
+    policy_id: str,
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+) -> Any:
+    if not _customer_policy_owned(ctx, policy_id):
+        raise HTTPException(status_code=404, detail="Policy not found")
+    return _call_policy_service("PATCH", f"/policies/id/{policy_id}/archive", ctx.tenant_id)
+
+
+@app.patch("/customer/policies/id/{policy_id}/unarchive")
+def customer_unarchive_policy(
+    policy_id: str,
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+) -> Any:
+    if not _customer_policy_owned(ctx, policy_id):
+        raise HTTPException(status_code=404, detail="Policy not found")
+    return _call_policy_service("PATCH", f"/policies/id/{policy_id}/unarchive", ctx.tenant_id)
+
+
+@app.post("/customer/policies/evaluate")
+def customer_evaluate_policy(
+    payload: Dict[str, Any],
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+) -> Any:
+    body = dict(payload or {})
+    context = body.get("context", {})
+    if not isinstance(context, dict):
+        context = {}
+    context["tenant_id"] = ctx.tenant_id
+    body["context"] = context
+    return _call_policy_service(
+        "POST",
+        f"/policies/{ctx.tenant_id}/evaluate",
+        ctx.tenant_id,
+        json_body=body,
+    )
 
 
 @app.get("/customer/agents")

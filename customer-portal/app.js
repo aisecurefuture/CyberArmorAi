@@ -974,12 +974,302 @@ async function viewApiKeys() {
   });
 }
 
+const PROXY_POLICY_ACTIONS = ["allow", "monitor", "warn", "block"];
+
+function flattenPolicyRules(node, out = []) {
+  if (!node || typeof node !== "object") return out;
+  if (Array.isArray(node.rules)) {
+    node.rules.forEach((rule) => flattenPolicyRules(rule, out));
+    return out;
+  }
+  if (node.field) out.push(node);
+  return out;
+}
+
+function parseProxyPolicyDraft(policy = {}) {
+  const rules = flattenPolicyRules(policy.conditions || {});
+  const draft = {
+    name: policy.name || "",
+    description: policy.description || "",
+    action: String(policy.action || "monitor").toLowerCase(),
+    priority: Number(policy.priority ?? 100),
+    userId: "",
+    hostname: "",
+    domain: "",
+    provider: "",
+    pathContains: "",
+  };
+  rules.forEach((rule) => {
+    const field = String(rule.field || "").toLowerCase();
+    const value = rule.value == null ? "" : String(rule.value);
+    if (!draft.userId && (field.includes("user") || field.includes("identity.subject"))) draft.userId = value;
+    else if (!draft.hostname && field.includes("host")) draft.hostname = value;
+    else if (!draft.domain && field.includes("domain")) draft.domain = value;
+    else if (!draft.provider && field.includes("provider")) draft.provider = value;
+    else if (!draft.pathContains && (field.includes("path") || field.includes("url"))) draft.pathContains = value;
+  });
+  return draft;
+}
+
+function proxyPolicyPayload(draft, existing = {}) {
+  const rules = [];
+  if (draft.userId) rules.push({ field: "identity.user_id", operator: "equals", value: draft.userId });
+  if (draft.hostname) rules.push({ field: "request.hostname", operator: "equals", value: draft.hostname });
+  if (draft.domain) rules.push({ field: "request.domain", operator: "equals", value: draft.domain });
+  if (draft.provider) rules.push({ field: "provider", operator: "equals", value: draft.provider });
+  if (draft.pathContains) rules.push({ field: "request.path", operator: "contains", value: draft.pathContains });
+  const tags = new Set(Array.isArray(existing.tags) ? existing.tags : []);
+  tags.add("proxy");
+  return {
+    name: draft.name,
+    description: draft.description || null,
+    enabled: existing.enabled !== false,
+    action: draft.action,
+    scope: "proxy",
+    priority: Number.isFinite(Number(draft.priority)) ? Number(draft.priority) : 100,
+    conditions: { operator: "and", rules },
+    rules: {
+      mode: "proxy",
+      targets: {
+        user_id: draft.userId || null,
+        hostname: draft.hostname || null,
+        domain: draft.domain || null,
+        provider: draft.provider || null,
+        path_contains: draft.pathContains || null,
+      },
+    },
+    tags: Array.from(tags),
+  };
+}
+
+function proxyPolicySummary(policy) {
+  const draft = parseProxyPolicyDraft(policy);
+  const parts = [];
+  if (draft.userId) parts.push(`user=${draft.userId}`);
+  if (draft.hostname) parts.push(`hostname=${draft.hostname}`);
+  if (draft.domain) parts.push(`domain=${draft.domain}`);
+  if (draft.provider) parts.push(`provider=${draft.provider}`);
+  if (draft.pathContains) parts.push(`path~${draft.pathContains}`);
+  return parts.join(" | ") || "No proxy selectors";
+}
+
 async function viewProxy() {
-  await tenantScopedConfigPage("proxy", "Proxy Controls", "Tenant proxy policy posture", [
-    { title: "Prompt Controls", body: "Review tenant-level prompt inspection, redaction, and block strategy before routing AI requests.", badge: "tenant enforced", tone: "green" },
-    { title: "Allowed Destinations", body: "Prepare provider and endpoint routing rules scoped to this tenant's AI traffic.", badge: "per-tenant", tone: "cyan" },
-    { title: "Response Handling", body: "Track response redaction and policy outcomes for the active tenant only.", badge: "audit-backed", tone: "slate" },
-  ], { prompt_controls: { inspect: true, redact: true, block_high_risk: true }, allowed_destinations: [], response_handling: "audit" });
+  $("#pageTitle").textContent = "Proxy Controls";
+  $("#pageSubtitle").textContent = "Tenant-scoped proxy policy lifecycle";
+  if (session.role !== "tenant_admin") {
+    $("#app").innerHTML = requireAdminMarkup();
+    return;
+  }
+  let includeArchived = true;
+  let editing = null;
+
+  async function refresh() {
+    try {
+      const qs = new URLSearchParams({ scope: "proxy", include_archived: String(includeArchived) });
+      const rows = await api(`/api/customer/policies?${qs.toString()}`);
+      render(Array.isArray(rows) ? rows : []);
+    } catch (error) {
+      $("#app").innerHTML = card(`<div class="text-rose-300">${esc(error.message)}</div>`);
+    }
+  }
+
+  function render(rows) {
+    const isEditing = !!editing;
+    const draft = parseProxyPolicyDraft(editing || {});
+    const tableRows = rows.map((policy) => {
+      const archived = !!policy.archived_at;
+      const enabled = policy.enabled !== false;
+      return `<tr class="border-t border-slate-800">
+        <td class="px-3 py-3 font-medium">${esc(policy.name || policy.id || "")}</td>
+        <td class="px-3 py-3 text-xs text-slate-400">${esc(proxyPolicySummary(policy))}</td>
+        <td class="px-3 py-3">${badge(policy.action || "monitor", policy.action === "block" ? "red" : policy.action === "warn" ? "amber" : policy.action === "allow" ? "green" : "cyan")}</td>
+        <td class="px-3 py-3">${badge(String(policy.priority ?? 100), "slate")}</td>
+        <td class="px-3 py-3">${archived ? badge("archived", "slate") : enabled ? badge("active", "green") : badge("disabled", "amber")}</td>
+        <td class="px-3 py-3 text-right whitespace-nowrap">
+          <button class="proxyEdit rounded-xl border border-slate-700 bg-slate-900 px-2.5 py-1 text-xs hover:bg-slate-800 mr-1" data-id="${esc(policy.id)}">Edit</button>
+          ${archived
+            ? `<button class="proxyUnarchive rounded-xl border border-emerald-900 bg-emerald-950/40 px-2.5 py-1 text-xs text-emerald-100 mr-1" data-id="${esc(policy.id)}">Unarchive</button>`
+            : `<button class="proxyToggle rounded-xl border ${enabled ? "border-amber-900 bg-amber-950/40 text-amber-100" : "border-emerald-900 bg-emerald-950/40 text-emerald-100"} px-2.5 py-1 text-xs mr-1" data-id="${esc(policy.id)}" data-enabled="${enabled}">${enabled ? "Disable" : "Enable"}</button>`}
+          ${archived ? "" : `<button class="proxyArchive rounded-xl border border-slate-700 bg-slate-900 px-2.5 py-1 text-xs hover:bg-slate-800" data-id="${esc(policy.id)}">Archive</button>`}
+        </td>
+      </tr>`;
+    }).join("");
+
+    $("#app").innerHTML = `
+      <div class="mb-4 flex items-center justify-between">
+        <div class="text-sm text-slate-400">Create tenant proxy controls for specific users, hosts, domains, providers, and request paths.</div>
+        <label class="flex items-center gap-2 text-xs text-slate-300">
+          <input id="proxyShowArchived" type="checkbox" ${includeArchived ? "checked" : ""} /> Show archived
+        </label>
+      </div>
+      ${card(`
+        <div class="flex items-center justify-between mb-3">
+          <div class="font-semibold">${isEditing ? `Edit proxy policy: ${esc(editing.name)}` : "New proxy policy"}</div>
+          ${isEditing ? `<button id="proxyCancel" class="text-xs text-slate-400 hover:text-slate-200" type="button">Cancel</button>` : ""}
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div class="space-y-1">
+            <label class="text-xs text-slate-300">Policy name</label>
+            <input id="proxyName" class="w-full rounded-2xl border border-slate-800 bg-slate-950 px-3 py-2 text-sm" placeholder="warn-shadow-openai-web" value="${esc(draft.name)}" />
+          </div>
+          <div class="space-y-1">
+            <label class="text-xs text-slate-300">Action</label>
+            <select id="proxyAction" class="w-full rounded-2xl border border-slate-800 bg-slate-950 px-3 py-2 text-sm">
+              ${PROXY_POLICY_ACTIONS.map((action) => `<option value="${action}" ${draft.action === action ? "selected" : ""}>${esc(action)}</option>`).join("")}
+            </select>
+          </div>
+          <div class="md:col-span-2 space-y-1">
+            <label class="text-xs text-slate-300">Description</label>
+            <input id="proxyDescription" class="w-full rounded-2xl border border-slate-800 bg-slate-950 px-3 py-2 text-sm" placeholder="Why this rule exists" value="${esc(draft.description)}" />
+          </div>
+          <div class="space-y-1">
+            <label class="text-xs text-slate-300">User ID / email</label>
+            <input id="proxyUserId" class="w-full rounded-2xl border border-slate-800 bg-slate-950 px-3 py-2 text-sm" placeholder="alice@customer.com" value="${esc(draft.userId)}" />
+          </div>
+          <div class="space-y-1">
+            <label class="text-xs text-slate-300">Hostname</label>
+            <input id="proxyHostname" class="w-full rounded-2xl border border-slate-800 bg-slate-950 px-3 py-2 text-sm" placeholder="sales-laptop-01" value="${esc(draft.hostname)}" />
+          </div>
+          <div class="space-y-1">
+            <label class="text-xs text-slate-300">Domain</label>
+            <input id="proxyDomain" class="w-full rounded-2xl border border-slate-800 bg-slate-950 px-3 py-2 text-sm" placeholder="chat.openai.com" value="${esc(draft.domain)}" />
+          </div>
+          <div class="space-y-1">
+            <label class="text-xs text-slate-300">Provider</label>
+            <input id="proxyProvider" class="w-full rounded-2xl border border-slate-800 bg-slate-950 px-3 py-2 text-sm" placeholder="openai" value="${esc(draft.provider)}" />
+          </div>
+          <div class="space-y-1">
+            <label class="text-xs text-slate-300">Path contains</label>
+            <input id="proxyPath" class="w-full rounded-2xl border border-slate-800 bg-slate-950 px-3 py-2 text-sm" placeholder="/v1/chat/completions" value="${esc(draft.pathContains)}" />
+          </div>
+          <div class="space-y-1">
+            <label class="text-xs text-slate-300">Priority</label>
+            <input id="proxyPriority" type="number" class="w-full rounded-2xl border border-slate-800 bg-slate-950 px-3 py-2 text-sm" value="${esc(String(draft.priority || 100))}" />
+          </div>
+        </div>
+        <div class="mt-3 flex items-center gap-3">
+          <button id="proxySave" class="rounded-2xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400" type="button">${isEditing ? "Save policy" : "Create policy"}</button>
+          <div id="proxyMessage" class="text-sm text-slate-400"></div>
+        </div>
+      `)}
+      <div class="mt-4">${card(`
+        <div class="overflow-x-auto rounded-2xl border border-slate-800">
+          <table class="w-full text-left text-sm">
+            <thead class="text-xs uppercase tracking-[0.18em] text-slate-500">
+              <tr>
+                <th class="px-3 py-2">Name</th>
+                <th class="px-3 py-2">Selectors</th>
+                <th class="px-3 py-2">Action</th>
+                <th class="px-3 py-2">Priority</th>
+                <th class="px-3 py-2">Status</th>
+                <th class="px-3 py-2"></th>
+              </tr>
+            </thead>
+            <tbody>${tableRows || emptyRow("No tenant proxy policies yet.", 6)}</tbody>
+          </table>
+        </div>
+      `)}</div>
+    `;
+
+    $("#proxyShowArchived").addEventListener("change", (event) => {
+      includeArchived = event.target.checked;
+      refresh();
+    });
+    if (isEditing) {
+      $("#proxyCancel").addEventListener("click", () => {
+        editing = null;
+        refresh();
+      });
+    }
+    $("#proxySave").addEventListener("click", async () => {
+      const message = $("#proxyMessage");
+      const draftValues = {
+        name: ($("#proxyName").value || "").trim(),
+        description: ($("#proxyDescription").value || "").trim(),
+        action: ($("#proxyAction").value || "monitor").trim().toLowerCase(),
+        priority: Number($("#proxyPriority").value || 100),
+        userId: ($("#proxyUserId").value || "").trim(),
+        hostname: ($("#proxyHostname").value || "").trim(),
+        domain: ($("#proxyDomain").value || "").trim(),
+        provider: ($("#proxyProvider").value || "").trim(),
+        pathContains: ($("#proxyPath").value || "").trim(),
+      };
+      message.className = "text-sm text-slate-400";
+      if (!draftValues.name) {
+        message.className = "text-sm text-rose-300";
+        message.textContent = "Policy name required.";
+        return;
+      }
+      if (!draftValues.userId && !draftValues.hostname && !draftValues.domain && !draftValues.provider && !draftValues.pathContains) {
+        message.className = "text-sm text-rose-300";
+        message.textContent = "Add at least one selector so the proxy rule can match traffic.";
+        return;
+      }
+      message.textContent = isEditing ? "Saving..." : "Creating...";
+      try {
+        const payload = proxyPolicyPayload(draftValues, editing || {});
+        if (isEditing) {
+          await api(`/api/customer/policies/id/${encodeURIComponent(editing.id)}`, {
+            method: "PUT",
+            body: JSON.stringify(payload),
+          });
+        } else {
+          await api("/api/customer/policies", {
+            method: "POST",
+            body: JSON.stringify(payload),
+          });
+        }
+        editing = null;
+        refresh();
+      } catch (error) {
+        message.className = "text-sm text-rose-300";
+        message.textContent = error.message;
+      }
+    });
+
+    document.querySelectorAll(".proxyEdit").forEach((button) => {
+      button.addEventListener("click", () => {
+        editing = rows.find((policy) => policy.id === button.dataset.id) || null;
+        render(rows);
+      });
+    });
+    document.querySelectorAll(".proxyToggle").forEach((button) => {
+      button.addEventListener("click", async () => {
+        try {
+          await api(`/api/customer/policies/id/${encodeURIComponent(button.dataset.id)}/toggle`, {
+            method: "PATCH",
+            body: JSON.stringify({ enabled: button.dataset.enabled !== "true" }),
+          });
+          refresh();
+        } catch (error) {
+          $("#app").innerHTML = card(`<div class="text-rose-300">${esc(error.message)}</div>`);
+        }
+      });
+    });
+    document.querySelectorAll(".proxyArchive").forEach((button) => {
+      button.addEventListener("click", async () => {
+        if (!window.confirm("Archive this proxy policy? It will stop enforcing until unarchived.")) return;
+        try {
+          await api(`/api/customer/policies/id/${encodeURIComponent(button.dataset.id)}/archive`, { method: "PATCH" });
+          refresh();
+        } catch (error) {
+          $("#app").innerHTML = card(`<div class="text-rose-300">${esc(error.message)}</div>`);
+        }
+      });
+    });
+    document.querySelectorAll(".proxyUnarchive").forEach((button) => {
+      button.addEventListener("click", async () => {
+        try {
+          await api(`/api/customer/policies/id/${encodeURIComponent(button.dataset.id)}/unarchive`, { method: "PATCH" });
+          refresh();
+        } catch (error) {
+          $("#app").innerHTML = card(`<div class="text-rose-300">${esc(error.message)}</div>`);
+        }
+      });
+    });
+  }
+
+  await refresh();
 }
 
 async function viewScan() {
@@ -1128,11 +1418,140 @@ async function viewAgents() {
 }
 
 async function viewPolicyStudio() {
-  await tenantScopedConfigPage("policy-studio", "Policy Studio", "AI-aware tenant policy decisions and risk scoring", [
-    { title: "Decision Types", body: "Author allow, monitor, redact, step-up, and block decisions for tenant AI workflows.", badge: "tenant scoped", tone: "green" },
-    { title: "Risk Score", body: "Tune policy priority and AI risk thresholds before rollout.", badge: "draftable", tone: "cyan" },
-    { title: "Provider Rules", body: "Map policy rules to the AI providers approved for this tenant.", badge: "provider aware", tone: "slate" },
-  ], { decision_types: ["allow", "monitor", "redact", "step_up", "block"], risk_thresholds: { warn: 50, block: 80 }, provider_rules: [] }, true);
+  $("#pageTitle").textContent = "Policy Studio";
+  $("#pageSubtitle").textContent = "AI-aware tenant policy decisions and risk scoring";
+
+  const DECISION_TYPES = ["ALLOW", "DENY", "ALLOW_WITH_REDACTION", "ALLOW_WITH_LIMITS", "REQUIRE_APPROVAL", "ALLOW_WITH_AUDIT_ONLY", "QUARANTINE"];
+  const DECISION_COLORS = {
+    ALLOW: "green",
+    DENY: "red",
+    ALLOW_WITH_REDACTION: "amber",
+    ALLOW_WITH_LIMITS: "cyan",
+    REQUIRE_APPROVAL: "cyan",
+    ALLOW_WITH_AUDIT_ONLY: "slate",
+    QUARANTINE: "red",
+  };
+  const legacyToDecision = (action) => ({ block: "DENY", warn: "ALLOW_WITH_AUDIT_ONLY", monitor: "ALLOW_WITH_AUDIT_ONLY", allow: "ALLOW" }[String(action || "").toLowerCase()] || "ALLOW");
+  const policyToDecisionType = (policy) => {
+    if (policy?.ai_decision_type) return policy.ai_decision_type;
+    const action = String(policy?.action || "monitor").toLowerCase();
+    if (action === "allow") {
+      const tags = Array.isArray(policy?.tags) ? policy.tags.map((tag) => String(tag).toLowerCase()) : [];
+      const desc = String(policy?.description || "").toLowerCase();
+      if (tags.includes("redact") || tags.includes("redaction") || desc.includes("redact")) return "ALLOW_WITH_REDACTION";
+    }
+    return legacyToDecision(action);
+  };
+  const riskBar = (score) => {
+    if (score === undefined || score === null) return "—";
+    const pct = Math.round(Number(score) * 100);
+    const tone = Number(score) > 0.7 ? "bg-rose-500" : Number(score) > 0.4 ? "bg-amber-500" : "bg-emerald-500";
+    return `<div class="flex items-center gap-2"><div class="h-1.5 w-20 rounded-full bg-slate-800"><div class="${tone} h-1.5 rounded-full" style="width:${pct}%"></div></div><span class="text-xs">${esc(String(pct))}%</span></div>`;
+  };
+
+  try {
+    const policies = await api("/api/customer/policies");
+    const list = Array.isArray(policies) ? policies : [];
+    const counts = {};
+    DECISION_TYPES.forEach((type) => { counts[type] = 0; });
+    list.forEach((policy) => {
+      const type = policyToDecisionType(policy);
+      counts[type] = (counts[type] || 0) + 1;
+    });
+    const rows = list.map((policy) => {
+      const type = policyToDecisionType(policy);
+      return `<tr class="border-t border-slate-800 hover:bg-slate-900/50">
+        <td class="px-3 py-3 font-medium text-sm">${esc(policy.name || policy.id || "")}</td>
+        <td class="px-3 py-3">${badge(type.replace(/_/g, " "), DECISION_COLORS[type] || "slate")}</td>
+        <td class="px-3 py-3">${riskBar(policy.risk_score)}</td>
+        <td class="px-3 py-3">${badge(String(policy.priority ?? 0), "slate")}</td>
+        <td class="px-3 py-3">${(policy.ai_providers || []).map((provider) => badge(provider, "cyan")).join(" ") || badge("all", "slate")}</td>
+        <td class="px-3 py-3">${policy.enabled !== false ? badge("enabled", "green") : badge("disabled", "slate")}</td>
+        <td class="px-3 py-3"><button class="policyStudioTest rounded-xl border border-slate-700 bg-slate-900 px-2.5 py-1 text-xs hover:bg-slate-800" data-policy="${esc(policy.name || policy.id || "")}">Test</button></td>
+      </tr>`;
+    }).join("");
+
+    $("#app").innerHTML = `
+      <div class="grid gap-3 md:grid-cols-4">
+        ${["ALLOW", "DENY", "ALLOW_WITH_REDACTION", "REQUIRE_APPROVAL"].map((type) => metricCard(type.replace(/_/g, " "), counts[type] || 0, DECISION_COLORS[type] || "cyan")).join("")}
+      </div>
+      <div class="mt-5">${card(`
+        <div class="mb-4 flex items-center justify-between">
+          <div class="font-semibold">AI-aware tenant policies</div>
+          <a href="#/policy-builder" class="rounded-2xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400">+ New Policy</a>
+        </div>
+        <div class="overflow-x-auto rounded-2xl border border-slate-800">
+          <table class="w-full text-left text-sm">
+            <thead class="text-xs uppercase tracking-[0.18em] text-slate-500">
+              <tr>
+                <th class="px-3 py-2">Name</th>
+                <th class="px-3 py-2">Decision Type</th>
+                <th class="px-3 py-2">Risk Score</th>
+                <th class="px-3 py-2">Priority</th>
+                <th class="px-3 py-2">AI Providers</th>
+                <th class="px-3 py-2">Status</th>
+                <th class="px-3 py-2">Test</th>
+              </tr>
+            </thead>
+            <tbody>${rows || emptyRow("No tenant policies found.", 7)}</tbody>
+          </table>
+        </div>
+      `)}</div>
+      <div id="policyStudioPanel" class="mt-4"></div>
+    `;
+    document.querySelectorAll(".policyStudioTest").forEach((button) => {
+      button.addEventListener("click", () => {
+        const policyName = button.dataset.policy;
+        const panel = $("#policyStudioPanel");
+        panel.innerHTML = card(`
+          <div class="font-semibold mb-4">Evaluate Policy: ${esc(policyName)}</div>
+          <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <div class="space-y-1">
+              <label class="text-xs text-slate-300">Provider</label>
+              <select id="policyStudioProvider" class="w-full rounded-2xl border border-slate-800 bg-slate-950 px-3 py-2 text-sm">
+                <option>openai</option><option>anthropic</option><option>google</option><option>xai</option><option>perplexity</option>
+              </select>
+            </div>
+            <div class="space-y-1">
+              <label class="text-xs text-slate-300">Model</label>
+              <input id="policyStudioModel" class="w-full rounded-2xl border border-slate-800 bg-slate-950 px-3 py-2 text-sm" value="gpt-4o" />
+            </div>
+            <div class="space-y-1 md:col-span-2">
+              <label class="text-xs text-slate-300">Test Prompt</label>
+              <textarea id="policyStudioPrompt" class="min-h-28 w-full rounded-2xl border border-slate-800 bg-slate-950 px-3 py-2 text-sm" placeholder="Enter a prompt to evaluate against this tenant policy..."></textarea>
+            </div>
+          </div>
+          <div class="mt-4 flex gap-2">
+            <button id="policyStudioRun" class="rounded-2xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400" type="button">Evaluate</button>
+          </div>
+          <div id="policyStudioResult" class="mt-4"></div>
+        `);
+        $("#policyStudioRun").addEventListener("click", async () => {
+          try {
+            const result = await api("/api/customer/policies/evaluate", {
+              method: "POST",
+              body: JSON.stringify({
+                policy_name: policyName,
+                context: {
+                  provider: $("#policyStudioProvider").value,
+                  model: $("#policyStudioModel").value,
+                  prompt: $("#policyStudioPrompt").value,
+                },
+              }),
+            });
+            $("#policyStudioResult").innerHTML = `<div class="rounded-2xl border ${result.allowed !== false ? "border-emerald-900 bg-emerald-950/20" : "border-rose-900 bg-rose-950/20"} p-4">
+              <div class="font-semibold mb-2">${result.allowed !== false ? "Allowed" : "Denied"}</div>
+              <pre class="overflow-x-auto text-xs">${esc(JSON.stringify(result, null, 2))}</pre>
+            </div>`;
+          } catch (error) {
+            $("#policyStudioResult").innerHTML = `<div class="text-sm text-rose-300">${esc(error.message)}</div>`;
+          }
+        });
+      });
+    });
+  } catch (error) {
+    $("#app").innerHTML = card(`<div class="text-rose-300">${esc(error.message)}</div>`);
+  }
 }
 
 async function viewGraph() {

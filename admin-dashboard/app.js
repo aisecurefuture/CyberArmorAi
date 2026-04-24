@@ -843,43 +843,345 @@ async function viewApiKeys() {
 }
 
 // ---------- Proxy Controls ----------
+const PROXY_POLICY_ACTIONS = ["allow", "monitor", "warn", "block"];
+
+function flattenPolicyRules(node, out = []) {
+  if (!node || typeof node !== "object") return out;
+  if (Array.isArray(node.rules)) {
+    node.rules.forEach(rule => flattenPolicyRules(rule, out));
+    return out;
+  }
+  if (node.field) out.push(node);
+  return out;
+}
+
+function parseProxyPolicyDraft(policy = {}) {
+  const rules = flattenPolicyRules(policy.conditions || {});
+  const draft = {
+    name: policy.name || "",
+    description: policy.description || "",
+    action: String(policy.action || "monitor").toLowerCase(),
+    priority: Number(policy.priority ?? 100),
+    userId: "",
+    hostname: "",
+    domain: "",
+    provider: "",
+    pathContains: "",
+  };
+  rules.forEach(rule => {
+    const field = String(rule.field || "").toLowerCase();
+    const value = rule.value == null ? "" : String(rule.value);
+    if (!draft.userId && (field.includes("user") || field.includes("identity.subject"))) draft.userId = value;
+    else if (!draft.hostname && field.includes("host")) draft.hostname = value;
+    else if (!draft.domain && field.includes("domain")) draft.domain = value;
+    else if (!draft.provider && field.includes("provider")) draft.provider = value;
+    else if (!draft.pathContains && (field.includes("path") || field.includes("url"))) draft.pathContains = value;
+  });
+  return draft;
+}
+
+function proxyPolicyPayload(draft, tenant, existing = {}) {
+  const rules = [];
+  if (draft.userId) rules.push({ field: "identity.user_id", operator: "equals", value: draft.userId });
+  if (draft.hostname) rules.push({ field: "request.hostname", operator: "equals", value: draft.hostname });
+  if (draft.domain) rules.push({ field: "request.domain", operator: "equals", value: draft.domain });
+  if (draft.provider) rules.push({ field: "provider", operator: "equals", value: draft.provider });
+  if (draft.pathContains) rules.push({ field: "request.path", operator: "contains", value: draft.pathContains });
+  const tags = new Set(Array.isArray(existing.tags) ? existing.tags : []);
+  tags.add("proxy");
+  return {
+    name: draft.name,
+    description: draft.description || null,
+    tenant_id: tenant,
+    enabled: existing.enabled !== false,
+    action: draft.action,
+    scope: "proxy",
+    priority: Number.isFinite(Number(draft.priority)) ? Number(draft.priority) : 100,
+    conditions: { operator: "and", rules },
+    rules: {
+      mode: "proxy",
+      targets: {
+        user_id: draft.userId || null,
+        hostname: draft.hostname || null,
+        domain: draft.domain || null,
+        provider: draft.provider || null,
+        path_contains: draft.pathContains || null,
+      },
+    },
+    tags: Array.from(tags),
+  };
+}
+
+function proxyPolicySummary(policy) {
+  const draft = parseProxyPolicyDraft(policy);
+  const parts = [];
+  if (draft.userId) parts.push(`user=${draft.userId}`);
+  if (draft.hostname) parts.push(`hostname=${draft.hostname}`);
+  if (draft.domain) parts.push(`domain=${draft.domain}`);
+  if (draft.provider) parts.push(`provider=${draft.provider}`);
+  if (draft.pathContains) parts.push(`path~${draft.pathContains}`);
+  return parts.join(" | ") || "No proxy selectors";
+}
+
 async function viewProxy() {
   const app = $("#app");
   app.innerHTML = loading();
-  try {
-    const policies = await apiFetch(`${svcUrl("px")}/policies/cached/${getTenant()}`, { headers: svcHeaders("px") });
-    const list = Array.isArray(policies) ? policies : (policies.policies || []);
-    const rows = list.map(r => `
-      <tr class="hover:bg-slate-900/50">
-        <td class="py-2 px-3">${esc(r.name||"")}</td>
-        <td class="py-2 px-3">${badge(r.action||"monitor", r.action==="block"?"red":r.action==="warn"?"yellow":"green")}</td>
-        <td class="py-2 px-3 text-xs">${r.enabled===false ? '<span class="text-slate-500">disabled</span>' : '<span class="text-emerald-400">enabled</span>'}</td>
-      </tr>
-    `).join("");
-    app.innerHTML = card(`
-      <div class="font-semibold mb-4">Cached Proxy Policies</div>
-      ${tableWrap(th("Policy Name")+th("Action")+th("Status"), rows || `<tr><td colspan="3">${emptyState("No cached policies")}</td></tr>`)}
-    `) + `<div class="mt-4">${card(`
-      <div class="font-semibold mb-3">Test URL</div>
-      <div class="flex gap-2">
-        <input id="testUrl" class="flex-1 px-3 py-2 rounded-xl bg-slate-900 border border-slate-800" placeholder="https://api.openai.com/v1/chat/completions" />
-        <button id="testUrlBtn" class="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-sm">Check</button>
+  const polBase = svcUrl("pol");
+  const polHdrs = svcHeaders("pol");
+  const proxyBase = svcUrl("px");
+  const proxyHdrs = svcHeaders("px");
+  const tenant = getTenant();
+  let includeArchived = true;
+  let editing = null;
+
+  async function refresh() {
+    try {
+      const qs = new URLSearchParams({ scope: "proxy", include_archived: String(includeArchived) });
+      const policies = await apiFetch(`${polBase}/policies/${tenant}?${qs.toString()}`, { headers: polHdrs });
+      render(Array.isArray(policies) ? policies : []);
+    } catch (e) {
+      app.innerHTML = card(`<div class="text-rose-400">Error: ${esc(e.message)}</div>`);
+    }
+  }
+
+  function renderFormMessage(message = "", type = "info") {
+    const el = $("#proxyPolicyMessage");
+    if (!el) return;
+    el.className = `text-sm ${type === "error" ? "text-rose-400" : type === "success" ? "text-emerald-400" : "text-slate-400"}`;
+    el.textContent = message;
+  }
+
+  function render(rows) {
+    const isEditing = !!editing;
+    const draft = parseProxyPolicyDraft(editing || {});
+    const tableRows = rows.map(policy => {
+      const archived = !!policy.archived_at;
+      const enabled = policy.enabled !== false;
+      return `<tr class="hover:bg-slate-900/50">
+        <td class="py-2 px-3 font-medium">${esc(policy.name || policy.id || "")}</td>
+        <td class="py-2 px-3 text-xs text-slate-400">${esc(proxyPolicySummary(policy))}</td>
+        <td class="py-2 px-3">${badge(policy.action || "monitor", policy.action === "block" ? "red" : policy.action === "warn" ? "amber" : policy.action === "allow" ? "green" : "cyan")}</td>
+        <td class="py-2 px-3">${badge(String(policy.priority ?? 100), "slate")}</td>
+        <td class="py-2 px-3">${archived ? badge("Archived", "slate") : enabled ? badge("Active", "green") : badge("Disabled", "amber")}</td>
+        <td class="py-2 px-3 text-right whitespace-nowrap">
+          <button class="text-xs px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 mr-1" data-proxy-edit="${esc(policy.id)}">Edit</button>
+          ${archived
+            ? `<button class="text-xs px-2 py-1 rounded-lg bg-emerald-900/40 text-emerald-200 border border-emerald-900 mr-1" data-proxy-unarchive="${esc(policy.id)}">Unarchive</button>`
+            : `<button class="text-xs px-2 py-1 rounded-lg ${enabled ? "bg-amber-900/40 text-amber-200 border-amber-900" : "bg-emerald-900/40 text-emerald-200 border-emerald-900"} border mr-1" data-proxy-toggle="${esc(policy.id)}" data-enabled="${enabled}">${enabled ? "Disable" : "Enable"}</button>`}
+          ${archived
+            ? ""
+            : `<button class="text-xs px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700" data-proxy-archive="${esc(policy.id)}">Archive</button>`}
+        </td>
+      </tr>`;
+    }).join("");
+
+    app.innerHTML = `
+      <div class="flex items-center justify-between mb-4">
+        <div class="text-sm text-slate-400">Manage real proxy-scoped policies for user, hostname, domain, provider, and request-path targeting.</div>
+        <label class="text-xs text-slate-300 flex items-center gap-2">
+          <input id="proxyShowArchived" type="checkbox" ${includeArchived ? "checked" : ""} /> Show archived
+        </label>
       </div>
-      <div id="testResult" class="mt-3 text-sm"></div>
-    `)}</div>`;
+      ${card(`
+        <div class="flex items-center justify-between mb-4">
+          <div class="font-semibold">${isEditing ? `Edit proxy policy: ${esc(editing.name)}` : "New proxy policy"}</div>
+          ${isEditing ? `<button id="proxyPolicyCancel" class="text-xs text-slate-400 hover:text-slate-200">Cancel</button>` : ""}
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div class="space-y-1">
+            <label class="text-xs text-slate-300">Policy name</label>
+            <input id="proxyPolicyName" class="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-sm" placeholder="block-unapproved-openai-web" value="${esc(draft.name)}" />
+          </div>
+          <div class="space-y-1">
+            <label class="text-xs text-slate-300">Action</label>
+            <select id="proxyPolicyAction" class="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-sm">
+              ${PROXY_POLICY_ACTIONS.map(action => `<option value="${action}" ${draft.action === action ? "selected" : ""}>${esc(action)}</option>`).join("")}
+            </select>
+          </div>
+          <div class="space-y-1 md:col-span-2">
+            <label class="text-xs text-slate-300">Description</label>
+            <input id="proxyPolicyDescription" class="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-sm" placeholder="Why this proxy rule exists" value="${esc(draft.description)}" />
+          </div>
+          <div class="space-y-1">
+            <label class="text-xs text-slate-300">User ID / email</label>
+            <input id="proxyPolicyUserId" class="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-sm" placeholder="alice@customer.com" value="${esc(draft.userId)}" />
+          </div>
+          <div class="space-y-1">
+            <label class="text-xs text-slate-300">Hostname</label>
+            <input id="proxyPolicyHostname" class="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-sm" placeholder="sales-laptop-01" value="${esc(draft.hostname)}" />
+          </div>
+          <div class="space-y-1">
+            <label class="text-xs text-slate-300">Domain</label>
+            <input id="proxyPolicyDomain" class="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-sm" placeholder="chat.openai.com" value="${esc(draft.domain)}" />
+          </div>
+          <div class="space-y-1">
+            <label class="text-xs text-slate-300">Provider</label>
+            <input id="proxyPolicyProvider" class="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-sm" placeholder="openai" value="${esc(draft.provider)}" />
+          </div>
+          <div class="space-y-1">
+            <label class="text-xs text-slate-300">Path contains</label>
+            <input id="proxyPolicyPath" class="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-sm" placeholder="/v1/chat/completions" value="${esc(draft.pathContains)}" />
+          </div>
+          <div class="space-y-1">
+            <label class="text-xs text-slate-300">Priority</label>
+            <input id="proxyPolicyPriority" type="number" class="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-sm" value="${esc(String(draft.priority || 100))}" />
+          </div>
+        </div>
+        <div class="mt-4 flex items-center gap-3">
+          <button id="proxyPolicySave" class="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-sm">${isEditing ? "Save policy" : "Create policy"}</button>
+          <div id="proxyPolicyMessage" class="text-sm text-slate-400">Tenant: <span class="font-mono text-slate-300">${esc(tenant)}</span></div>
+        </div>
+      `)}
+      <div class="mt-4">${card(`
+        <div class="font-semibold mb-3">Proxy Policy Inventory</div>
+        ${tableWrap(
+          th("Name") + th("Selectors") + th("Action") + th("Priority") + th("Status") + th(""),
+          tableRows || `<tr><td colspan="6">${emptyState("No proxy policies yet — create one above.")}</td></tr>`
+        )}
+      `)}</div>
+      <div class="mt-4">${card(`
+        <div class="font-semibold mb-3">Test URL</div>
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-2">
+          <input id="testUrl" class="md:col-span-2 px-3 py-2 rounded-xl bg-slate-900 border border-slate-800" placeholder="https://api.openai.com/v1/chat/completions" />
+          <input id="testUserId" class="px-3 py-2 rounded-xl bg-slate-900 border border-slate-800" placeholder="alice@customer.com" />
+          <input id="testHostname" class="px-3 py-2 rounded-xl bg-slate-900 border border-slate-800" placeholder="sales-laptop-01" />
+        </div>
+        <div class="mt-3 flex gap-2">
+          <button id="testUrlBtn" class="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-sm">Check</button>
+        </div>
+        <div id="testResult" class="mt-3 text-sm"></div>
+      `)}</div>
+    `;
+
+    $("#proxyShowArchived").onchange = (event) => {
+      includeArchived = event.target.checked;
+      refresh();
+    };
+    if (isEditing) {
+      $("#proxyPolicyCancel").onclick = () => {
+        editing = null;
+        refresh();
+      };
+    }
+    $("#proxyPolicySave").onclick = async () => {
+      const draftValues = {
+        name: ($("#proxyPolicyName").value || "").trim(),
+        description: ($("#proxyPolicyDescription").value || "").trim(),
+        action: ($("#proxyPolicyAction").value || "monitor").trim().toLowerCase(),
+        priority: Number($("#proxyPolicyPriority").value || 100),
+        userId: ($("#proxyPolicyUserId").value || "").trim(),
+        hostname: ($("#proxyPolicyHostname").value || "").trim(),
+        domain: ($("#proxyPolicyDomain").value || "").trim(),
+        provider: ($("#proxyPolicyProvider").value || "").trim(),
+        pathContains: ($("#proxyPolicyPath").value || "").trim(),
+      };
+      if (!draftValues.name) {
+        renderFormMessage("Policy name required.", "error");
+        return;
+      }
+      if (!draftValues.userId && !draftValues.hostname && !draftValues.domain && !draftValues.provider && !draftValues.pathContains) {
+        renderFormMessage("Add at least one selector so the proxy policy can match traffic.", "error");
+        return;
+      }
+      renderFormMessage(isEditing ? "Saving..." : "Creating...");
+      try {
+        const payload = proxyPolicyPayload(draftValues, tenant, editing || {});
+        if (isEditing) {
+          payload.enabled = editing.enabled !== false;
+          await apiFetch(`${polBase}/policies/id/${encodeURIComponent(editing.id)}`, {
+            method: "PUT",
+            headers: polHdrs,
+            body: JSON.stringify(payload),
+          });
+        } else {
+          await apiFetch(`${polBase}/policies`, {
+            method: "POST",
+            headers: polHdrs,
+            body: JSON.stringify(payload),
+          });
+        }
+        toast(isEditing ? "Proxy policy updated" : "Proxy policy created", "success");
+        editing = null;
+        refresh();
+      } catch (e) {
+        renderFormMessage(e.message, "error");
+      }
+    };
+
+    $$("[data-proxy-edit]").forEach(btn => {
+      btn.onclick = () => {
+        editing = rows.find(policy => policy.id === btn.dataset.proxyEdit) || null;
+        render(rows);
+      };
+    });
+    $$("[data-proxy-toggle]").forEach(btn => {
+      btn.onclick = async () => {
+        try {
+          await apiFetch(`${polBase}/policies/id/${encodeURIComponent(btn.dataset.proxyToggle)}/toggle`, {
+            method: "PATCH",
+            headers: polHdrs,
+            body: JSON.stringify({ enabled: btn.dataset.enabled !== "true" }),
+          });
+          toast("Proxy policy status updated", "success");
+          refresh();
+        } catch (e) {
+          toast(e.message, "error");
+        }
+      };
+    });
+    $$("[data-proxy-archive]").forEach(btn => {
+      btn.onclick = async () => {
+        if (!(await confirm("Archive proxy policy", "Archived proxy policies stop enforcing until unarchived."))) return;
+        try {
+          await apiFetch(`${polBase}/policies/id/${encodeURIComponent(btn.dataset.proxyArchive)}/archive`, {
+            method: "PATCH",
+            headers: polHdrs,
+          });
+          toast("Proxy policy archived", "success");
+          refresh();
+        } catch (e) {
+          toast(e.message, "error");
+        }
+      };
+    });
+    $$("[data-proxy-unarchive]").forEach(btn => {
+      btn.onclick = async () => {
+        try {
+          await apiFetch(`${polBase}/policies/id/${encodeURIComponent(btn.dataset.proxyUnarchive)}/unarchive`, {
+            method: "PATCH",
+            headers: polHdrs,
+          });
+          toast("Proxy policy unarchived", "success");
+          refresh();
+        } catch (e) {
+          toast(e.message, "error");
+        }
+      };
+    });
 
     const testBtn = $("#testUrlBtn");
     if (testBtn) testBtn.onclick = async () => {
       try {
         const url = $("#testUrl").value;
-        const r = await apiFetch(`${svcUrl("px")}/decision`, {
-          method: "POST", headers: svcHeaders("px"),
-          body: JSON.stringify({ url, method: "POST", tenant_id: getTenant() }),
+        const r = await apiFetch(`${proxyBase}/decision`, {
+          method: "POST",
+          headers: proxyHdrs,
+          body: JSON.stringify({
+            url,
+            method: "POST",
+            tenant_id: tenant,
+            user_id: ($("#testUserId").value || "").trim() || undefined,
+            hostname: ($("#testHostname").value || "").trim() || undefined,
+          }),
         });
-        $("#testResult").innerHTML = `<div>${badge(r.decision||r.action||"unknown", r.decision==="allow"||r.action==="allow"?"green":"red")} ${esc(r.reason||"")}</div>`;
-      } catch (e) { $("#testResult").innerHTML = `<span class="text-rose-400">${esc(e.message)}</span>`; }
+        $("#testResult").innerHTML = `<div>${badge(r.decision || r.action || "unknown", (r.decision === "allow" || r.action === "allow") ? "green" : "red")} ${esc(r.reason || "")}</div>`;
+      } catch (e) {
+        $("#testResult").innerHTML = `<span class="text-rose-400">${esc(e.message)}</span>`;
+      }
     };
-  } catch (e) { app.innerHTML = card(`<div class="text-rose-400">Error: ${esc(e.message)}</div>`); }
+  }
+
+  refresh();
 }
 
 // ---------- Scan Tools ----------
