@@ -88,10 +88,11 @@ async function api(path, options = {}) {
     const csrf = readCookie("ca_customer_csrf");
     if (csrf) headers["x-csrf-token"] = csrf;
   }
+  const { headers: _ignoredHeaders, ...rest } = options;
   const res = await fetch(path, {
     credentials: "same-origin",
     headers,
-    ...options,
+    ...rest,
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.detail || `Request failed (${res.status})`);
