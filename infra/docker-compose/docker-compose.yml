@@ -130,6 +130,7 @@ services:
     build:
       context: ../../
       dockerfile: services/detection/Dockerfile
+    env_file: ["${CYBERARMOR_ENV_FILE:-.env}"]
     environment:
       # ML model names (HuggingFace Hub IDs or local paths)
       ML_PROMPT_INJECTION_MODEL: "protectai/deberta-v3-base-prompt-injection-v2"
