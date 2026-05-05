@@ -304,9 +304,20 @@ def install_macos_service(install_dir: Path, config_path: Path, log_dir: Path, p
     try:
         plist_path.write_text(content)
         os.chmod(str(plist_path), 0o644)
-        subprocess.run(["launchctl", "load", str(plist_path)], check=True)
+        # Ensure reinstalls are idempotent on modern macOS launchd.
+        subprocess.run(["launchctl", "bootout", "system", str(plist_path)], check=False)
+        subprocess.run(["launchctl", "bootstrap", "system", str(plist_path)], check=True)
+        subprocess.run(["launchctl", "enable", f"system/{BUNDLE_ID}"], check=False)
+        subprocess.run(["launchctl", "kickstart", "-k", f"system/{BUNDLE_ID}"], check=False)
         logger.info("macOS launchd service installed: %s", plist_path)
         return True
+    except subprocess.CalledProcessError as e:
+        logger.error("Failed to install launchd service: %s", e)
+        logger.error(
+            "launchctl stderr: %s",
+            (e.stderr.decode("utf-8", errors="replace") if isinstance(e.stderr, bytes) else e.stderr) or "<empty>",
+        )
+        return False
     except Exception as e:
         logger.error("Failed to install launchd service: %s", e)
         return False
@@ -316,7 +327,7 @@ def uninstall_macos_service() -> bool:
     """Remove launchd service on macOS."""
     plist_path = Path("/Library/LaunchDaemons") / f"{BUNDLE_ID}.plist"
     try:
-        subprocess.run(["launchctl", "unload", str(plist_path)], check=False)
+        subprocess.run(["launchctl", "bootout", "system", str(plist_path)], check=False)
         plist_path.unlink(missing_ok=True)
         logger.info("macOS launchd service removed")
         return True
@@ -679,12 +690,16 @@ def install(
     # 8. Install platform service
     if not skip_service:
         logger.info("\nInstalling system service...")
+        service_ok = True
         if plat == "Darwin":
-            install_macos_service(install_dir, config_path, log_dir, python_bin)
+            service_ok = install_macos_service(install_dir, config_path, log_dir, python_bin)
         elif plat == "Linux":
-            install_linux_service(install_dir, config_path, config_dir, log_dir, python_bin)
+            service_ok = install_linux_service(install_dir, config_path, config_dir, log_dir, python_bin)
         elif plat == "Windows":
-            install_windows_service(install_dir, config_path, bridge_config_path, log_dir, python_bin)
+            service_ok = install_windows_service(install_dir, config_path, bridge_config_path, log_dir, python_bin)
+        if not service_ok:
+            logger.error("Installation finished, but service registration failed.")
+            return False
     else:
         logger.info("Skipping service installation (--skip-service)")
 
