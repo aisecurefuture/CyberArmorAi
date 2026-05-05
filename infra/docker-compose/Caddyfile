@@ -39,6 +39,5 @@
 # Support — rewrites to the branded support route inside the marketing app.
 {$SUPPORT_DOMAIN:support.cyberarmor.ai} {
 	encode zstd gzip
-	rewrite * /support{uri}
 	reverse_proxy marketing:3003
 }
