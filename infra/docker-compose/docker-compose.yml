@@ -148,7 +148,7 @@ services:
       TRANSFORMERS_CACHE: /models
       HF_HOME: /models
       # Set to 1 after initial model download to block outbound HF traffic
-      TRANSFORMERS_OFFLINE: "0"
+      TRANSFORMERS_OFFLINE: "${TRANSFORMERS_OFFLINE:-0}"
     volumes:
       - hf_models:/models
     depends_on:
