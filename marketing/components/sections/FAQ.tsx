@@ -34,7 +34,7 @@ const faqs = [
   },
   {
     q: "What does 'patent-pending' mean for the platform?",
-    a: "CyberArmor AI's core architectural innovations — including our approach to AI trust verification, cross-layer policy enforcement, and decision-level evidence capture — are the subject of patent applications currently in process. This reflects our commitment to building defensible, differentiated technology rather than assembling existing tools under a new brand.",
+    a: "CyberArmor AI uses 'patent-pending' to describe architectural innovations the company believes are differentiated and has chosen to protect through formal filing activity. It should be read as an intellectual-property signal, not as a substitute for product validation, security review, or procurement diligence.",
   },
 ];
 

@@ -3,28 +3,28 @@ const diffs = [
     number: "01",
     title: "Governance That Actually Enforces",
     body:
-      "Most governance platforms produce policies and reports. CyberArmor AI connects governance to technical enforcement — so when a policy says 'no unauthorized AI,' the platform makes it so. Automatically, at runtime.",
+      "Most governance products stop at visibility, questionnaires, or policy documentation. CyberArmor AI ties governance to runtime decisioning so controls can be enforced when AI use actually happens.",
     tag: "Governance → Enforcement",
   },
   {
     number: "02",
     title: "Evidence-Driven Trust — Not Assumptions",
     body:
-      "Every AI action, policy decision, and security event is captured as structured, reviewable evidence. Security teams can trace exactly what happened, when, by whom, and under what policy — not reconstruct it hours later.",
+      "AI actions, policy decisions, and control outcomes are captured as structured evidence so security, legal, and compliance teams can review what happened without relying on memory or screenshots.",
     tag: "Decision Traceability",
   },
   {
     number: "03",
     title: "Cross-Layer Coverage by Design",
     body:
-      "CyberArmor AI is built to operate across the full AI stack: models, agents, applications, APIs, identities, and data pipelines. Not a point solution for one layer. A unified trust system for the entire environment.",
+      "CyberArmor AI is built to operate across models, agents, applications, APIs, identities, and data movement. It is designed as a platform layer for the AI environment, not a single control for a single tool.",
     tag: "Unified Architecture",
   },
   {
     number: "04",
     title: "Built for Enterprise Operations, Not Lab Demos",
     body:
-      "Enterprise deployments are messy. CyberArmor AI is designed for real-world complexity — hybrid environments, legacy integrations, multi-cloud workloads, and security teams that don't have unlimited capacity.",
+      "Enterprise AI programs inherit hybrid environments, uneven ownership, legacy systems, and limited security capacity. CyberArmor AI is built for that operating reality, not a clean-room demo scenario.",
     tag: "Enterprise-Ready",
   },
 ];
@@ -47,8 +47,10 @@ export default function Differentiators() {
             <span className="gradient-text-blue">Different Looks Like.</span>
           </h2>
           <p style={{ color: "#8892A4", fontSize: "1.05rem", lineHeight: 1.7 }}>
-            The AI security category is filling with point solutions and repurposed tools.
-            CyberArmor AI is built from first principles for a threat surface those tools were never designed to address.
+            The AI security category is getting crowded with point products and
+            retrofitted tooling. CyberArmor AI is aimed at the harder problem:
+            turning AI governance into operating controls that stand up in real
+            enterprise environments.
           </p>
         </div>
 

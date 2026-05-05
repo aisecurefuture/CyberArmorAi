@@ -14,8 +14,15 @@ export async function POST(req: NextRequest) {
   try {
     const { priceKey } = await req.json();
 
-    if (!priceKey || typeof priceKey !== "string" || !PRICE_MAP[priceKey]) {
+    if (!priceKey || typeof priceKey !== "string" || !(priceKey in PRICE_MAP)) {
       return NextResponse.json({ error: "Invalid product selection" }, { status: 400 });
+    }
+
+    if (priceKey === "ADVISORY") {
+      return NextResponse.json(
+        { error: "Priority Advisory is application-only. Please submit the advisory application to continue." },
+        { status: 403 },
+      );
     }
 
     const priceId = PRICE_MAP[priceKey];
@@ -23,20 +30,34 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Product not configured. Please contact hello@cyberarmor.ai" }, { status: 503 });
     }
 
-    const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
+    const stripeSecretKey = process.env.STRIPE_SECRET_KEY?.trim();
+    if (!stripeSecretKey) {
+      return NextResponse.json(
+        { error: "Checkout is temporarily unavailable. Please contact hello@cyberarmor.ai." },
+        { status: 503 },
+      );
+    }
+
+    const siteUrl = process.env.NEXT_PUBLIC_SITE_URL?.trim().replace(/\/+$/, "");
+    if (!siteUrl) {
+      return NextResponse.json(
+        { error: "Site configuration is incomplete. Please contact hello@cyberarmor.ai." },
+        { status: 503 },
+      );
+    }
+
+    const stripe = new Stripe(stripeSecretKey, {
       apiVersion: "2026-04-22.dahlia",
     });
 
-    const isSubscription = priceKey === "ADVISORY";
-
     const session = await stripe.checkout.sessions.create({
-      mode: isSubscription ? "subscription" : "payment",
+      mode: "payment",
       line_items: [{ price: priceId, quantity: 1 }],
-      success_url: `${process.env.NEXT_PUBLIC_SITE_URL}/advisory/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url:  `${process.env.NEXT_PUBLIC_SITE_URL}/advisory`,
+      success_url: `${siteUrl}/advisory/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url:  `${siteUrl}/advisory`,
       allow_promotion_codes: true,
       billing_address_collection: "auto",
-      customer_creation: isSubscription ? undefined : "always",
+      customer_creation: "always",
       metadata: {
         product: priceKey,
         source: "cyberarmor.ai",

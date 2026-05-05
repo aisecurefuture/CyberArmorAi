@@ -1,9 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import Stripe from "stripe";
-
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-  apiVersion: "2026-04-22.dahlia",
-});
+import { sendLeadEmail } from "@/lib/lead-mailer";
 
 // Product labels for email notifications
 const PRODUCT_LABELS: Record<string, string> = {
@@ -14,12 +11,31 @@ const PRODUCT_LABELS: Record<string, string> = {
   ADVISORY:  "Priority Async Advisory ($3,000/month)",
 };
 
+function getStripeClient(): Stripe {
+  const secretKey = process.env.STRIPE_SECRET_KEY?.trim();
+  if (!secretKey) {
+    throw new Error("STRIPE_SECRET_KEY is not configured");
+  }
+
+  return new Stripe(secretKey, {
+    apiVersion: "2026-04-22.dahlia",
+  });
+}
+
 export async function POST(req: NextRequest) {
   const body = await req.text();
   const sig = req.headers.get("stripe-signature");
 
-  if (!sig || !process.env.STRIPE_WEBHOOK_SECRET) {
+  if (!sig || !process.env.STRIPE_WEBHOOK_SECRET?.trim()) {
     return NextResponse.json({ error: "Missing signature" }, { status: 400 });
+  }
+
+  let stripe: Stripe;
+  try {
+    stripe = getStripeClient();
+  } catch (err) {
+    console.error("Webhook misconfiguration:", err);
+    return NextResponse.json({ error: "Webhook unavailable" }, { status: 503 });
   }
 
   let event: Stripe.Event;
@@ -44,9 +60,32 @@ export async function POST(req: NextRequest) {
         console.log(`   Amount:   ${amount}`);
         console.log(`   Session:  ${session.id}`);
 
-        // TODO: Replace with real email delivery (Resend, SendGrid, etc.)
-        // await sendConfirmationEmail({ customerEmail, customerName, product, amount });
-        // await sendAdminNotification({ customerEmail, customerName, product, amount });
+        try {
+          await sendLeadEmail({
+            subject: `New CyberArmor purchase — ${PRODUCT_LABELS[product] ?? product}`,
+            replyTo: customerEmail !== "unknown" ? customerEmail : undefined,
+            text: [
+              "New CyberArmor purchase",
+              "",
+              `Product: ${PRODUCT_LABELS[product] ?? product}`,
+              `Customer: ${customerName}`,
+              `Email: ${customerEmail}`,
+              `Amount: ${amount}`,
+              `Session: ${session.id}`,
+            ].join("\n"),
+            html: `
+              <h2>New CyberArmor purchase</h2>
+              <p><strong>Product:</strong> ${PRODUCT_LABELS[product] ?? product}</p>
+              <p><strong>Customer:</strong> ${customerName}</p>
+              <p><strong>Email:</strong> ${customerEmail}</p>
+              <p><strong>Amount:</strong> ${amount}</p>
+              <p><strong>Session:</strong> ${session.id}</p>
+            `,
+          });
+        } catch (mailErr) {
+          console.error("Purchase notification email failed:", mailErr);
+        }
+
         break;
       }
 

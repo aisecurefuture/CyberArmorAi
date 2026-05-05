@@ -4,10 +4,10 @@ import Link from "next/link";
 import { ArrowRight, Eye, Shield, Lock, FileSearch, Cpu, Users } from "lucide-react";
 
 const layers = [
-  { icon: Eye, label: "Discover", desc: "Surface every AI asset, model, agent, and API call across the enterprise" },
-  { icon: Shield, label: "Govern", desc: "Define and enforce policies across users, workloads, and AI systems" },
-  { icon: Lock, label: "Protect", desc: "Runtime enforcement with real-time blocking and adaptive response" },
-  { icon: FileSearch, label: "Prove", desc: "Capture decision-level evidence for audit, compliance, and accountability" },
+  { icon: Eye, label: "Discover", desc: "Inventory AI tools, agents, workflows, and external model usage across the enterprise" },
+  { icon: Shield, label: "Govern", desc: "Apply policy by tenant, user, workload, model, and risk context" },
+  { icon: Lock, label: "Protect", desc: "Enforce decisions at runtime with detection, blocking, and response hooks" },
+  { icon: FileSearch, label: "Prove", desc: "Capture attributable evidence for audit, compliance, and executive review" },
 ];
 
 const protects = [
@@ -40,8 +40,9 @@ export default function PlatformOverview() {
             <span className="gradient-text-blue">AI Security & Trust.</span>
           </h2>
           <p style={{ color: "#8892A4", fontSize: "1.05rem", lineHeight: 1.7 }}>
-            CyberArmor AI brings discovery, governance, enforcement, and evidence into a single operational system.
-            Not a checklist. Not a dashboard. A working defense.
+            CyberArmor AI connects visibility, policy, enforcement, and evidence
+            into one operational system for AI security. Not just a reporting
+            layer. A control layer.
           </p>
         </div>
 
@@ -116,7 +117,7 @@ export default function PlatformOverview() {
         }}>
           <div style={{ textAlign: "center", marginBottom: 32 }}>
             <p style={{ fontSize: 12, fontWeight: 700, color: "#00A3FF", letterSpacing: "0.1em", textTransform: "uppercase" }}>
-              Coverage Across Your Entire AI Surface
+              Coverage Across the AI Attack Surface
             </p>
           </div>
           <div style={{

@@ -130,8 +130,10 @@ export default function Hero() {
             margin: "0 auto 40px",
             overflowWrap: "break-word",
           }}>
-            CyberArmor AI unifies visibility, policy enforcement, runtime protection, and evidence-based trust
-            into a single platform — so enterprises can adopt AI with confidence, not risk.
+            CyberArmor AI gives security teams one operating layer for AI
+            discovery, policy enforcement, runtime protection, and auditable
+            evidence, so enterprise AI adoption can move forward with real
+            control instead of blind spots.
           </p>
 
           {/* CTAs */}
@@ -153,9 +155,9 @@ export default function Hero() {
             flexWrap: "wrap",
           }}>
             {[
-              "Built for Enterprise CISOs",
-              "Patent-Pending Architecture",
-              "Cross-Layer AI Coverage",
+              "Built for security-led enterprises",
+              "Runtime enforcement, not policy theater",
+              "Cross-layer coverage across agents, apps, and data",
             ].map((t) => (
               <div key={t} style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <div style={{

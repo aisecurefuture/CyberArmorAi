@@ -110,6 +110,7 @@ export default function ContactPage() {
   const [loading, setLoading] = useState(false);
   const [submitterName, setSubmitterName] = useState("");
   const [errors, setErrors] = useState<FormErrors>({});
+  const [submitError, setSubmitError] = useState("");
   const [form, setForm] = useState<FormData>({
     name: "", title: "", company: "", email: "",
     size: "" as FormData["size"], interest: "" as FormData["interest"],
@@ -149,13 +150,29 @@ export default function ContactPage() {
 
     setLoading(true);
     setErrors({});
+    setSubmitError("");
     setSubmitterName(result.data.name.split(" ")[0]);
 
-    // TODO: replace with real API call, e.g. fetch("/api/contact", { method: "POST", body: JSON.stringify(result.data) })
-    await new Promise((r) => setTimeout(r, 1200));
-
-    setLoading(false);
-    setSubmitted(true);
+    try {
+      const response = await fetch("/api/contact", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(result.data),
+      });
+      const payload = (await response.json().catch(() => ({}))) as { error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error || "We couldn't send your request right now.");
+      }
+      setSubmitted(true);
+    } catch (error) {
+      setSubmitError(
+        error instanceof Error
+          ? error.message
+          : "We couldn't send your request right now. Please email hello@cyberarmor.ai directly.",
+      );
+    } finally {
+      setLoading(false);
+    }
   };
 
   const fieldBorder = (field: keyof FormErrors) =>
@@ -414,6 +431,12 @@ export default function ContactPage() {
                     {loading ? "Sending..." : "Request My Demo"}
                     {!loading && <ArrowRight size={16} />}
                   </button>
+
+                  {submitError && (
+                    <p style={{ ...errorStyle, textAlign: "center", marginTop: 12 }} role="alert">
+                      {submitError}
+                    </p>
+                  )}
 
                   <p style={{ fontSize: 12, color: "#4A5568", textAlign: "center", marginTop: 16 }}>
                     By submitting, you agree to our{" "}

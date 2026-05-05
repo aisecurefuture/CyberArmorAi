@@ -5,19 +5,19 @@ const problems = [
     icon: Ghost,
     title: "Shadow AI Is Already Inside Your Perimeter",
     body:
-      "Employees, developers, and vendors are connecting to AI tools, models, and APIs without security review. You can't govern what you can't see — and right now, most organizations can't see any of it.",
+      "Employees, developers, contractors, and vendors are already using AI tools, APIs, and assistants outside formal review paths. You cannot govern what you cannot inventory, and most organizations still do not have a reliable AI asset picture.",
   },
   {
     icon: Network,
     title: "AI Agents Operate Without Boundaries",
     body:
-      "Autonomous agents make decisions, access systems, and execute workflows across your environment. Without identity-aware controls and runtime guardrails, you have no way to verify, limit, or audit what they do.",
+      "Autonomous agents can take actions, access systems, and trigger workflows across multiple trust boundaries. Without identity-aware controls and runtime guardrails, teams struggle to verify, constrain, or reconstruct what those agents actually did.",
   },
   {
     icon: AlertTriangle,
     title: "Governance Without Enforcement Is Just a Document",
     body:
-      "Most AI governance programs are built on policies and checklists — not technical enforcement. When a policy is violated, there is no response, no evidence, and no accountability. That's not a security program. That's theater.",
+      "Most AI governance efforts begin as policy documents, committee decisions, and vendor questionnaires. When those controls are not tied to technical enforcement, violations become exceptions without response, evidence, or accountability.",
   },
 ];
 
@@ -33,8 +33,9 @@ export default function ProblemStatement() {
             <span className="gradient-text-blue">Security Can Follow.</span>
           </h2>
           <p style={{ color: "#8892A4", fontSize: "1.05rem", lineHeight: 1.7 }}>
-            Security teams face a new threat surface they were never built to defend: ungoverned AI models,
-            autonomous agents, and AI-enabled workflows that cross every trust boundary the enterprise spent years building.
+            Security teams are being asked to govern AI systems, agents, and
+            workflows that move faster than traditional review cycles and cross
+            the same trust boundaries the enterprise spent years hardening.
           </p>
         </div>
 

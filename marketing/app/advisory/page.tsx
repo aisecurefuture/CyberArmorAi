@@ -16,7 +16,7 @@ const tiers = [
     price: "$29",
     priceNote: "one-time",
     turnaround: "Instant download",
-    description: "A practical checklist for leaders evaluating AI risk before approving tools, vendors, or employee workflows.",
+    description: "A concise decision-support checklist for leaders reviewing AI tools, vendor claims, or new internal use cases.",
     includes: [
       "AI usage risk checklist",
       "Shadow AI warning signs",
@@ -42,7 +42,7 @@ const tiers = [
     price: "$97",
     priceNote: "one-time",
     turnaround: "3–5 business days",
-    description: "A fast written review of up to 3 of your AI use cases — risk-classified with practical recommendations.",
+    description: "A written review of up to 3 AI use cases with risk classification and practical next-step guidance.",
     includes: [
       "Review of up to 3 AI use cases",
       "Low / medium / high risk classification",
@@ -68,7 +68,7 @@ const tiers = [
     price: "$497",
     priceNote: "one-time",
     turnaround: "5 business days",
-    description: "Submit your specific AI security questions. Receive a thorough written response in one structured round.",
+    description: "Submit targeted AI security questions and receive one structured written response set for executive or team use.",
     includes: [
       "Submit up to 5 specific questions",
       "Structured written response per question",
@@ -95,7 +95,7 @@ const tiers = [
     price: "$1,500",
     priceNote: "one-time",
     turnaround: "5–7 business days",
-    description: "A boardroom-ready briefing for leaders deciding whether to build, buy, deploy, or scale AI. 5–8 page written deliverable.",
+    description: "A boardroom-ready written brief for leaders deciding whether to build, buy, deploy, or scale AI capabilities.",
     includes: [
       "Review of up to 5 AI workflows, vendors, or product concepts",
       "AI risk map",
@@ -126,7 +126,7 @@ const tiers = [
     price: "$3,000",
     priceNote: "/ month",
     turnaround: "Response within 2 business days",
-    description: "Ongoing async AI security strategy access for leaders who need decision support without hiring a full-time executive.",
+    description: "Ongoing written AI security advisory access for leaders who need decision support without a traditional consulting engagement.",
     includes: [
       "Up to 4 written advisory requests per month",
       "Strategy, vendor, policy, and executive material reviews",
@@ -204,8 +204,8 @@ export default function AdvisoryPage() {
             maxWidth: 800,
             margin: "0 auto 20px",
           }}>
-            AI Security Advisory.<br />
-            <span className="gradient-text-blue">Async. Fixed-Scope. No Surprises.</span>
+            Independent AI Security Advisory.<br />
+            <span className="gradient-text-blue">Written. Fixed-Scope. Executive-Ready.</span>
           </h1>
           <p style={{
             fontSize: "1.15rem",
@@ -214,11 +214,14 @@ export default function AdvisoryPage() {
             maxWidth: 640,
             margin: "0 auto 16px",
           }}>
-            Independent AI security guidance for executives, founders, and security leaders.
-            Every engagement is written, fixed-scope, and delivered asynchronously — no mandatory calls, no open-ended commitments.
+            Independent AI security guidance for executives, founders, and
+            security leaders making decisions about AI adoption, vendor risk,
+            policy, and governance. Every engagement is written, fixed-scope,
+            and delivered asynchronously.
           </p>
           <p style={{ fontSize: 13, color: "#4A5568", maxWidth: 560, margin: "0 auto" }}>
-            Delivered by a Director-level Application, Data & AI Security practitioner with enterprise-scale production experience.
+            Designed for leaders who want clear thinking, bounded deliverables,
+            and practical decision support without a long consulting cycle.
           </p>
         </div>
       </section>
