@@ -1,39 +1,80 @@
 # Deployment
 
-*Placeholder — to be expanded from the Hetzner deployment runbook in the
-internal repo.*
+This page summarizes the current recommended hosted deployment model for the
+repo as it exists today.
 
-## Topology
+## Recommended first hosted shape
 
-A production deployment runs every service inside Docker Compose, fronted by
-a `caddy` reverse proxy that terminates TLS for all customer-facing
-hostnames:
+For operator-led pilots and controlled production-style validation:
+
+- Ubuntu 24.04
+- Docker Compose
+- Caddy for public TLS termination
+- PostgreSQL and Redis
+- OpenBao plus `secrets-service`
+- warmed local transformer model cache for detection
+
+## Public domains
+
+The current public domain split is:
 
 - `cyberarmor.ai` — marketing site
-- `app.cyberarmor.ai` — customer portal
-- `admin.cyberarmor.ai` — admin dashboard
-- `docs.cyberarmor.ai` — this site
-- `support.cyberarmor.ai` — support page
+- `app.cyberarmor.ai` — customer portal and bootstrap-facing public app routes
+- `admin.cyberarmor.ai` — operator/admin dashboard
+- `docs.cyberarmor.ai` — technical documentation
+- `support.cyberarmor.ai` — support landing page
 
-Backend service ports are bound to `127.0.0.1` so only Caddy is exposed to
-the public network.
+## Backend routing model
 
-## Steps
+Public domains terminate at Caddy, which reverse-proxies into the appropriate
+container:
 
-1. Provision a hardened Ubuntu 22.04+ host
-2. Point DNS A records for the five hostnames at the host
-3. Clone the repo and create `/etc/cyberarmor/demo.env` (root-owned, mode 0600)
-4. Run the deploy script:
+- marketing app
+- customer portal nginx
+- dashboard nginx
+- docs site
 
-    ```bash
-    sudo CYBERARMOR_ENV_FILE=/etc/cyberarmor/demo.env \
-         bash scripts/deployment/deploy_hetzner_demo_and_marketing.sh
-    ```
+Because of that, route correctness matters just as much as service health. A
+service can be healthy internally while the public path still fails because a
+proxy route is missing or miswired.
 
-The script brings up the full Compose stack with the `prod` profile (which
-activates Caddy and binds backend services to loopback).
+## Deployment priorities
 
-## TLS certificates
+Before exposing the stack, verify:
 
-Caddy issues and renews Let's Encrypt certificates automatically. No certbot
-timer or systemd renewal hook is needed.
+1. secrets are rotated away from placeholders
+2. OpenBao bootstrap has completed
+3. `control-plane`, `policy`, and `detection` are healthy
+4. public `/pki/public-key` works
+5. bootstrap redemption returns the public control-plane URL
+6. endpoint agents can register and sync policy
+
+## Detection model warm-up
+
+Warm the detection models before relying on offline behavior:
+
+- prompt injection
+- sensitive data
+- toxicity
+- output safety
+
+Then set `TRANSFORMERS_OFFLINE=1` so restarts continue using the warmed cache.
+
+## Current deployment caveats
+
+The repo is deployable today, but the hosted surface is still evolving. In
+practice that means:
+
+- some public routes need careful validation after deploy
+- docs and support need to reflect the real working product boundary
+- customer-facing polish is still catching up to the backend platform maturity
+
+## Deeper runbooks
+
+For more detailed operator guidance, the repo already contains:
+
+- `docs/deployment/hetzner-ubuntu-vm.md`
+- `docs/deployment/hetzner-first-server-checklist.md`
+- `docs/architecture/client-bootstrap-setup.md`
+
+Those documents remain the deeper operational references behind this docs page.

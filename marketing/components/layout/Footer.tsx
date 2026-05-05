@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { X, Globe, Mail } from "lucide-react";
+import { BookOpen, LifeBuoy, Mail } from "lucide-react";
 
 const footerLinks = {
   Platform: [
@@ -25,6 +25,7 @@ const footerLinks = {
   Company: [
     { label: "About", href: "/about" },
     { label: "Contact", href: "/contact" },
+    { label: "Support", href: "/support" },
     { label: "Request Demo", href: "/contact" },
   ],
 };
@@ -56,13 +57,13 @@ export default function Footer() {
                 CyberArmor<span style={{ color: "#00A3FF" }}>.AI</span>
               </span>
             </Link>
-            <p style={{ fontSize: 14, color: "#8892A4", lineHeight: 1.7, marginBottom: 20, maxWidth: 220 }}>
-              The AI Security & Cyber Trust Platform for the enterprise.
-            </p>
-            <div style={{ display: "flex", gap: 10 }}>
+              <p style={{ fontSize: 14, color: "#8892A4", lineHeight: 1.7, marginBottom: 20, maxWidth: 220 }}>
+                The AI Security & Cyber Trust Platform for the enterprise.
+              </p>
+              <div style={{ display: "flex", gap: 10 }}>
               {[
-                { icon: X, href: "#", label: "X (Twitter)" },
-                { icon: Globe, href: "#", label: "LinkedIn" },
+                { icon: BookOpen, href: "https://docs.cyberarmor.ai", label: "Docs" },
+                { icon: LifeBuoy, href: "https://support.cyberarmor.ai", label: "Support" },
                 { icon: Mail, href: "mailto:hello@cyberarmor.ai", label: "Email" },
               ].map(({ icon: Icon, href, label }) => (
                 <a key={label} href={href} aria-label={label} style={{
@@ -121,12 +122,16 @@ export default function Footer() {
             © {new Date().getFullYear()} CyberArmor AI, Inc. All rights reserved. Patent-pending innovations.
           </p>
           <div style={{ display: "flex", gap: 24 }}>
-            {["Privacy Policy", "Terms of Service", "Security"].map((t) => (
-              <Link key={t} href="#" style={{ fontSize: 13, color: "#4A5568", textDecoration: "none", transition: "color 0.2s" }}
+            {[
+              { label: "Privacy Policy", href: "/privacy" },
+              { label: "Terms of Service", href: "/terms" },
+              { label: "Security", href: "/security" },
+            ].map((item) => (
+              <Link key={item.label} href={item.href} style={{ fontSize: 13, color: "#4A5568", textDecoration: "none", transition: "color 0.2s" }}
                 onMouseEnter={(e) => (e.currentTarget.style.color = "#8892A4")}
                 onMouseLeave={(e) => (e.currentTarget.style.color = "#4A5568")}
               >
-                {t}
+                {item.label}
               </Link>
             ))}
           </div>

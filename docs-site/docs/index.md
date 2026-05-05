@@ -1,51 +1,91 @@
-# CyberArmor AI Documentation
+# CyberArmor AI Docs
 
-Welcome to the CyberArmor AI documentation. This site collects everything you
-need to deploy, operate, and integrate with the CyberArmor platform.
+CyberArmor AI is an enterprise AI security and cyber trust platform for teams
+that need to discover AI usage, enforce policy at runtime, protect sensitive
+data, and prove what happened with auditable evidence.
 
-## Where to start
+This documentation site is the technical companion to
+[cyberarmor.ai](https://cyberarmor.ai). It is built for operators, security
+architects, platform teams, and customer engineering teams who need to deploy,
+operate, and integrate the platform in real environments.
+
+## What you can do here
 
 <div class="grid cards" markdown>
 
--   :material-rocket-launch: **Getting Started**
+-   :material-rocket-launch: **Deploy the platform**
 
     ---
 
-    Install the platform and run your first policy check.
+    Bring up the Docker Compose stack, understand the public domains, and move
+    from local evaluation to a hardened hosted environment.
 
-    [:octicons-arrow-right-24: Begin install](getting-started/index.md)
+    [:octicons-arrow-right-24: Start with installation](getting-started/index.md)
 
--   :material-cog-outline: **Platform**
-
-    ---
-
-    Architecture overview, services, and how the pieces fit together.
-
-    [:octicons-arrow-right-24: Architecture](platform/architecture.md)
-
--   :material-server: **Operations**
+-   :material-shield-crown-outline: **Understand the platform**
 
     ---
 
-    Deploying to production, monitoring, and day-2 operations.
+    See how the control plane, policy engine, detection services, endpoint
+    agents, integrations, and secrets architecture fit together.
 
-    [:octicons-arrow-right-24: Deployment](operations/deployment.md)
+    [:octicons-arrow-right-24: Review the architecture](platform/architecture.md)
 
--   :material-lifebuoy: **Need help?**
+-   :material-laptop-account: **Roll out endpoint coverage**
 
     ---
 
-    Reach the support team for product or runtime issues.
+    Enroll the endpoint agent, understand what it monitors, and validate
+    heartbeat, policy sync, and telemetry paths.
 
-    [:octicons-arrow-right-24: Get support](https://support.cyberarmor.ai)
+    [:octicons-arrow-right-24: Endpoint agent guide](platform/endpoint-agent.md)
+
+-   :material-lifebuoy: **Get support**
+
+    ---
+
+    Use the support center for deployment triage, enrollment issues, and the
+    details we need to troubleshoot incidents quickly.
+
+    [:octicons-arrow-right-24: Open the support center](support/index.md)
 
 </div>
 
-## About the platform
+## Product boundary
 
-CyberArmor AI is a unified AI security and cyber trust platform. It governs,
-protects, and operationalizes trust across AI systems, agents, applications,
-and data — at scale.
+CyberArmor is strongest today in controlled pilots, internal deployments,
+staging environments, and operator-led production rollouts. The repository
+already contains the core AI security controls, but some customer-facing SaaS
+surface areas are still evolving.
 
-This site is the technical reference. For product overviews and pricing, see
-[cyberarmor.ai](https://cyberarmor.ai).
+If you are validating the platform, keep the current boundary in mind:
+
+- The control plane, policy, detection, response, secrets, and endpoint-agent
+  flows are deployable and testable now.
+- Customer-facing UX, public support/legal surfaces, and some packaging flows
+  are still being refined.
+- The docs aim to reflect the working product as it exists in the repo, not an
+  aspirational future state.
+
+## Core platform services
+
+CyberArmor currently includes:
+
+- `control-plane` for tenant, bootstrap, audit, and control APIs
+- `policy` for runtime policy evaluation and enforcement decisions
+- `detection` for prompt injection, sensitive data, toxicity, and output-safety
+- `response` for incident response actions
+- `secrets-service` plus `openbao` for secrets and PQC key material
+- `ai-router`, `agent-identity`, `integration-control`, `siem-connector`, and
+  `compliance` for the broader enterprise operating model
+- endpoint agents, RASP packages, browser extensions, and IDE integrations for
+  workload and user-side coverage
+
+## Recommended reading order
+
+1. [Getting Started](getting-started/index.md)
+2. [Install](getting-started/install.md)
+3. [Architecture](platform/architecture.md)
+4. [Services](platform/services.md)
+5. [Deployment](operations/deployment.md)
+6. [Support Center](support/index.md)

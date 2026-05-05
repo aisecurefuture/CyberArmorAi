@@ -99,6 +99,27 @@ def _config_path() -> Path:
     return base / "agent.conf"
 
 
+def _persist_agent_id(config_file: Path, agent_id: str) -> None:
+    """Persist a generated agent_id back into JSON config files."""
+    if config_file.suffix.lower() != ".json":
+        return
+    try:
+        payload: Dict[str, Any] = {}
+        if config_file.exists():
+            with open(config_file) as fh:
+                loaded = json.load(fh)
+            if isinstance(loaded, dict):
+                payload = loaded
+        payload["agent_id"] = agent_id
+        with open(config_file, "w") as fh:
+            json.dump(payload, fh, indent=2)
+            fh.write("\n")
+        os.chmod(str(config_file), 0o600)
+        logger.info("Persisted generated agent_id to %s", config_file)
+    except Exception as exc:
+        logger.warning("Could not persist generated agent_id to %s: %s", config_file, exc)
+
+
 def _load_config(path: Optional[Path] = None) -> configparser.ConfigParser:
     """Load agent configuration, falling back to sensible defaults.
 
@@ -110,11 +131,12 @@ def _load_config(path: Optional[Path] = None) -> configparser.ConfigParser:
     """
     cfg = configparser.ConfigParser()
     # Defaults
+    generated_agent_id = str(uuid.uuid4())
     cfg["agent"] = {
         "control_plane_url": DEFAULT_CONTROL_PLANE_URL,
         "agent_api_key": "",
         "tenant_id": "",
-        "agent_id": str(uuid.uuid4()),
+        "agent_id": generated_agent_id,
         "heartbeat_interval": str(HEARTBEAT_INTERVAL_SECONDS),
         "policy_sync_interval": str(POLICY_SYNC_INTERVAL_SECONDS),
         "telemetry_flush_interval": str(TELEMETRY_FLUSH_INTERVAL_SECONDS),
@@ -136,6 +158,7 @@ def _load_config(path: Optional[Path] = None) -> configparser.ConfigParser:
         "rce_guard_enabled": "true",
         "sandbox_enabled": "false",
     }
+    config_had_agent_id = False
 
     config_file = path or _config_path()
     if not config_file.exists():
@@ -166,7 +189,10 @@ def _load_config(path: Optional[Path] = None) -> configparser.ConfigParser:
         if "tenant_id" in data:
             cfg.set("agent", "tenant_id", str(data["tenant_id"]))
         if "agent_id" in data:
-            cfg.set("agent", "agent_id", str(data["agent_id"]))
+            loaded_agent_id = str(data["agent_id"]).strip()
+            if loaded_agent_id:
+                cfg.set("agent", "agent_id", loaded_agent_id)
+                config_had_agent_id = True
         if "log_level" in data:
             cfg.set("agent", "log_level", str(data["log_level"]))
         if "policy_sync_interval_seconds" in data:
@@ -207,7 +233,15 @@ def _load_config(path: Optional[Path] = None) -> configparser.ConfigParser:
     else:
         # Legacy INI format
         cfg.read(str(config_file))
+        if cfg.has_option("agent", "agent_id"):
+            loaded_agent_id = str(cfg.get("agent", "agent_id", fallback="")).strip()
+            if loaded_agent_id:
+                cfg.set("agent", "agent_id", loaded_agent_id)
+                config_had_agent_id = True
 
+    if not config_had_agent_id:
+        cfg.set("agent", "agent_id", generated_agent_id)
+        _persist_agent_id(config_file, generated_agent_id)
     return cfg
 
 

@@ -1,15 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import Stripe from "stripe";
 
-function getStripeClient() {
-  const apiKey = process.env.STRIPE_SECRET_KEY;
-  if (!apiKey) {
-    return null;
-  }
-  return new Stripe(apiKey, {
-    apiVersion: "2026-04-22.dahlia",
-  });
-}
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
+  apiVersion: "2026-04-22.dahlia",
+});
 
 // Product labels for email notifications
 const PRODUCT_LABELS: Record<string, string> = {
@@ -23,9 +17,8 @@ const PRODUCT_LABELS: Record<string, string> = {
 export async function POST(req: NextRequest) {
   const body = await req.text();
   const sig = req.headers.get("stripe-signature");
-  const stripe = getStripeClient();
 
-  if (!sig || !process.env.STRIPE_WEBHOOK_SECRET || !stripe) {
+  if (!sig || !process.env.STRIPE_WEBHOOK_SECRET) {
     return NextResponse.json({ error: "Missing signature" }, { status: 400 });
   }
 

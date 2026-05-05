@@ -1,6 +1,6 @@
-site_name: CyberArmor AI Documentation
+site_name: CyberArmor AI Docs
 site_url: https://docs.cyberarmor.ai
-site_description: Documentation for the CyberArmor AI security platform — install guides, integration walkthroughs, and the policy reference.
+site_description: CyberArmor AI deployment, endpoint, integration, and operations documentation for enterprise AI security teams.
 site_author: CyberArmor AI
 
 theme:
@@ -8,15 +8,15 @@ theme:
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: indigo
-      accent: indigo
+      primary: blue grey
+      accent: cyan
       toggle:
         icon: material/brightness-7
         name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: indigo
-      accent: indigo
+      primary: blue grey
+      accent: cyan
       toggle:
         icon: material/brightness-4
         name: Switch to light mode
@@ -31,7 +31,7 @@ theme:
     - content.code.copy
     - content.code.annotate
   font:
-    text: Inter
+    text: IBM Plex Sans
     code: JetBrains Mono
   icon:
     repo: fontawesome/brands/github
@@ -60,6 +60,9 @@ markdown_extensions:
 plugins:
   - search
 
+extra_css:
+  - stylesheets/extra.css
+
 nav:
   - Home: index.md
   - Getting Started:
@@ -67,11 +70,20 @@ nav:
       - Install: getting-started/install.md
   - Platform:
       - Architecture: platform/architecture.md
+      - Services: platform/services.md
+      - Endpoint Agent: platform/endpoint-agent.md
   - Operations:
       - Deployment: operations/deployment.md
+      - Troubleshooting: operations/troubleshooting.md
+  - Support:
+      - Support Center: support/index.md
 
 extra:
   social:
+    - icon: fontawesome/solid/globe
+      link: https://cyberarmor.ai
+    - icon: fontawesome/solid/shield-halved
+      link: https://app.cyberarmor.ai
     - icon: fontawesome/brands/github
       link: https://github.com/cyberarmor-ai
   generator: false

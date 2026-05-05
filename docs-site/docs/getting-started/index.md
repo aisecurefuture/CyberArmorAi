@@ -1,20 +1,64 @@
 # Getting Started
 
-This section walks you through installing the CyberArmor platform and getting
-your first policy enforcement running.
+This section is the fastest route from repository checkout to a working
+CyberArmor environment.
 
-## What you'll need
+## Who this is for
 
-- A Linux host (Ubuntu 22.04+ recommended) or container runtime
-- Docker Engine 24+ and Docker Compose v2
-- Outbound network access for pulling base images
+Use this path if you are:
 
-## Next steps
+- evaluating CyberArmor in a lab, pilot, or staging environment
+- preparing a hosted deployment on a single Linux server
+- validating endpoint-agent enrollment and policy sync
+- learning how the public domains map to the running services
 
-1. [Install the platform](install.md) — bring up the local demo stack
-2. Connect your first integration *(coming soon)*
-3. Define your first policy *(coming soon)*
+## What the platform includes
 
-!!! tip "Try the demo first"
-    The fastest path to seeing CyberArmor in action is the local demo stack.
-    It runs every service in Docker and seeds a usable configuration.
+A standard hosted deployment can expose these public surfaces:
+
+- `cyberarmor.ai` for the marketing site
+- `app.cyberarmor.ai` for the customer portal and package/bootstrap flows
+- `admin.cyberarmor.ai` for the operator/admin dashboard
+- `docs.cyberarmor.ai` for technical documentation
+- `support.cyberarmor.ai` for the support landing page
+
+Behind those public domains, the core platform includes:
+
+- `control-plane`
+- `policy`
+- `detection`
+- `response`
+- `identity`
+- `agent-identity`
+- `ai-router`
+- `audit`
+- `integration-control`
+- `secrets-service`
+- `openbao`
+- `siem-connector`
+- `compliance`
+
+## Recommended path
+
+1. [Install the platform](install.md)
+2. [Review the architecture](../platform/architecture.md)
+3. [Review the service map](../platform/services.md)
+4. [Read the deployment guide](../operations/deployment.md)
+5. [Use the support center](../support/index.md) if you hit a bootstrap,
+   routing, or endpoint-agent issue
+
+## Best first validation checks
+
+After install, verify these before going deeper:
+
+- public domains resolve correctly
+- `control-plane`, `policy`, and `detection` health endpoints return `200`
+- `/pki/public-key` works on both the internal and public routes
+- endpoint-agent bootstrap redemption returns the public control-plane URL
+- endpoint agents can register, sync policy, and emit heartbeat/telemetry
+
+## Where the detail lives
+
+This docs site is intentionally practical. It draws from the working repo,
+service READMEs, and deployment runbooks so the guidance matches what actually
+ships today.

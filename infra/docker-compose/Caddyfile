@@ -36,8 +36,7 @@
 	reverse_proxy docs:80
 }
 
-# Support — rewrites to the /support route inside the marketing app so the
-# brand and layout stay consistent with the rest of the site.
+# Support — rewrites to the branded support route inside the marketing app.
 {$SUPPORT_DOMAIN:support.cyberarmor.ai} {
 	encode zstd gzip
 	rewrite * /support{uri}

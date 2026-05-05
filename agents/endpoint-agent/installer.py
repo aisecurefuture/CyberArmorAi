@@ -100,6 +100,7 @@ DEFAULT_CONFIG = {
     "control_plane_url": "http://localhost:8000",
     "api_key": "",
     "tenant_id": "",
+    "agent_id": "",
     "policy_sync_interval_seconds": 60,
     "telemetry_interval_seconds": 30,
     "http_timeout_seconds": 25,
@@ -168,6 +169,18 @@ def load_existing_config(config_dir: Path) -> Dict:
     except Exception as exc:
         logger.warning("Could not read existing configuration %s: %s", config_file, exc)
     return {}
+
+
+def ensure_agent_id(config: Dict) -> str:
+    """Ensure the config has a stable non-empty agent_id."""
+    agent_id = str(config.get("agent_id") or "").strip()
+    if not agent_id:
+        import uuid
+
+        agent_id = str(uuid.uuid4())
+        logger.info("Generated persistent agent_id: %s", agent_id)
+    config["agent_id"] = agent_id
+    return agent_id
 
 
 def write_bridge_config(config_dir: Path, config: Dict) -> Path:
@@ -705,6 +718,7 @@ def install(
         config["api_key"] = api_key
     if tenant_id:
         config["tenant_id"] = tenant_id
+    ensure_agent_id(config)
 
     config_path = write_config(config_dir, config)
     bridge_config_path = config_dir / "kernel_bridge.json"

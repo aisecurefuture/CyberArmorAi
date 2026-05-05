@@ -1,8 +1,20 @@
-const stats = [
-  { value: "78%", label: "of enterprises have deployed AI systems with no formal security review" },
-  { value: "3.2×", label: "increase in AI-related security incidents reported in the past 18 months" },
-  { value: "91%", label: "of security leaders say AI governance is a top priority but lack technical enforcement" },
-  { value: "$4.8M", label: "average cost of an enterprise data breach involving AI or ML systems" },
+const signals = [
+  {
+    value: "Board-Level",
+    label: "AI governance has moved from experimentation to executive oversight.",
+  },
+  {
+    value: "Runtime Risk",
+    label: "Prompt injection, unmanaged agents, and AI-driven data exposure are live operational issues now.",
+  },
+  {
+    value: "Control Gap",
+    label: "Most organizations have policy language before they have technical enforcement.",
+  },
+  {
+    value: "Proof Demand",
+    label: "Security, legal, and compliance teams increasingly need evidence, not just assurance.",
+  },
 ];
 
 export default function WhyNow() {
@@ -45,7 +57,7 @@ export default function WhyNow() {
           </div>
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
-            {stats.map(({ value, label }) => (
+            {signals.map(({ value, label }) => (
               <div key={value} style={{
                 background: "#0F1117",
                 border: "1px solid #1E2335",
