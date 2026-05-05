@@ -224,11 +224,11 @@ def _prompt_injection_heuristics(text: str) -> Dict[str, Any]:
     patterns = {
         "instruction_override": (
             r"\b(ignore|bypass|override|forget|disregard)\b.{0,40}"
-            r"\b(instruction|policy|guardrail|rule)\b"
+            r"\b(instruction(?:s)?|policy|guardrail(?:s)?|rule(?:s)?|prompt)\b"
         ),
         "system_prompt_exfil": (
-            r"\b(reveal|show|print|dump|expose)\b.{0,40}"
-            r"\b(system prompt|developer prompt|hidden prompt|secret)\b"
+            r"\b(reveal|show|print|dump|expose|give|return)\b.{0,60}"
+            r"\b(system prompt|developer prompt|hidden prompt|secret|source code|codebase|internal code)\b"
         ),
         "role_hijack": (
             r"\b(you are now|act as|pretend to be)\b.{0,50}"
@@ -243,14 +243,18 @@ def _prompt_injection_heuristics(text: str) -> Dict[str, Any]:
             r"\b(ignore|override|follow these instructions)\b"
         ),
     }
-    matched = [
-        name
-        for name, pat in patterns.items()
-        if re.search(pat, t, flags=re.IGNORECASE | re.DOTALL)
-    ]
+    matched = [name for name, pat in patterns.items() if re.search(pat, t, flags=re.IGNORECASE | re.DOTALL)]
+    signal_weights = {
+        "instruction_override": 0.45,
+        "system_prompt_exfil": 0.45,
+        "role_hijack": 0.35,
+        "tool_injection": 0.35,
+        "indirect_doc_injection": 0.30,
+    }
+    weighted_score = sum(signal_weights.get(name, 0.2) for name in matched)
     return {
         "matched_signals": matched,
-        "heuristic_score": round(min(1.0, len(matched) * 0.22), 4),
+        "heuristic_score": round(min(1.0, weighted_score), 4),
     }
 
 
