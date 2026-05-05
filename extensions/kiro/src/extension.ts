@@ -22,7 +22,43 @@ const SUSPICIOUS_CODE = [
 
 let diagnostics: vscode.DiagnosticCollection;
 
-export function activate(context: vscode.ExtensionContext) {
+async function redeemBootstrapToken(config: vscode.WorkspaceConfiguration): Promise<boolean> {
+  const bootstrapToken = config.get<string>('bootstrapToken', '');
+  const apiKey = config.get<string>('apiKey', '');
+  const controlPlaneUrl = config.get<string>('controlPlaneUrl', 'http://localhost:8000');
+  const tenantId = config.get<string>('tenantId', 'default');
+  if (!bootstrapToken || apiKey) return false;
+  const response = await fetch(`${controlPlaneUrl.replace(/\/$/, '')}/bootstrap/redeem`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      bootstrap_token: bootstrapToken,
+      package_key: 'kiro-extension',
+      subject_type: 'extension',
+      subject_name: vscode.env.machineId || 'kiro-extension',
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(`Bootstrap redeem failed (${response.status}): ${await response.text()}`);
+  }
+  const redeemed = await response.json();
+  await config.update('apiKey', redeemed.service_api_key || '', vscode.ConfigurationTarget.Global);
+  await config.update('tenantId', redeemed.tenant_id || tenantId, vscode.ConfigurationTarget.Global);
+  await config.update('controlPlaneUrl', redeemed.control_plane_url || controlPlaneUrl, vscode.ConfigurationTarget.Global);
+  await config.update('bootstrapToken', '', vscode.ConfigurationTarget.Global);
+  return true;
+}
+
+export async function activate(context: vscode.ExtensionContext) {
+  const config = vscode.workspace.getConfiguration('cyberarmor');
+  try {
+    const redeemed = await redeemBootstrapToken(config);
+    if (redeemed) {
+      vscode.window.showInformationMessage('CyberArmor Protect for Kiro enrolled successfully.');
+    }
+  } catch (error: any) {
+    vscode.window.showErrorMessage(`CyberArmor bootstrap redeem failed: ${error.message || error}`);
+  }
   const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   statusBar.text = '$(shield) CyberArmor';
   statusBar.tooltip = 'CyberArmor Protect for Kiro';
@@ -38,6 +74,18 @@ export function activate(context: vscode.ExtensionContext) {
       if (editor) {
         const count = scanDocument(editor.document);
         vscode.window.showInformationMessage(`CyberArmor: ${count} finding(s)`);
+      }
+    }),
+    vscode.commands.registerCommand('cyberarmor-kiro.redeemBootstrapToken', async () => {
+      try {
+        const redeemed = await redeemBootstrapToken(vscode.workspace.getConfiguration('cyberarmor'));
+        vscode.window.showInformationMessage(
+          redeemed
+            ? 'CyberArmor Protect for Kiro enrolled successfully.'
+            : 'Bootstrap redeem skipped. Add a bootstrap token or clear the existing API key first.'
+        );
+      } catch (error: any) {
+        vscode.window.showErrorMessage(`CyberArmor bootstrap redeem failed: ${error.message || error}`);
       }
     }),
   );

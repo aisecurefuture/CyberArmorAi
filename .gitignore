@@ -1,0 +1,81 @@
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.claude/
+
+# Logs / temp files
+*.log
+*.tmp
+*.temp
+
+# Secrets / local environment files
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets/
+
+# Keep checked-in examples
+!.env.example
+!**/.env.example
+!**/.env.production.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+.venv/
+venv/
+
+# Node / frontend
+node_modules/
+.npm/
+.pnpm-store/
+.yarn/cache/
+.yarn/unplugged/
+.parcel-cache/
+.next/
+out/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Java / JVM
+.gradle/
+build/
+target/
+
+# Rust
+target/
+# Libraries typically omit Cargo.lock; remove this line if you want Rust apps pinned.
+Cargo.lock
+
+# .NET
+bin/
+obj/
+
+# Go
+*.test
+coverage.out
+
+# Generated extension build outputs
+extensions/vscode/out/
+
+# Security / scan outputs
+*.sarif
+
+# Docker / local runtime data
+docker-data/
+

@@ -16,6 +16,12 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 
+def _contextual_match_span(match: re.Match[str]) -> Tuple[int, int]:
+    if "value" not in match.re.groupindex:
+        return match.start(), match.end()
+    return match.start("value"), match.end("value")
+
+
 # ---------------------------------------------------------------------------
 # Enums
 # ---------------------------------------------------------------------------
@@ -173,6 +179,27 @@ _DLP_PATTERNS: List[Tuple[str, re.Pattern, str]] = [
      "[REDACTED-DOB]"),
 ]
 
+_CONTEXTUAL_DLP_PATTERNS: List[Tuple[str, re.Pattern, str]] = [
+    (
+        "SSN",
+        re.compile(
+            r"(?P<prefix>\b(?:ssn|social\s+security(?:\s+number)?|taxpayer\s+id)\b"
+            r"[\s:#=-]{0,12})(?P<value>\d{9})\b",
+            re.IGNORECASE,
+        ),
+        "[REDACTED-SSN]",
+    ),
+    (
+        "SSN",
+        re.compile(
+            r"\b(?P<value>\d{9})(?P<suffix>[\s:#=-]{0,12}"
+            r"(?:ssn|social\s+security(?:\s+number)?|taxpayer\s+id)\b)",
+            re.IGNORECASE,
+        ),
+        "[REDACTED-SSN]",
+    ),
+]
+
 
 # ---------------------------------------------------------------------------
 # Prompt injection patterns
@@ -264,6 +291,13 @@ class RiskScorer:
                 findings.append({"label": label, "count": len(matches), "positions": positions})
                 total_hits += len(matches)
 
+        for label, pattern, _ in _CONTEXTUAL_DLP_PATTERNS:
+            matches = list(pattern.finditer(text))
+            if matches:
+                positions = [_contextual_match_span(m) for m in matches]
+                findings.append({"label": label, "count": len(matches), "positions": positions})
+                total_hits += len(matches)
+
         # Diminishing returns: each additional hit adds less marginal risk
         if total_hits == 0:
             return 0.0, findings
@@ -287,6 +321,21 @@ class RiskScorer:
             if n_subs:
                 findings.append({"label": label, "count": n_subs})
                 redacted = new_text
+
+        for label, pattern, placeholder in _CONTEXTUAL_DLP_PATTERNS:
+            matches = list(pattern.finditer(redacted))
+            if not matches:
+                continue
+            findings.append({"label": label, "count": len(matches)})
+            pieces: List[str] = []
+            cursor = 0
+            for match in matches:
+                start, end = _contextual_match_span(match)
+                pieces.append(redacted[cursor:start])
+                pieces.append(placeholder)
+                cursor = end
+            pieces.append(redacted[cursor:])
+            redacted = "".join(pieces)
 
         return redacted, findings
 

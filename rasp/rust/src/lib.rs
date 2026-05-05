@@ -12,6 +12,7 @@ use tracing::{info, warn};
 pub struct Config {
     pub control_plane_url: String,
     pub api_key: String,
+    pub bootstrap_token: String,
     pub tenant_id: String,
     pub mode: Mode,
     pub dlp_enabled: bool,
@@ -37,9 +38,10 @@ impl Default for Config {
             default.to_string()
         }
         Self {
-            control_plane_url: env_first(&["CYBERARMOR_URL"], "http://localhost:8000"),
+            control_plane_url: env_first(&["CYBERARMOR_CONTROL_PLANE_URL", "CYBERARMOR_URL"], "http://localhost:8000"),
             api_key: env_first(&["CYBERARMOR_API_KEY"], ""),
-            tenant_id: env_first(&["CYBERARMOR_TENANT"], "default"),
+            bootstrap_token: env_first(&["CYBERARMOR_BOOTSTRAP_TOKEN"], ""),
+            tenant_id: env_first(&["CYBERARMOR_TENANT_ID", "CYBERARMOR_TENANT"], "default"),
             mode: if env_first(&["CYBERARMOR_MODE"], "monitor").eq_ignore_ascii_case("block") {
                 Mode::Block
             } else {
@@ -47,7 +49,55 @@ impl Default for Config {
             },
             dlp_enabled: true,
             prompt_injection_enabled: true,
+        }.with_bootstrap_redeemed()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct BootstrapRedeemResponse {
+    api_key: Option<String>,
+    tenant_id: Option<String>,
+}
+
+impl Config {
+    pub fn with_bootstrap_redeemed(mut self) -> Self {
+        if self.bootstrap_token.is_empty() || !self.api_key.is_empty() {
+            return self;
         }
+
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build();
+        let Ok(client) = client else {
+            return self;
+        };
+
+        let payload = serde_json::json!({
+            "bootstrap_token": self.bootstrap_token,
+            "package_key": "rasp-rust",
+            "subject_type": "rasp_runtime",
+            "subject_name": std::env::var("CYBERARMOR_RASP_SUBJECT_NAME")
+                .or_else(|_| std::env::var("HOSTNAME"))
+                .unwrap_or_else(|_| "rust-rasp".to_string()),
+        });
+
+        let response = client
+            .post(format!("{}/bootstrap/redeem", self.control_plane_url.trim_end_matches('/')))
+            .json(&payload)
+            .send();
+        if let Ok(response) = response {
+            if let Ok(redeemed) = response.error_for_status() {
+                if let Ok(body) = redeemed.json::<BootstrapRedeemResponse>() {
+                    if let Some(api_key) = body.api_key {
+                        self.api_key = api_key;
+                    }
+                    if let Some(tenant_id) = body.tenant_id {
+                        self.tenant_id = tenant_id;
+                    }
+                }
+            }
+        }
+        self
     }
 }
 

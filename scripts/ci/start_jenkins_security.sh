@@ -6,9 +6,29 @@ JENKINS_DIR="$ROOT_DIR/infra/jenkins"
 COMPOSE_FILE="$JENKINS_DIR/docker-compose.security.yml"
 HOST_JENKINS_WORK_ROOT="${HOST_JENKINS_WORK_ROOT:-/tmp/cyberarmor-jenkins}"
 HOST_JENKINS_JOB_WORKDIR="$HOST_JENKINS_WORK_ROOT/CyberArmorAI"
+HOST_UID="$(id -u)"
+HOST_GID="$(id -g)"
 
 mkdir -p "$HOST_JENKINS_WORK_ROOT"
-rm -rf "$HOST_JENKINS_JOB_WORKDIR"
+
+reset_host_workdir() {
+  if rm -rf "$HOST_JENKINS_JOB_WORKDIR" 2>/dev/null; then
+    return
+  fi
+
+  echo "[start_jenkins_security] local cleanup hit permission errors; using Docker to repair $HOST_JENKINS_WORK_ROOT"
+  docker run --rm \
+    --user 0:0 \
+    -v "$HOST_JENKINS_WORK_ROOT:$HOST_JENKINS_WORK_ROOT" \
+    busybox:1.36 \
+    sh -c "
+      rm -rf '$HOST_JENKINS_JOB_WORKDIR' &&
+      mkdir -p '$HOST_JENKINS_WORK_ROOT' &&
+      chown -R '$HOST_UID:$HOST_GID' '$HOST_JENKINS_WORK_ROOT'
+    "
+}
+
+reset_host_workdir
 mkdir -p "$HOST_JENKINS_JOB_WORKDIR"
 
 rsync_common_args=(

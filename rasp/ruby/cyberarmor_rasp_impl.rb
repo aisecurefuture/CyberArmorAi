@@ -72,15 +72,40 @@ module CyberArmor
     end
 
     Config = Struct.new(:control_plane_url, :api_key, :tenant_id, :mode,
-                         :dlp_enabled, :prompt_injection_enabled, keyword_init: true) do
+                         :dlp_enabled, :prompt_injection_enabled, :bootstrap_token, keyword_init: true) do
       def initialize(**)
         super
-        self.control_plane_url ||= ENV.fetch('CYBERARMOR_URL', 'http://localhost:8000')
+        self.control_plane_url ||= ENV.fetch('CYBERARMOR_CONTROL_PLANE_URL', ENV.fetch('CYBERARMOR_URL', 'http://localhost:8000'))
         self.api_key ||= ENV.fetch('CYBERARMOR_API_KEY', '')
-        self.tenant_id ||= ENV.fetch('CYBERARMOR_TENANT', 'default')
+        self.bootstrap_token ||= ENV.fetch('CYBERARMOR_BOOTSTRAP_TOKEN', '')
+        self.tenant_id ||= ENV.fetch('CYBERARMOR_TENANT_ID', ENV.fetch('CYBERARMOR_TENANT', 'default'))
         self.mode ||= ENV.fetch('CYBERARMOR_MODE', 'monitor').to_sym
         self.dlp_enabled = true if dlp_enabled.nil?
         self.prompt_injection_enabled = true if prompt_injection_enabled.nil?
+        redeem_bootstrap_token_if_needed
+      end
+
+      def redeem_bootstrap_token_if_needed
+        return if bootstrap_token.to_s.empty? || !api_key.to_s.empty?
+
+        uri = URI.join(control_plane_url.end_with?('/') ? control_plane_url : "#{control_plane_url}/", 'bootstrap/redeem')
+        request = Net::HTTP::Post.new(uri)
+        request['Content-Type'] = 'application/json'
+        request.body = {
+          bootstrap_token: bootstrap_token,
+          package_key: 'rasp-ruby',
+          subject_type: 'rasp_runtime',
+          subject_name: ENV['CYBERARMOR_RASP_SUBJECT_NAME'] || ENV['HOSTNAME'] || 'ruby-rasp'
+        }.to_json
+
+        response = Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == 'https', read_timeout: 10, open_timeout: 10) do |http|
+          http.request(request)
+        end
+        return unless response.is_a?(Net::HTTPSuccess)
+
+        payload = JSON.parse(response.body)
+        self.api_key = payload['api_key'] if payload['api_key']
+        self.tenant_id = payload['tenant_id'] if payload['tenant_id']
       end
     end
 

@@ -25,6 +25,7 @@ typedef enum {
 typedef struct {
     const char      *control_plane_url;
     const char      *api_key;
+    const char      *bootstrap_token;
     const char      *tenant_id;
     cyberarmor_mode_t mode;
     bool             dlp_enabled;
@@ -43,7 +44,7 @@ typedef struct {
 /**
  * Initialize the RASP library.
  * If config is NULL, reads from environment variables:
- *   CYBERARMOR_URL, CYBERARMOR_API_KEY, CYBERARMOR_TENANT, CYBERARMOR_MODE
+ *   CYBERARMOR_URL, CYBERARMOR_API_KEY, CYBERARMOR_BOOTSTRAP_TOKEN, CYBERARMOR_TENANT, CYBERARMOR_MODE
  * Returns 0 on success, -1 on failure.
  */
 int cyberarmor_init(const cyberarmor_config_t *config);

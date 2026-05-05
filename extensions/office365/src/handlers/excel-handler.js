@@ -3,6 +3,8 @@
  * DLP scanning, formula injection detection, and data classification for Excel.
  */
 
+import { redeemBootstrapConfig } from "./bootstrap.js";
+
 const DLP_PATTERNS = [
   { name: "SSN", pattern: /\b\d{3}-\d{2}-\d{4}\b/g, severity: "critical", classification: "RESTRICTED" },
   { name: "Credit Card", pattern: /\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/g, severity: "critical", classification: "RESTRICTED" },
@@ -29,11 +31,15 @@ let config = {
   apiKey: "",
   tenantId: "",
   enabled: true,
+  bootstrapToken: "",
   maxCellsToScan: 50000,
 };
 
 function init(cfg) {
   config = { ...config, ...cfg };
+  redeemBootstrapConfig(config, "office365-addin", "excel-addin").then((resolved) => {
+    config = resolved;
+  }).catch(() => {});
 }
 
 async function scan() {

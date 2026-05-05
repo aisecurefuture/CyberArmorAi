@@ -1,4 +1,5 @@
-FROM python:3.11-slim
+ARG PQC_BASE_IMAGE=cyberarmor-python311-pqc:local
+FROM ${PQC_BASE_IMAGE}
 WORKDIR /app
 COPY services/runtime/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt

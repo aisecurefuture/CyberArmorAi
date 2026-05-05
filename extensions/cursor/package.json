@@ -10,13 +10,15 @@
   "contributes": {
     "commands": [
       { "command": "cyberarmor-cursor.scanFile", "title": "CyberArmor: Scan Current File" },
-      { "command": "cyberarmor-cursor.toggleMonitoring", "title": "CyberArmor: Toggle Monitoring" }
+      { "command": "cyberarmor-cursor.toggleMonitoring", "title": "CyberArmor: Toggle Monitoring" },
+      { "command": "cyberarmor-cursor.redeemBootstrapToken", "title": "CyberArmor: Redeem Bootstrap Token" }
     ],
     "configuration": {
       "title": "CyberArmor Protect",
       "properties": {
         "cyberarmor.controlPlaneUrl": { "type": "string", "default": "http://localhost:8000" },
         "cyberarmor.apiKey": { "type": "string", "default": "", "description": "Plaintext API key or precomputed PQC credential value" },
+        "cyberarmor.bootstrapToken": { "type": "string", "default": "", "description": "One-time bootstrap token for enrollment" },
         "cyberarmor.tenantId": { "type": "string", "default": "default" }
       }
     }

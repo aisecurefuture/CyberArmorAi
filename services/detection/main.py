@@ -363,6 +363,19 @@ _SENSITIVE_REGEX_PATTERNS = [
     ),
 ]
 
+_CONTEXTUAL_SSN_PATTERNS = [
+    re.compile(
+        r"\b(?:ssn|social\s+security(?:\s+number)?|taxpayer\s+id)\b"
+        r"[\s:#=-]{0,12}(\d{9})\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(\d{9})\b[\s:#=-]{0,12}"
+        r"(?:ssn|social\s+security(?:\s+number)?|taxpayer\s+id)\b",
+        re.IGNORECASE,
+    ),
+]
+
 _ENTITY_REGEX_PATTERNS = [
     ("email", re.compile(r"\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[A-Za-z]{2,}\b")),
     (
@@ -657,6 +670,25 @@ def _scan_sensitive_data(text: str) -> List[Dict[str, Any]]:
                     "match": match.group(0)[:120],
                     "severity": "high" if name in {"private_key", "aws_key"} else "medium",
                     "detector": "regex_fallback",
+                }
+            )
+
+    # 2b. Context-aware compact SSN detection.
+    # We intentionally avoid treating every bare 9-digit value as an SSN
+    # because that would create noisy false positives for IDs and invoice
+    # numbers. This path only triggers when nearby context strongly suggests
+    # an SSN-style field.
+    for pattern in _CONTEXTUAL_SSN_PATTERNS:
+        for match in pattern.finditer(expanded):
+            compact_value = next((g for g in match.groups() if g), match.group(0))
+            findings.append(
+                {
+                    "type": "sensitive_data",
+                    "subtype": "ssn",
+                    "match": compact_value[:120],
+                    "severity": "medium",
+                    "detector": "regex_contextual",
+                    "context": match.group(0)[:120],
                 }
             )
 

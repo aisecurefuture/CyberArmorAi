@@ -20,6 +20,7 @@ import (
 type Config struct {
 	ControlPlaneURL string `json:"control_plane_url"`
 	APIKey          string `json:"api_key"`
+	BootstrapToken  string `json:"bootstrap_token"`
 	TenantID        string `json:"tenant_id"`
 	Mode            string `json:"mode"` // "monitor" or "block"
 	DLPEnabled      bool   `json:"dlp_enabled"`
@@ -32,14 +33,79 @@ func DefaultConfig() Config {
 	if mode == "" {
 		mode = "monitor"
 	}
-	return Config{
-		ControlPlaneURL: envOrAny("http://localhost:8000", "CYBERARMOR_URL"),
+	cfg := Config{
+		ControlPlaneURL: envOrAny("http://localhost:8000", "CYBERARMOR_CONTROL_PLANE_URL", "CYBERARMOR_URL"),
 		APIKey:          envOrAny("", "CYBERARMOR_API_KEY"),
-		TenantID:        envOrAny("default", "CYBERARMOR_TENANT"),
+		BootstrapToken:  envOrAny("", "CYBERARMOR_BOOTSTRAP_TOKEN"),
+		TenantID:        envOrAny("default", "CYBERARMOR_TENANT_ID", "CYBERARMOR_TENANT"),
 		Mode:            mode,
 		DLPEnabled:      true,
 		PromptInjection: true,
 	}
+	if cfg.BootstrapToken != "" && cfg.APIKey == "" {
+		if redeemed, err := redeemBootstrapToken(cfg); err == nil {
+			cfg = redeemed
+		} else {
+			log.Printf("[CyberArmor RASP] bootstrap redeem failed: %v", err)
+		}
+	}
+	return cfg
+}
+
+func runtimeSubjectName() string {
+	if name := os.Getenv("CYBERARMOR_RASP_SUBJECT_NAME"); name != "" {
+		return name
+	}
+	if name, err := os.Hostname(); err == nil && name != "" {
+		return name
+	}
+	return "go-rasp"
+}
+
+func redeemBootstrapToken(cfg Config) (Config, error) {
+	payload := map[string]string{
+		"bootstrap_token": cfg.BootstrapToken,
+		"package_key":     "rasp-go",
+		"subject_type":    "rasp_runtime",
+		"subject_name":    runtimeSubjectName(),
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return cfg, err
+	}
+
+	req, err := http.NewRequest("POST", strings.TrimRight(cfg.ControlPlaneURL, "/")+"/bootstrap/redeem", bytes.NewReader(body))
+	if err != nil {
+		return cfg, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return cfg, err
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return cfg, fmt.Errorf("status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var redeem struct {
+		APIKey   string `json:"api_key"`
+		TenantID string `json:"tenant_id"`
+	}
+	if err := json.Unmarshal(respBody, &redeem); err != nil {
+		return cfg, err
+	}
+	if redeem.APIKey != "" {
+		cfg.APIKey = redeem.APIKey
+	}
+	if redeem.TenantID != "" {
+		cfg.TenantID = redeem.TenantID
+	}
+	return cfg, nil
 }
 
 func envOrAny(defaultValue string, keys ...string) string {

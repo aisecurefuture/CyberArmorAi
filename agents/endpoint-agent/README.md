@@ -27,12 +27,20 @@ On Windows, installation registers two services:
 
 ## Installation
 
+Shared bootstrap setup guidance, common environment variables, and cross-package enrollment conventions live in [Client Bootstrap Setup](/Users/patrickkelly/Documents/CyberArmorAi/docs/architecture/client-bootstrap-setup.md).
+
 ```bash
 pip install -r requirements.txt
 
+# Preferred: redeem a one-time bootstrap token into an install-scoped credential
+sudo python installer.py install \
+  --control-plane-url https://your-cyberarmor-server \
+  --bootstrap-token YOUR_ONE_TIME_BOOTSTRAP_TOKEN \
+  --subject-name macbook-air-sales-01
+
 # Install as system service (requires admin/root)
 sudo python installer.py install \
-  --server https://your-cyberarmor-server \
+  --control-plane-url https://your-cyberarmor-server \
   --api-key YOUR_API_KEY \
   --tenant-id YOUR_TENANT_ID
 
@@ -60,7 +68,7 @@ docker run -d \
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `CONTROL_PLANE_URL` | Control plane endpoint | `http://localhost:8000` |
-| `API_KEY` | PQC-encrypted API key | (required) |
+| `API_KEY` | Install-scoped API key after bootstrap redemption | (required unless using local-only mode) |
 | `TENANT_ID` | Tenant identifier | (required) |
 | `SCAN_INTERVAL` | Monitor polling interval (seconds) | `5` |
 | `DLP_ENABLED` | Enable DLP scanning | `true` |

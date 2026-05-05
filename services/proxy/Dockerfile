@@ -1,4 +1,5 @@
-FROM python:3.12-slim
+ARG PQC_BASE_IMAGE=cyberarmor-python312-pqc:local
+FROM ${PQC_BASE_IMAGE}
 
 WORKDIR /app
 

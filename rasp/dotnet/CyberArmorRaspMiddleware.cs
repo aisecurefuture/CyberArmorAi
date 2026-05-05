@@ -12,6 +12,8 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -21,6 +23,7 @@ namespace CyberArmor.RASP
     {
         public string ControlPlaneUrl { get; set; } = "http://localhost:8000";
         public string ApiKey { get; set; } = "";
+        public string BootstrapToken { get; set; } = "";
         public string TenantId { get; set; } = "default";
         public bool MonitorMode { get; set; } = true;   // true=log only, false=block
         public bool DlpEnabled { get; set; } = true;
@@ -39,6 +42,8 @@ namespace CyberArmor.RASP
         private readonly List<Regex> _dlpPatterns;
         private readonly List<TelemetryEvent> _eventBuffer = new();
         private readonly SemaphoreSlim _bufferLock = new(1, 1);
+        private readonly SemaphoreSlim _bootstrapLock = new(1, 1);
+        private volatile bool _bootstrapResolved;
 
         public CyberArmorMiddleware(RequestDelegate next, ILogger<CyberArmorMiddleware> logger, IOptions<CyberArmorOptions> options)
         {
@@ -75,6 +80,7 @@ namespace CyberArmor.RASP
 
         public async Task InvokeAsync(HttpContext context)
         {
+            await EnsureBootstrapResolvedAsync();
             var request = context.Request;
 
             // Check if this is a proxied AI API call
@@ -174,6 +180,7 @@ namespace CyberArmor.RASP
             if (string.IsNullOrEmpty(_options.ControlPlaneUrl)) return;
             try
             {
+                await EnsureBootstrapResolvedAsync();
                 using var client = new HttpClient();
                 client.DefaultRequestHeaders.Add("x-api-key", _options.ApiKey);
                 var json = JsonSerializer.Serialize(batch);
@@ -186,6 +193,59 @@ namespace CyberArmor.RASP
             }
         }
 
+        private async Task EnsureBootstrapResolvedAsync()
+        {
+            if (_bootstrapResolved || string.IsNullOrWhiteSpace(_options.BootstrapToken) || !string.IsNullOrWhiteSpace(_options.ApiKey))
+            {
+                _bootstrapResolved = true;
+                return;
+            }
+
+            await _bootstrapLock.WaitAsync();
+            try
+            {
+                if (_bootstrapResolved || !string.IsNullOrWhiteSpace(_options.ApiKey))
+                {
+                    _bootstrapResolved = true;
+                    return;
+                }
+
+                using var client = new HttpClient();
+                var payload = JsonSerializer.Serialize(new
+                {
+                    bootstrap_token = _options.BootstrapToken,
+                    package_key = "rasp-dotnet",
+                    subject_type = "rasp_runtime",
+                    subject_name = Environment.GetEnvironmentVariable("CYBERARMOR_RASP_SUBJECT_NAME")
+                        ?? Environment.MachineName
+                        ?? "dotnet-rasp"
+                });
+                using var response = await client.PostAsync(
+                    $"{_options.ControlPlaneUrl.TrimEnd('/')}/bootstrap/redeem",
+                    new StringContent(payload, Encoding.UTF8, "application/json"),
+                    CancellationToken.None);
+                response.EnsureSuccessStatusCode();
+                using var stream = await response.Content.ReadAsStreamAsync(CancellationToken.None);
+                var redeem = await JsonSerializer.DeserializeAsync<BootstrapRedeemResponse>(stream, cancellationToken: CancellationToken.None);
+                if (redeem != null)
+                {
+                    if (!string.IsNullOrWhiteSpace(redeem.ApiKey))
+                    {
+                        _options.ApiKey = redeem.ApiKey;
+                    }
+                    if (!string.IsNullOrWhiteSpace(redeem.TenantId))
+                    {
+                        _options.TenantId = redeem.TenantId;
+                    }
+                }
+                _bootstrapResolved = true;
+            }
+            finally
+            {
+                _bootstrapLock.Release();
+            }
+        }
+
         private class TelemetryEvent
         {
             public DateTimeOffset Timestamp { get; set; }
@@ -193,6 +253,12 @@ namespace CyberArmor.RASP
             public string Target { get; set; } = "";
             public string Detail { get; set; } = "";
             public string Pattern { get; set; } = "";
+            public string TenantId { get; set; } = "";
+        }
+
+        private sealed class BootstrapRedeemResponse
+        {
+            public string ApiKey { get; set; } = "";
             public string TenantId { get; set; } = "";
         }
     }
@@ -211,6 +277,7 @@ namespace CyberArmor.RASP
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
+            await EnsureBootstrapResolvedAsync();
             if (request.RequestUri != null)
             {
                 var host = request.RequestUri.Host;
@@ -218,10 +285,53 @@ namespace CyberArmor.RASP
             }
             return await base.SendAsync(request, cancellationToken);
         }
+
+        private async Task EnsureBootstrapResolvedAsync()
+        {
+            if (string.IsNullOrWhiteSpace(_options.BootstrapToken) || !string.IsNullOrWhiteSpace(_options.ApiKey))
+            {
+                return;
+            }
+
+            using var client = new HttpClient();
+            var payload = JsonSerializer.Serialize(new
+            {
+                bootstrap_token = _options.BootstrapToken,
+                package_key = "rasp-dotnet",
+                subject_type = "rasp_runtime",
+                subject_name = Environment.GetEnvironmentVariable("CYBERARMOR_RASP_SUBJECT_NAME")
+                    ?? Environment.MachineName
+                    ?? "dotnet-rasp"
+            });
+            using var response = await client.PostAsync(
+                $"{_options.ControlPlaneUrl.TrimEnd('/')}/bootstrap/redeem",
+                new StringContent(payload, Encoding.UTF8, "application/json"),
+                CancellationToken.None);
+            response.EnsureSuccessStatusCode();
+            using var stream = await response.Content.ReadAsStreamAsync(CancellationToken.None);
+            var redeem = await JsonSerializer.DeserializeAsync<BootstrapRedeemResponse>(stream, cancellationToken: CancellationToken.None);
+            if (redeem != null)
+            {
+                if (!string.IsNullOrWhiteSpace(redeem.ApiKey))
+                {
+                    _options.ApiKey = redeem.ApiKey;
+                }
+                if (!string.IsNullOrWhiteSpace(redeem.TenantId))
+                {
+                    _options.TenantId = redeem.TenantId;
+                }
+            }
+        }
+
+        private sealed class BootstrapRedeemResponse
+        {
+            public string ApiKey { get; set; } = "";
+            public string TenantId { get; set; } = "";
+        }
     }
 
     /// <summary>Extension methods for service registration.</summary>
-    public static class CyberArmorExtensions
+    public static class CyberArmorRaspRegistrationExtensions
     {
         public static IServiceCollection AddCyberArmorRasp(this IServiceCollection services, Action<CyberArmorOptions> configure)
         {

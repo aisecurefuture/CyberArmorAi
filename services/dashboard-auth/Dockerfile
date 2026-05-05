@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 
 WORKDIR /app
-RUN pip install --no-cache-dir fastapi uvicorn pydantic SQLAlchemy psycopg2-binary pyotp qrcode cryptography
+RUN pip install --no-cache-dir fastapi uvicorn pydantic SQLAlchemy psycopg2-binary pyotp qrcode cryptography httpx
 
 COPY services/dashboard-auth/main.py /app/main.py
 COPY services/dashboard-auth/db.py /app/db.py

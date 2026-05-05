@@ -4,18 +4,21 @@ import os
 import html as htmlmod
 import hashlib
 import hmac
+import io
 import secrets
 import smtplib
 import time
 import base64
 from datetime import datetime, timezone, timedelta
 from email.message import EmailMessage
+from pathlib import Path
 from typing import Annotated, Dict, Optional, Any, List
 from urllib.parse import urlencode
+import zipfile
 
 import jwt
 from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Query, Request, Response
-from fastapi.responses import JSONResponse, HTMLResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import JSONResponse, HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import desc, func
@@ -25,6 +28,8 @@ from db import Base, SessionLocal, engine
 from models import (
     ApiKey,
     AuditLog,
+    BootstrapInstall,
+    BootstrapToken,
     CustomerLoginCode,
     CustomerSession,
     CustomerSsoConfig,
@@ -100,6 +105,222 @@ CUSTOMER_PORTAL_CONFIG_SECTIONS = {
     "risk",
     "delegations",
     "onboarding",
+}
+CONTROL_PLANE_PUBLIC_URL = os.getenv("CYBERARMOR_CONTROL_PLANE_PUBLIC_URL", "http://localhost:8000").rstrip("/")
+CYBERARMOR_DISTRIBUTION_ROOT = Path(
+    os.getenv("CYBERARMOR_DISTRIBUTION_ROOT", "/workspace/cyberarmor")
+).resolve()
+BOOTSTRAP_TOKEN_TTL_SECONDS = int(os.getenv("CYBERARMOR_BOOTSTRAP_TOKEN_TTL_SECONDS", "1800"))
+BOOTSTRAP_TOKEN_MAX_TTL_SECONDS = int(os.getenv("CYBERARMOR_BOOTSTRAP_TOKEN_MAX_TTL_SECONDS", "86400"))
+
+PACKAGE_CATALOG: Dict[str, Dict[str, Any]] = {
+    "endpoint-agent": {
+        "title": "Endpoint Agent",
+        "category": "agent",
+        "path": "agents/endpoint-agent",
+        "filename": "cyberarmor-endpoint-agent.zip",
+        "description": "Desktop endpoint protection agent with DLP, telemetry, and policy enforcement.",
+        "install_hint": "python installer.py --config /etc/cyberarmor/agent.json",
+        "bootstrap_env": ["CYBERARMOR_BOOTSTRAP_TOKEN", "CYBERARMOR_TENANT_ID", "CYBERARMOR_CONTROL_PLANE_URL"],
+    },
+    "proxy-agent": {
+        "title": "Proxy Agent",
+        "category": "agent",
+        "path": "agents/proxy-agent",
+        "filename": "cyberarmor-proxy-agent.zip",
+        "description": "Service-side proxy agent for policy-aware request mediation.",
+        "install_hint": "docker build -t cyberarmor-proxy-agent .",
+        "bootstrap_env": ["CYBERARMOR_BOOTSTRAP_TOKEN", "CYBERARMOR_TENANT_ID", "CYBERARMOR_CONTROL_PLANE_URL"],
+    },
+    "ros-agent": {
+        "title": "ROS Agent",
+        "category": "agent",
+        "path": "agents/ros-agent",
+        "filename": "cyberarmor-ros-agent.zip",
+        "description": "ROS / robotics agent package for topic and actuator policy enforcement.",
+        "install_hint": "python setup.py install",
+        "bootstrap_env": ["CYBERARMOR_BOOTSTRAP_TOKEN", "CYBERARMOR_TENANT_ID", "CYBERARMOR_CONTROL_PLANE_URL"],
+    },
+    "vscode-extension": {
+        "title": "VS Code Extension",
+        "category": "extension",
+        "path": "extensions/vscode",
+        "filename": "cyberarmor-vscode-extension.zip",
+        "description": "IDE extension for policy checks, DLP scanning, and AI completion monitoring.",
+        "install_hint": "npm install && npm run compile",
+        "bootstrap_env": ["CYBERARMOR_BOOTSTRAP_TOKEN", "CYBERARMOR_TENANT_ID", "CYBERARMOR_CONTROL_PLANE_URL"],
+    },
+    "cursor-extension": {
+        "title": "Cursor Extension",
+        "category": "extension",
+        "path": "extensions/cursor",
+        "filename": "cyberarmor-cursor-extension.zip",
+        "description": "Cursor-focused extension package for tenant-scoped AI guardrails.",
+        "install_hint": "npm install && npm run build",
+        "bootstrap_env": ["CYBERARMOR_BOOTSTRAP_TOKEN", "CYBERARMOR_TENANT_ID", "CYBERARMOR_CONTROL_PLANE_URL"],
+    },
+    "kiro-extension": {
+        "title": "Kiro Extension",
+        "category": "extension",
+        "path": "extensions/kiro",
+        "filename": "cyberarmor-kiro-extension.zip",
+        "description": "Kiro IDE extension bundle for code and prompt monitoring.",
+        "install_hint": "npm install && npm run compile",
+        "bootstrap_env": ["CYBERARMOR_BOOTSTRAP_TOKEN", "CYBERARMOR_TENANT_ID", "CYBERARMOR_CONTROL_PLANE_URL"],
+    },
+    "office365-addin": {
+        "title": "Microsoft 365 Add-in",
+        "category": "extension",
+        "path": "extensions/office365",
+        "filename": "cyberarmor-office365-addin.zip",
+        "description": "Office add-in sources for Outlook / Office workflow protection.",
+        "install_hint": "npm install && npm run build",
+        "bootstrap_env": ["CYBERARMOR_BOOTSTRAP_TOKEN", "CYBERARMOR_TENANT_ID", "CYBERARMOR_CONTROL_PLANE_URL"],
+    },
+    "edge-extension": {
+        "title": "Chromium Browser Extension",
+        "category": "browser_extension",
+        "path": "extensions/edge",
+        "filename": "cyberarmor-edge-extension.zip",
+        "description": "Shared browser extension bundle for Chromium-based browsers such as Chrome, Edge, Brave, Opera, and similar targets.",
+        "install_hint": "Load unpacked extension in the target Chromium-based browser developer mode.",
+        "bootstrap_env": ["CYBERARMOR_BOOTSTRAP_TOKEN", "CYBERARMOR_TENANT_ID", "CYBERARMOR_CONTROL_PLANE_URL"],
+    },
+    "firefox-extension": {
+        "title": "Firefox Browser Extension",
+        "category": "browser_extension",
+        "path": "extensions/firefox",
+        "filename": "cyberarmor-firefox-extension.zip",
+        "description": "Manifest bundle for Mozilla Firefox browser controls.",
+        "install_hint": "Load temporary add-on in Firefox developer mode.",
+        "bootstrap_env": ["CYBERARMOR_BOOTSTRAP_TOKEN", "CYBERARMOR_TENANT_ID", "CYBERARMOR_CONTROL_PLANE_URL"],
+    },
+    "safari-extension": {
+        "title": "Safari Browser Extension",
+        "category": "browser_extension",
+        "path": "extensions/safari",
+        "filename": "cyberarmor-safari-extension.zip",
+        "description": "Manifest bundle for Safari browser controls.",
+        "install_hint": "Package through the Safari extension toolchain.",
+        "bootstrap_env": ["CYBERARMOR_BOOTSTRAP_TOKEN", "CYBERARMOR_TENANT_ID", "CYBERARMOR_CONTROL_PLANE_URL"],
+    },
+    "sdk-python": {
+        "title": "Python SDK",
+        "category": "sdk",
+        "path": "sdks/python",
+        "filename": "cyberarmor-sdk-python.zip",
+        "description": "Python SDK package sources and integration helpers.",
+        "install_hint": "pip install -e .",
+        "bootstrap_env": ["CYBERARMOR_BOOTSTRAP_TOKEN", "CYBERARMOR_TENANT_ID", "CYBERARMOR_CONTROL_PLANE_URL"],
+    },
+    "sdk-nodejs": {
+        "title": "Node.js / TypeScript SDK",
+        "category": "sdk",
+        "path": "sdks/nodejs",
+        "filename": "cyberarmor-sdk-nodejs.zip",
+        "description": "Node.js SDK sources, providers, and framework helpers.",
+        "install_hint": "npm install && npm run build",
+        "bootstrap_env": ["CYBERARMOR_BOOTSTRAP_TOKEN", "CYBERARMOR_TENANT_ID", "CYBERARMOR_CONTROL_PLANE_URL"],
+    },
+    "sdk-go": {
+        "title": "Go SDK",
+        "category": "sdk",
+        "path": "sdks/go",
+        "filename": "cyberarmor-sdk-go.zip",
+        "description": "Go SDK sources and runtime helper bindings.",
+        "install_hint": "go test ./... && go build ./...",
+        "bootstrap_env": ["CYBERARMOR_BOOTSTRAP_TOKEN", "CYBERARMOR_TENANT_ID", "CYBERARMOR_CONTROL_PLANE_URL"],
+    },
+    "sdk-java": {
+        "title": "Java SDK",
+        "category": "sdk",
+        "path": "sdks/java",
+        "filename": "cyberarmor-sdk-java.zip",
+        "description": "Java SDK modules for core, providers, and framework integrations.",
+        "install_hint": "mvn -q package",
+        "bootstrap_env": ["CYBERARMOR_BOOTSTRAP_TOKEN", "CYBERARMOR_TENANT_ID", "CYBERARMOR_CONTROL_PLANE_URL"],
+    },
+    "sdk-dotnet": {
+        "title": ".NET SDK",
+        "category": "sdk",
+        "path": "sdks/dotnet",
+        "filename": "cyberarmor-sdk-dotnet.zip",
+        "description": ".NET SDK package and integration helpers.",
+        "install_hint": "dotnet build",
+        "bootstrap_env": ["CYBERARMOR_BOOTSTRAP_TOKEN", "CYBERARMOR_TENANT_ID", "CYBERARMOR_CONTROL_PLANE_URL"],
+    },
+    "sdk-ruby": {
+        "title": "Ruby SDK",
+        "category": "sdk",
+        "path": "sdks/ruby",
+        "filename": "cyberarmor-sdk-ruby.zip",
+        "description": "Ruby SDK gem sources and audit helpers.",
+        "install_hint": "bundle install && rake test",
+        "bootstrap_env": ["CYBERARMOR_BOOTSTRAP_TOKEN", "CYBERARMOR_TENANT_ID", "CYBERARMOR_CONTROL_PLANE_URL"],
+    },
+    "sdk-php": {
+        "title": "PHP SDK",
+        "category": "sdk",
+        "path": "sdks/php",
+        "filename": "cyberarmor-sdk-php.zip",
+        "description": "PHP SDK sources and provider integrations.",
+        "install_hint": "composer install",
+        "bootstrap_env": ["CYBERARMOR_BOOTSTRAP_TOKEN", "CYBERARMOR_TENANT_ID", "CYBERARMOR_CONTROL_PLANE_URL"],
+    },
+    "sdk-rust": {
+        "title": "Rust SDK",
+        "category": "sdk",
+        "path": "sdks/rust",
+        "filename": "cyberarmor-sdk-rust.zip",
+        "description": "Rust SDK crate sources and provider parity tests.",
+        "install_hint": "cargo test",
+        "bootstrap_env": ["CYBERARMOR_BOOTSTRAP_TOKEN", "CYBERARMOR_TENANT_ID", "CYBERARMOR_CONTROL_PLANE_URL"],
+    },
+    "rasp-python": {
+        "title": "Python RASP",
+        "category": "rasp",
+        "path": "rasp/python",
+        "filename": "cyberarmor-rasp-python.zip",
+        "description": "Python runtime self-protection instrumentation.",
+        "install_hint": "pip install -e .",
+        "bootstrap_env": ["CYBERARMOR_BOOTSTRAP_TOKEN", "CYBERARMOR_TENANT_ID", "CYBERARMOR_CONTROL_PLANE_URL"],
+    },
+    "rasp-nodejs": {
+        "title": "Node.js RASP",
+        "category": "rasp",
+        "path": "rasp/nodejs",
+        "filename": "cyberarmor-rasp-nodejs.zip",
+        "description": "Node.js runtime application self-protection helpers.",
+        "install_hint": "npm install",
+        "bootstrap_env": ["CYBERARMOR_BOOTSTRAP_TOKEN", "CYBERARMOR_TENANT_ID", "CYBERARMOR_CONTROL_PLANE_URL"],
+    },
+    "rasp-java": {
+        "title": "Java RASP",
+        "category": "rasp",
+        "path": "rasp/java",
+        "filename": "cyberarmor-rasp-java.zip",
+        "description": "Java runtime application self-protection instrumentation.",
+        "install_hint": "mvn -q package",
+        "bootstrap_env": ["CYBERARMOR_BOOTSTRAP_TOKEN", "CYBERARMOR_TENANT_ID", "CYBERARMOR_CONTROL_PLANE_URL"],
+    },
+    "rasp-dotnet": {
+        "title": ".NET RASP",
+        "category": "rasp",
+        "path": "rasp/dotnet",
+        "filename": "cyberarmor-rasp-dotnet.zip",
+        "description": ".NET runtime application self-protection middleware.",
+        "install_hint": "dotnet build",
+        "bootstrap_env": ["CYBERARMOR_BOOTSTRAP_TOKEN", "CYBERARMOR_TENANT_ID", "CYBERARMOR_CONTROL_PLANE_URL"],
+    },
+    "rasp-go": {
+        "title": "Go RASP",
+        "category": "rasp",
+        "path": "rasp/go",
+        "filename": "cyberarmor-rasp-go.zip",
+        "description": "Go runtime self-protection package.",
+        "install_hint": "go build ./...",
+        "bootstrap_env": ["CYBERARMOR_BOOTSTRAP_TOKEN", "CYBERARMOR_TENANT_ID", "CYBERARMOR_CONTROL_PLANE_URL"],
+    },
 }
 
 
@@ -296,6 +517,60 @@ class CustomerContext(BaseModel):
     role: str
 
 
+class BootstrapTokenCreate(BaseModel):
+    package_key: str
+    ttl_minutes: int = 30
+    note: Optional[str] = None
+    tenant_id: Optional[str] = None
+
+
+class BootstrapTokenIssueOut(BaseModel):
+    token_id: str
+    package_key: str
+    tenant_id: str
+    bootstrap_token: str
+    expires_at: datetime
+    download_url: str
+    redeem_url: str
+    install_hint: str
+    bootstrap_env: Dict[str, str]
+    note: Optional[str] = None
+
+
+class BootstrapRedeemIn(BaseModel):
+    bootstrap_token: str
+    package_key: Optional[str] = None
+    subject_type: Optional[str] = None
+    subject_name: Optional[str] = None
+    hostname: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class BootstrapRedeemOut(BaseModel):
+    install_id: str
+    package_key: str
+    tenant_id: str
+    subject_type: str
+    subject_id: str
+    service_api_key: str
+    control_plane_url: str
+    issued_at: datetime
+    api_headers: Dict[str, str]
+    runtime_env: Dict[str, str]
+    config: Dict[str, Any]
+
+
+class DownloadCatalogEntry(BaseModel):
+    package_key: str
+    title: str
+    category: str
+    description: str
+    filename: str
+    install_hint: str
+    bootstrap_supported: bool = True
+    download_url: str
+
+
 class AuditLogOut(BaseModel):
     id: str
     tenant_id: Optional[str] = None
@@ -309,6 +584,250 @@ class AuditLogOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+def _hash_bootstrap_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _resolve_package_spec(package_key: str) -> Dict[str, Any]:
+    spec = PACKAGE_CATALOG.get((package_key or "").strip())
+    if not spec:
+        raise HTTPException(status_code=404, detail="Unknown package key")
+    package_path = (CYBERARMOR_DISTRIBUTION_ROOT / spec["path"]).resolve()
+    if not package_path.exists():
+        raise HTTPException(
+            status_code=503,
+            detail=f"Package source is not available on this host for {package_key}",
+        )
+    if CYBERARMOR_DISTRIBUTION_ROOT not in package_path.parents and package_path != CYBERARMOR_DISTRIBUTION_ROOT:
+        raise HTTPException(status_code=500, detail="Package path escaped distribution root")
+    return {**spec, "package_key": package_key, "package_path": package_path}
+
+
+def _catalog_entry(package_key: str, tenant_id: str, customer_scope: bool) -> DownloadCatalogEntry:
+    spec = _resolve_package_spec(package_key)
+    route_prefix = "/customer/downloads/packages" if customer_scope else "/bootstrap/packages"
+    return DownloadCatalogEntry(
+        package_key=package_key,
+        title=spec["title"],
+        category=spec["category"],
+        description=spec["description"],
+        filename=spec["filename"],
+        install_hint=spec["install_hint"],
+        bootstrap_supported=True,
+        download_url=f"{route_prefix}/{package_key}",
+    )
+
+
+def _build_catalog(tenant_id: str, customer_scope: bool) -> List[DownloadCatalogEntry]:
+    return [_catalog_entry(package_key, tenant_id, customer_scope) for package_key in PACKAGE_CATALOG.keys()]
+
+
+def _make_bootstrap_issue_out(
+    token_row: BootstrapToken,
+    plaintext_token: str,
+    tenant_id: str,
+    customer_scope: bool,
+) -> BootstrapTokenIssueOut:
+    spec = _resolve_package_spec(token_row.package_key)
+    env = {
+        "CYBERARMOR_BOOTSTRAP_TOKEN": plaintext_token,
+        "CYBERARMOR_TENANT_ID": tenant_id,
+        "CYBERARMOR_CONTROL_PLANE_URL": CONTROL_PLANE_PUBLIC_URL,
+    }
+    route_prefix = "/customer/downloads/packages" if customer_scope else "/bootstrap/packages"
+    return BootstrapTokenIssueOut(
+        token_id=token_row.id,
+        package_key=token_row.package_key,
+        tenant_id=tenant_id,
+        bootstrap_token=plaintext_token,
+        expires_at=token_row.expires_at,
+        download_url=f"{route_prefix}/{token_row.package_key}",
+        redeem_url=f"{CONTROL_PLANE_PUBLIC_URL}/bootstrap/redeem",
+        install_hint=spec["install_hint"],
+        bootstrap_env=env,
+        note=token_row.note,
+    )
+
+
+def _issue_bootstrap_token(
+    db: Session,
+    *,
+    tenant_id: str,
+    package_key: str,
+    issued_to: Optional[str],
+    note: Optional[str],
+    ttl_minutes: int,
+) -> tuple[BootstrapToken, str]:
+    _resolve_package_spec(package_key)
+    ttl_seconds = max(300, min(ttl_minutes * 60, BOOTSTRAP_TOKEN_MAX_TTL_SECONDS))
+    plaintext_token = f"cabt_{secrets.token_urlsafe(24)}"
+    row = BootstrapToken(
+        token_hash=_hash_bootstrap_token(plaintext_token),
+        tenant_id=tenant_id,
+        package_key=package_key,
+        issued_to=issued_to,
+        note=note,
+        expires_at=_utcnow() + timedelta(seconds=ttl_seconds),
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row, plaintext_token
+
+
+def _zip_directory_response(spec: Dict[str, Any], tenant_id: str) -> StreamingResponse:
+    package_path: Path = spec["package_path"]
+    archive_name = spec["filename"]
+    buffer = io.BytesIO()
+    root_prefix = f"{package_path.name}/"
+    ignore_dirs = {"node_modules", ".git", "__pycache__", ".pytest_cache", "dist", "build"}
+    ignore_suffixes = {".pyc", ".pyo"}
+
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        readme = "\n".join([
+            f"CyberArmor package: {spec['title']}",
+            f"Tenant: {tenant_id}",
+            "",
+            "This package intentionally does not contain a long-lived API key.",
+            "Generate a one-time bootstrap token from the customer portal or admin dashboard",
+            "and redeem it into an install-scoped credential instead of baking secrets into source.",
+            "",
+            f"Bootstrap redeem endpoint: {CONTROL_PLANE_PUBLIC_URL}/bootstrap/redeem",
+            f"Suggested install/build command: {spec['install_hint']}",
+            "Suggested bootstrap env vars:",
+            *[f"  - {name}" for name in spec.get("bootstrap_env", [])],
+        ]) + "\n"
+        archive.writestr(f"{root_prefix}BOOTSTRAP_README.txt", readme)
+        for file_path in package_path.rglob("*"):
+            if not file_path.is_file():
+                continue
+            if any(part in ignore_dirs for part in file_path.parts):
+                continue
+            if file_path.suffix in ignore_suffixes:
+                continue
+            relative_path = file_path.relative_to(package_path)
+            archive.write(file_path, arcname=f"{root_prefix}{relative_path.as_posix()}")
+
+    buffer.seek(0)
+    headers = {"Content-Disposition": f'attachment; filename="{archive_name}"'}
+    return StreamingResponse(buffer, media_type="application/zip", headers=headers)
+
+
+def _default_subject_type(package_key: str, category: str) -> str:
+    if package_key == "endpoint-agent":
+        return "endpoint_agent"
+    if category == "agent":
+        return "service_agent"
+    if category == "browser_extension":
+        return "browser_extension"
+    if category == "extension":
+        return "extension"
+    if category == "sdk":
+        return "sdk_client"
+    if category == "rasp":
+        return "rasp_runtime"
+    return "bootstrap_client"
+
+
+def _slugify_subject(value: Optional[str], fallback: str) -> str:
+    raw = (value or "").strip().lower()
+    chars = [ch if ch.isalnum() else "-" for ch in raw]
+    slug = "".join(chars).strip("-")
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    return slug[:48] or fallback
+
+
+def _subject_prefix(subject_type: str) -> str:
+    return {
+        "endpoint_agent": "agt",
+        "service_agent": "svc",
+        "browser_extension": "brx",
+        "extension": "ext",
+        "sdk_client": "sdk",
+        "rasp_runtime": "rasp",
+    }.get(subject_type, "inst")
+
+
+def _redeem_bootstrap_token(db: Session, payload: BootstrapRedeemIn) -> BootstrapRedeemOut:
+    token_hash = _hash_bootstrap_token((payload.bootstrap_token or "").strip())
+    row = db.query(BootstrapToken).filter(BootstrapToken.token_hash == token_hash).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Bootstrap token not found")
+    if row.status != "issued":
+        raise HTTPException(status_code=409, detail="Bootstrap token has already been used")
+    if row.expires_at <= _utcnow():
+        row.status = "expired"
+        db.commit()
+        raise HTTPException(status_code=410, detail="Bootstrap token has expired")
+    if payload.package_key and payload.package_key != row.package_key:
+        raise HTTPException(status_code=400, detail="Bootstrap token does not match the requested package")
+
+    spec = _resolve_package_spec(row.package_key)
+    subject_type = payload.subject_type or _default_subject_type(row.package_key, spec["category"])
+    subject_seed = payload.subject_name or payload.hostname or row.package_key
+    subject_id = f"{_subject_prefix(subject_type)}_{_slugify_subject(subject_seed, 'install')}_{secrets.token_hex(4)}"
+    service_api_key = f"ca_{secrets.token_urlsafe(24)}"
+    issued_at = _utcnow()
+
+    db.add(
+        ApiKey(
+            key=service_api_key,
+            tenant_id=row.tenant_id,
+            role="service",
+            active=True,
+        )
+    )
+    install = BootstrapInstall(
+        bootstrap_token_id=row.id,
+        tenant_id=row.tenant_id,
+        package_key=row.package_key,
+        subject_type=subject_type,
+        subject_id=subject_id,
+        issued_api_key_hash=_hash_bootstrap_token(service_api_key),
+    )
+    db.add(install)
+    row.status = "redeemed"
+    row.redeemed_at = issued_at
+    db.commit()
+    db.refresh(install)
+
+    runtime_env = {
+        "CYBERARMOR_API_KEY": service_api_key,
+        "CYBERARMOR_TENANT_ID": row.tenant_id,
+        "CYBERARMOR_CONTROL_PLANE_URL": CONTROL_PLANE_PUBLIC_URL,
+    }
+    config = {
+        "control_plane_url": CONTROL_PLANE_PUBLIC_URL,
+        "api_key": service_api_key,
+        "tenant_id": row.tenant_id,
+    }
+    if row.package_key == "endpoint-agent":
+        runtime_env.update(
+            {
+                "AGENT_API_KEY": service_api_key,
+                "TENANT_ID": row.tenant_id,
+                "CONTROL_PLANE_URL": CONTROL_PLANE_PUBLIC_URL,
+                "AGENT_ID": subject_id,
+            }
+        )
+        config["agent_id"] = subject_id
+
+    return BootstrapRedeemOut(
+        install_id=install.id,
+        package_key=row.package_key,
+        tenant_id=row.tenant_id,
+        subject_type=subject_type,
+        subject_id=subject_id,
+        service_api_key=service_api_key,
+        control_plane_url=CONTROL_PLANE_PUBLIC_URL,
+        issued_at=issued_at,
+        api_headers={"x-api-key": service_api_key, "x-tenant-id": row.tenant_id},
+        runtime_env=runtime_env,
+        config=config,
+    )
 
 
 def _store_telemetry_event(event: Dict[str, Any]) -> None:
@@ -1410,6 +1929,39 @@ def customer_agents(
     return _tenant_agent_rows(db, ctx.tenant_id, limit=max(1, min(limit, 1000)))
 
 
+@app.get("/customer/downloads/catalog", response_model=List[DownloadCatalogEntry])
+def customer_download_catalog(
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+) -> List[DownloadCatalogEntry]:
+    return _build_catalog(ctx.tenant_id, customer_scope=True)
+
+
+@app.get("/customer/downloads/packages/{package_key}")
+def customer_download_package(
+    package_key: str,
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+) -> StreamingResponse:
+    spec = _resolve_package_spec(package_key)
+    return _zip_directory_response(spec, ctx.tenant_id)
+
+
+@app.post("/customer/bootstrap-tokens", response_model=BootstrapTokenIssueOut)
+def customer_issue_bootstrap_token(
+    payload: BootstrapTokenCreate,
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> BootstrapTokenIssueOut:
+    row, plaintext_token = _issue_bootstrap_token(
+        db,
+        tenant_id=ctx.tenant_id,
+        package_key=payload.package_key,
+        issued_to=ctx.email,
+        note=payload.note,
+        ttl_minutes=payload.ttl_minutes,
+    )
+    return _make_bootstrap_issue_out(row, plaintext_token, ctx.tenant_id, customer_scope=True)
+
+
 @app.get("/customer/telemetry")
 def customer_telemetry(
     ctx: Annotated[CustomerContext, Depends(get_customer_context)],
@@ -1792,6 +2344,53 @@ def disable_apikey(
     db.refresh(record)
     return record
 
+
+@app.get("/bootstrap/catalog", response_model=list[DownloadCatalogEntry])
+def bootstrap_catalog(
+    ctx: Annotated[AuthContext, Depends(require_role("analyst"))],
+    tenant_id: Optional[str] = None,
+) -> list[DownloadCatalogEntry]:
+    resolved_tenant = tenant_id or ctx.tenant_id or "default"
+    return _build_catalog(resolved_tenant, customer_scope=False)
+
+
+@app.get("/bootstrap/packages/{package_key}")
+def bootstrap_download_package(
+    package_key: str,
+    ctx: Annotated[AuthContext, Depends(require_role("analyst"))],
+    tenant_id: Optional[str] = None,
+) -> StreamingResponse:
+    resolved_tenant = tenant_id or ctx.tenant_id or "default"
+    spec = _resolve_package_spec(package_key)
+    return _zip_directory_response(spec, resolved_tenant)
+
+
+@app.post("/bootstrap/tokens", response_model=BootstrapTokenIssueOut)
+def bootstrap_issue_token(
+    payload: BootstrapTokenCreate,
+    ctx: Annotated[AuthContext, Depends(require_role("admin"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> BootstrapTokenIssueOut:
+    resolved_tenant = payload.tenant_id or ctx.tenant_id or "default"
+    row, plaintext_token = _issue_bootstrap_token(
+        db,
+        tenant_id=resolved_tenant,
+        package_key=payload.package_key,
+        issued_to=ctx.principal,
+        note=payload.note,
+        ttl_minutes=payload.ttl_minutes,
+    )
+    return _make_bootstrap_issue_out(row, plaintext_token, resolved_tenant, customer_scope=False)
+
+
+@app.post("/bootstrap/redeem", response_model=BootstrapRedeemOut)
+def bootstrap_redeem_token(
+    payload: BootstrapRedeemIn,
+    db: Annotated[Session, Depends(get_db)],
+) -> BootstrapRedeemOut:
+    return _redeem_bootstrap_token(db, payload)
+
+
 @app.post("/telemetry/ingest")
 def ingest_event(event: TelemetryEvent, ctx: Annotated[AuthContext, Depends(require_role("analyst"))]):
     if ctx.tenant_id and ctx.tenant_id != event.tenant_id:
@@ -2063,12 +2662,17 @@ def _integration_configure_path(provider: str) -> str:
 
 
 def _dev_or_key_ok(x_api_key: Optional[str]) -> None:
-    """Allow unauth in dev (DEFAULT_API_KEY == change-me); otherwise require key."""
-    if not DEFAULT_API_KEY or DEFAULT_API_KEY == "change-me":
+    """Allow dev-mode unauth; otherwise accept the default key or any active API key."""
+    if (not x_api_key) and (not DEFAULT_API_KEY or DEFAULT_API_KEY == "change-me"):
         return
     resolved = resolve_api_key_header(x_api_key, service_name="control-plane")
-    if resolved.plaintext_key != DEFAULT_API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid API key")
+    if DEFAULT_API_KEY and resolved.plaintext_key == DEFAULT_API_KEY:
+        return
+    with SessionLocal() as db:
+        record = db.query(ApiKey).filter(ApiKey.key == resolved.plaintext_key, ApiKey.active.is_(True)).first()
+        if record:
+            return
+    raise HTTPException(status_code=401, detail="Invalid API key")
 
 
 @app.post("/incidents/ingest")

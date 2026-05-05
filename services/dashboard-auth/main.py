@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from typing import Annotated, List, Optional
 
+import httpx
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -44,6 +45,7 @@ SESSION_TTL_SECONDS = int(os.getenv("ADMIN_DASHBOARD_SESSION_TTL_SECONDS", "2880
 MAX_CODE_ATTEMPTS = int(os.getenv("ADMIN_DASHBOARD_MAX_CODE_ATTEMPTS", "5"))
 DEV_CODE_ECHO = os.getenv("ADMIN_DASHBOARD_AUTH_DEV_CODE_ECHO", "false").strip().lower() in {"1", "true", "yes", "on"}
 COOKIE_SECURE = os.getenv("ADMIN_DASHBOARD_COOKIE_SECURE", "false").strip().lower() in {"1", "true", "yes", "on"}
+PROXY_TIMEOUT_SECONDS = float(os.getenv("ADMIN_DASHBOARD_PROXY_TIMEOUT_SECONDS", "30"))
 
 SESSION_SECRET = os.getenv("ADMIN_DASHBOARD_SESSION_SECRET", "")
 if not SESSION_SECRET:
@@ -59,7 +61,6 @@ ALLOWED_EMAILS = {
 }
 
 ensure_sqlite_dir()
-Base.metadata.create_all(bind=engine)
 
 _cipher = TOTPCipher(SESSION_SECRET)
 
@@ -75,6 +76,33 @@ _CSRF_PROTECTED_PATHS = {
 }
 
 
+def wait_for_db(max_wait_s: int = 45) -> None:
+    if str(engine.url).startswith("sqlite"):
+        return
+    start = time.time()
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            with engine.connect() as conn:
+                conn.exec_driver_sql("SELECT 1")
+            return
+        except Exception as exc:
+            elapsed = time.time() - start
+            if elapsed >= max_wait_s:
+                logger.error("dashboard_auth_db_not_ready_after_s=%s last_err=%s", int(elapsed), exc)
+                raise
+            sleep_s = min(0.25 * (1.4 ** (attempt - 1)), 2.0)
+            logger.warning("dashboard_auth_db_not_ready_yet sleep_s=%.2f err=%s", sleep_s, exc)
+            time.sleep(sleep_s)
+
+
+@app.on_event("startup")
+def on_startup() -> None:
+    wait_for_db()
+    Base.metadata.create_all(bind=engine)
+
+
 @app.middleware("http")
 async def csrf_middleware(request: Request, call_next):
     """Double-submit CSRF guard for cookie-authenticated mutating routes.
@@ -86,7 +114,8 @@ async def csrf_middleware(request: Request, call_next):
     if request.method in {"GET", "HEAD", "OPTIONS"}:
         return await call_next(request)
     path = request.url.path
-    if path in _CSRF_PROTECTED_PATHS and request.cookies.get(SESSION_COOKIE):
+    csrf_protected = path in _CSRF_PROTECTED_PATHS or path.startswith("/admin-api/")
+    if csrf_protected and request.cookies.get(SESSION_COOKIE):
         cookie_token = request.cookies.get(CSRF_COOKIE)
         header_token = request.headers.get(CSRF_HEADER)
         if not cookie_token or not header_token or not hmac.compare_digest(cookie_token, header_token):
@@ -322,6 +351,82 @@ def _purge_expired(db: Session) -> None:
     db.commit()
 
 
+def _require_dashboard_email(db: Session, session_cookie: str | None) -> str:
+    email = _session_email(db, session_cookie)
+    if not email:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    return email
+
+
+class AdminProxyTarget(BaseModel):
+    url: str
+    api_key: str
+
+
+def _target_env_url(name: str, default: str) -> str:
+    return os.getenv(name, default).rstrip("/")
+
+
+def _target_env_secret(name: str, default: str) -> str:
+    return os.getenv(name, default)
+
+
+ADMIN_PROXY_TARGETS: dict[str, AdminProxyTarget] = {
+    "control-plane": AdminProxyTarget(
+        url=_target_env_url("CONTROL_PLANE_URL", "http://control-plane:8000"),
+        api_key=_target_env_secret("CYBERARMOR_API_SECRET", "change-me"),
+    ),
+    "policy": AdminProxyTarget(
+        url=_target_env_url("POLICY_SERVICE_URL", "http://policy:8001"),
+        api_key=_target_env_secret("POLICY_API_SECRET", "change-me-policy"),
+    ),
+    "detection": AdminProxyTarget(
+        url=_target_env_url("DETECTION_SERVICE_URL", "http://detection:8002"),
+        api_key=_target_env_secret("DETECTION_API_SECRET", "change-me-detection"),
+    ),
+    "response": AdminProxyTarget(
+        url=_target_env_url("RESPONSE_SERVICE_URL", "http://response:8003"),
+        api_key=_target_env_secret("RESPONSE_API_SECRET", "change-me-response"),
+    ),
+    "identity": AdminProxyTarget(
+        url=_target_env_url("IDENTITY_SERVICE_URL", "http://identity:8004"),
+        api_key=_target_env_secret("IDENTITY_API_SECRET", "change-me-identity"),
+    ),
+    "siem": AdminProxyTarget(
+        url=_target_env_url("SIEM_SERVICE_URL", "http://siem-connector:8005"),
+        api_key=_target_env_secret("SIEM_API_SECRET", "change-me-siem"),
+    ),
+    "compliance": AdminProxyTarget(
+        url=_target_env_url("COMPLIANCE_URL", "http://compliance:8006"),
+        api_key=_target_env_secret("COMPLIANCE_API_SECRET", "change-me-compliance"),
+    ),
+    "proxy-agent": AdminProxyTarget(
+        url=_target_env_url("PROXY_AGENT_URL", "http://proxy-agent:8010"),
+        api_key=_target_env_secret("PROXY_AGENT_API_SECRET", "change-me-proxy"),
+    ),
+    "agent-identity": AdminProxyTarget(
+        url=_target_env_url("AGENT_IDENTITY_URL", "http://agent-identity:8008"),
+        api_key=_target_env_secret("AGENT_IDENTITY_API_SECRET", "change-me-agent-identity"),
+    ),
+    "ai-router": AdminProxyTarget(
+        url=_target_env_url("AI_ROUTER_URL", "http://ai-router:8009"),
+        api_key=_target_env_secret("ROUTER_API_SECRET", "change-me-router"),
+    ),
+    "audit": AdminProxyTarget(
+        url=_target_env_url("AUDIT_URL", "http://audit:8011"),
+        api_key=_target_env_secret("AUDIT_API_SECRET", "change-me-audit"),
+    ),
+    "integration-control": AdminProxyTarget(
+        url=_target_env_url("INTEGRATION_CONTROL_URL", "http://integration-control:8012"),
+        api_key=_target_env_secret("INTEGRATION_CONTROL_API_SECRET", "change-me-integration-control"),
+    ),
+    "secrets-service": AdminProxyTarget(
+        url=_target_env_url("SECRETS_SERVICE_URL", "http://secrets-service:8013"),
+        api_key=_target_env_secret("SECRETS_SERVICE_API_SECRET", "change-me-secrets-service"),
+    ),
+}
+
+
 @app.get("/health")
 def health() -> dict[str, object]:
     return {"status": "ok", "allowed_email_count": len(ALLOWED_EMAILS)}
@@ -343,10 +448,60 @@ def me(
     db: Annotated[Session, Depends(get_db)],
     ca_dashboard_session: Annotated[str | None, Cookie()] = None,
 ) -> dict[str, str]:
-    email = _session_email(db, ca_dashboard_session)
-    if not email:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    email = _require_dashboard_email(db, ca_dashboard_session)
     return {"email": email}
+
+
+@app.api_route(
+    "/admin-api/{service}/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+async def admin_api_proxy(
+    service: str,
+    path: str,
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    ca_dashboard_session: Annotated[str | None, Cookie()] = None,
+) -> Response:
+    _require_dashboard_email(db, ca_dashboard_session)
+    target = ADMIN_PROXY_TARGETS.get(service)
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"Unknown admin proxy target: {service}")
+
+    upstream_url = f"{target.url}/{path.lstrip('/')}"
+    query = request.url.query
+    if query:
+        upstream_url = f"{upstream_url}?{query}"
+
+    body = await request.body()
+    headers = {
+        "x-api-key": target.api_key,
+        "accept": request.headers.get("accept", "application/json"),
+    }
+    content_type = request.headers.get("content-type")
+    if content_type:
+        headers["content-type"] = content_type
+
+    try:
+        async with httpx.AsyncClient(timeout=PROXY_TIMEOUT_SECONDS) as client:
+            upstream = await client.request(
+                request.method,
+                upstream_url,
+                headers=headers,
+                content=body if body else None,
+            )
+    except httpx.HTTPError as exc:
+        logger.warning("dashboard_admin_proxy_failed service=%s url=%s err=%s", service, upstream_url, exc)
+        raise HTTPException(status_code=502, detail=f"Admin proxy upstream request failed for {service}")
+
+    passthrough_headers = {}
+    if upstream.headers.get("content-type"):
+        passthrough_headers["content-type"] = upstream.headers["content-type"]
+    return Response(
+        content=upstream.content,
+        status_code=upstream.status_code,
+        headers=passthrough_headers,
+    )
 
 
 @app.post("/request-code")

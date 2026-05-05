@@ -11,6 +11,8 @@ import os
 import re
 import threading
 import time
+import urllib.error
+import urllib.request
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
@@ -24,14 +26,60 @@ def _env(*keys: str, default: str = "") -> str:
             return value
     return default
 
+
+def _redeem_bootstrap_token(
+    bootstrap_token: str,
+    control_plane_url: str,
+    *,
+    package_key: str,
+    subject_type: str,
+    subject_name: str,
+) -> Dict[str, Any]:
+    payload = {
+        "bootstrap_token": bootstrap_token,
+        "package_key": package_key,
+        "subject_type": subject_type,
+        "subject_name": subject_name,
+    }
+    request = urllib.request.Request(
+        f"{control_plane_url.rstrip('/')}/bootstrap/redeem",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        logger.warning("CyberArmor RASP bootstrap redeem failed (%s): %s", exc.code, body[:300])
+    except urllib.error.URLError as exc:
+        logger.warning("CyberArmor RASP bootstrap redeem failed: %s", exc.reason)
+    return {}
+
 # ── Configuration ─────────────────────────────────────────
 class RASPConfig:
     control_plane_url: str = _env("CYBERARMOR_URL", default="http://localhost:8000")
     api_key: str = _env("CYBERARMOR_API_KEY", default="")
     tenant_id: str = _env("CYBERARMOR_TENANT", default="default")
+    bootstrap_token: str = _env("CYBERARMOR_BOOTSTRAP_TOKEN", default="")
     mode: str = _env("CYBERARMOR_MODE", default="monitor")  # monitor | block
     dlp_enabled: bool = True
     prompt_injection_enabled: bool = True
+
+    def __init__(self):
+        if self.bootstrap_token and not self.api_key:
+            redeemed = _redeem_bootstrap_token(
+                self.bootstrap_token,
+                self.control_plane_url,
+                package_key="rasp-python",
+                subject_type="rasp_runtime",
+                subject_name=_env("CYBERARMOR_SUBJECT_NAME", default="python-rasp"),
+            )
+            runtime_env = redeemed.get("runtime_env", {})
+            self.api_key = runtime_env.get("CYBERARMOR_API_KEY", self.api_key)
+            self.tenant_id = runtime_env.get("CYBERARMOR_TENANT_ID", self.tenant_id)
+            self.control_plane_url = redeemed.get("control_plane_url", self.control_plane_url)
 
 config = RASPConfig()
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
@@ -53,8 +54,28 @@ app = FastAPI(title="CyberArmor Compliance Engine", version="1.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
+def wait_for_db(max_wait_s: int = 45) -> None:
+    start = time.time()
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            with engine.connect() as conn:
+                conn.exec_driver_sql("SELECT 1")
+            return
+        except Exception as exc:
+            elapsed = time.time() - start
+            if elapsed >= max_wait_s:
+                logger.error("db_not_ready_after_s=%s last_err=%s", int(elapsed), exc)
+                raise
+            sleep_s = min(0.25 * (1.4 ** (attempt - 1)), 2.0)
+            logger.warning("db_not_ready_yet sleep_s=%.2f err=%s", sleep_s, exc)
+            time.sleep(sleep_s)
+
+
 @app.on_event("startup")
 def on_startup():
+    wait_for_db()
     Base.metadata.create_all(bind=engine)
 
 

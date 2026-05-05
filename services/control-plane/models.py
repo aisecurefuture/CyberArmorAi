@@ -112,6 +112,34 @@ class ApiKey(Base):
     created_at = Column(DateTime(timezone=True), default=now_utc)
 
 
+class BootstrapToken(Base):
+    __tablename__ = "bootstrap_tokens"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    token_hash = Column(String, nullable=False, unique=True, index=True)
+    tenant_id = Column(String, nullable=False, index=True)
+    package_key = Column(String, nullable=False, index=True)
+    issued_to = Column(String, nullable=True)
+    note = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="issued")
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    redeemed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=now_utc)
+
+
+class BootstrapInstall(Base):
+    __tablename__ = "bootstrap_installs"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    bootstrap_token_id = Column(String, nullable=False, index=True)
+    tenant_id = Column(String, nullable=False, index=True)
+    package_key = Column(String, nullable=False, index=True)
+    subject_type = Column(String, nullable=False, index=True)
+    subject_id = Column(String, nullable=False, index=True)
+    issued_api_key_hash = Column(String, nullable=False, unique=True, index=True)
+    created_at = Column(DateTime(timezone=True), default=now_utc)
+
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
     id = Column(String, primary_key=True, default=lambda: str(uuid4()))

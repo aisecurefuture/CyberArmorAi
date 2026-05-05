@@ -55,7 +55,9 @@
     controlPlaneUrl: document.getElementById("control-plane-url"),
     apiKey: document.getElementById("api-key"),
     tenantId: document.getElementById("tenant-id"),
+    bootstrapToken: document.getElementById("bootstrap-token"),
     btnTestConnection: document.getElementById("btn-test-connection"),
+    btnRedeemBootstrap: document.getElementById("btn-redeem-bootstrap"),
     connectionTestResult: document.getElementById("connection-test-result"),
     policySyncInterval: document.getElementById("policy-sync-interval"),
     btnForceSync: document.getElementById("btn-force-sync"),
@@ -125,6 +127,7 @@
     els.controlPlaneUrl.value = currentConfig.controlPlaneUrl;
     els.apiKey.value = currentConfig.apiKey;
     els.tenantId.value = currentConfig.tenantId;
+    if (els.bootstrapToken) els.bootstrapToken.value = currentConfig.bootstrapToken || "";
     els.policySyncInterval.value = Math.round(currentConfig.policySyncIntervalMs / 1000);
     els.actionMode.value = currentConfig.actionMode;
     els.optPhishingEnabled.checked = currentConfig.phishingProtectionEnabled;
@@ -182,6 +185,7 @@
 
     // Test connection
     els.btnTestConnection.addEventListener("click", testConnection);
+    els.btnRedeemBootstrap?.addEventListener("click", redeemBootstrapToken);
 
     // Force sync
     els.btnForceSync.addEventListener("click", () => {
@@ -250,6 +254,7 @@
       controlPlaneUrl: els.controlPlaneUrl.value.trim(),
       apiKey: els.apiKey.value,
       tenantId: els.tenantId.value.trim(),
+      bootstrapToken: els.bootstrapToken?.value || "",
       policySyncIntervalMs: parseInt(els.policySyncInterval.value, 10) * 1000 || 60000,
       actionMode: els.actionMode.value,
       phishingProtectionEnabled: els.optPhishingEnabled.checked,
@@ -333,6 +338,45 @@
 
     els.btnTestConnection.disabled = false;
     els.btnTestConnection.textContent = "Test Connection";
+  }
+
+  async function redeemBootstrapToken() {
+    const values = collectFormValues();
+    if (!values.bootstrapToken) {
+      showToast("Enter a bootstrap token first", "warning");
+      return;
+    }
+    els.btnRedeemBootstrap.disabled = true;
+    try {
+      const response = await fetch(`${values.controlPlaneUrl.replace(/\/$/, "")}/bootstrap/redeem`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          bootstrap_token: values.bootstrapToken,
+          package_key: "edge-extension",
+          subject_type: "browser_extension",
+          subject_name: "chromium-extension",
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.detail || `Redeem failed (${response.status})`);
+      }
+      currentConfig = {
+        ...currentConfig,
+        controlPlaneUrl: data.control_plane_url || values.controlPlaneUrl,
+        apiKey: data.service_api_key || values.apiKey,
+        tenantId: data.tenant_id || values.tenantId,
+        bootstrapToken: "",
+      };
+      await new Promise((resolve) => chrome.storage.sync.set(currentConfig, resolve));
+      populateUI();
+      showToast("Bootstrap token redeemed successfully", "success");
+    } catch (error) {
+      showToast(error.message || String(error), "error");
+    } finally {
+      els.btnRedeemBootstrap.disabled = false;
+    }
   }
 
   // --- Export / Import ---

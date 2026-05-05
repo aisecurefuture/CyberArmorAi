@@ -1,4 +1,5 @@
-FROM python:3.11-slim
+ARG PQC_BASE_IMAGE=cyberarmor-python311-pqc:local
+FROM ${PQC_BASE_IMAGE}
 LABEL maintainer="CyberArmor <security@cyberarmor.ai>"
 RUN groupadd -r cyberarmor && useradd -r -g cyberarmor -m cyberarmor
 WORKDIR /app

@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { CyberArmorConfig, loadConfigFromEnv } from './config';
+import { CyberArmorConfig, loadConfigFromEnv, loadConfigFromEnvAsync } from './config';
 import { PolicyEnforcer, EvaluatePolicyOptions } from './policy/enforcer';
 import { Decision } from './policy/decision';
 import { AuditEmitter } from './audit/emitter';
@@ -26,6 +26,11 @@ export class CyberArmorClient {
     this.tokenManager = new TokenManager(this);
     this.policyEnforcer = new PolicyEnforcer(this);
     this.auditEmitter = new AuditEmitter(this);
+  }
+
+  static async fromEnvWithBootstrap(config?: Partial<CyberArmorConfig>): Promise<CyberArmorClient> {
+    const resolved = await loadConfigFromEnvAsync(config);
+    return new CyberArmorClient(resolved);
   }
 
   async evaluatePolicy(options: EvaluatePolicyOptions): Promise<Decision> {

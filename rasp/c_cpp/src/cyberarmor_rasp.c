@@ -12,6 +12,7 @@
 #include <stdbool.h>
 #include <pthread.h>
 #include <regex.h>
+#include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -59,6 +60,86 @@ static void emit_event(const char *type, const char *url, const char *detail) {
     }
 }
 
+static void extract_json_field(const char *json, const char *field, char *out, size_t out_size) {
+    if (!json || !field || !out || out_size == 0) return;
+    out[0] = '\0';
+    char pattern[128];
+    snprintf(pattern, sizeof(pattern), "\"%s\":\"", field);
+    const char *start = strstr(json, pattern);
+    if (!start) return;
+    start += strlen(pattern);
+    const char *end = strchr(start, '"');
+    if (!end) return;
+    size_t len = (size_t)(end - start);
+    if (len >= out_size) len = out_size - 1;
+    memcpy(out, start, len);
+    out[len] = '\0';
+}
+
+static void redeem_bootstrap_token_if_needed(void) {
+    if (!g_config.bootstrap_token || g_config.bootstrap_token[0] == '\0' ||
+        (g_config.api_key && g_config.api_key[0] != '\0') ||
+        !g_config.control_plane_url || g_config.control_plane_url[0] == '\0') {
+        return;
+    }
+
+    char payload[1024];
+    const char *subject_name = getenv("CYBERARMOR_RASP_SUBJECT_NAME");
+    if (!subject_name || subject_name[0] == '\0') {
+        subject_name = getenv("HOSTNAME");
+    }
+    if (!subject_name || subject_name[0] == '\0') {
+        subject_name = "c-cpp-rasp";
+    }
+    snprintf(payload, sizeof(payload),
+             "{\"bootstrap_token\":\"%s\",\"package_key\":\"rasp-c-cpp\",\"subject_type\":\"rasp_runtime\",\"subject_name\":\"%s\"}",
+             g_config.bootstrap_token, subject_name);
+
+    char template_path[] = "/tmp/cyberarmor-bootstrap-XXXXXX";
+    int fd = mkstemp(template_path);
+    if (fd < 0) return;
+    FILE *payload_file = fdopen(fd, "w");
+    if (!payload_file) {
+        close(fd);
+        unlink(template_path);
+        return;
+    }
+    fputs(payload, payload_file);
+    fclose(payload_file);
+
+    char command[2048];
+    snprintf(command, sizeof(command),
+             "curl -sS -X POST -H 'Content-Type: application/json' --data-binary @%s '%s/bootstrap/redeem'",
+             template_path, g_config.control_plane_url);
+    FILE *pipe = popen(command, "r");
+    if (!pipe) {
+        unlink(template_path);
+        return;
+    }
+
+    char response[4096];
+    size_t total = 0;
+    while (!feof(pipe) && total + 1 < sizeof(response)) {
+        size_t n = fread(response + total, 1, sizeof(response) - total - 1, pipe);
+        if (n == 0) break;
+        total += n;
+    }
+    response[total] = '\0';
+    pclose(pipe);
+    unlink(template_path);
+
+    char api_key[512];
+    char tenant_id[256];
+    extract_json_field(response, "api_key", api_key, sizeof(api_key));
+    extract_json_field(response, "tenant_id", tenant_id, sizeof(tenant_id));
+    if (api_key[0] != '\0') {
+        g_config.api_key = strdup(api_key);
+    }
+    if (tenant_id[0] != '\0') {
+        g_config.tenant_id = strdup(tenant_id);
+    }
+}
+
 /* ── Initialization ───────────────────────────────────────── */
 
 int cyberarmor_init(const cyberarmor_config_t *config) {
@@ -71,9 +152,12 @@ int cyberarmor_init(const cyberarmor_config_t *config) {
     if (config) {
         memcpy(&g_config, config, sizeof(g_config));
     } else {
-        g_config.control_plane_url = getenv("CYBERARMOR_URL");
+        g_config.control_plane_url = getenv("CYBERARMOR_CONTROL_PLANE_URL");
+        if (!g_config.control_plane_url) g_config.control_plane_url = getenv("CYBERARMOR_URL");
         g_config.api_key = getenv("CYBERARMOR_API_KEY");
-        g_config.tenant_id = getenv("CYBERARMOR_TENANT");
+        g_config.bootstrap_token = getenv("CYBERARMOR_BOOTSTRAP_TOKEN");
+        g_config.tenant_id = getenv("CYBERARMOR_TENANT_ID");
+        if (!g_config.tenant_id) g_config.tenant_id = getenv("CYBERARMOR_TENANT");
         const char *mode = getenv("CYBERARMOR_MODE");
         g_config.mode = (mode && strcmp(mode, "block") == 0) ?
             CYBERARMOR_MODE_BLOCK : CYBERARMOR_MODE_MONITOR;
@@ -83,6 +167,7 @@ int cyberarmor_init(const cyberarmor_config_t *config) {
 
     if (!g_config.control_plane_url) g_config.control_plane_url = "http://localhost:8000";
     if (!g_config.tenant_id) g_config.tenant_id = "default";
+    redeem_bootstrap_token_if_needed();
 
     /* Compile regex patterns */
     g_pi_count = 0;

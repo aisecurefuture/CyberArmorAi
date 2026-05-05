@@ -49,65 +49,26 @@ const NAV = [
 
 // ─── Service Configuration ───────────────────────────────
 const SERVICES = [
-  { key: "cp",         name: "Control Plane",    defaultUrl: "http://localhost:8000", defaultKey: "ChangeMe_GenerateSecureKey_Here", healthPath: "/health" },
-  { key: "pol",        name: "Policy",           defaultUrl: "http://localhost:8001", defaultKey: "change-me-policy",     healthPath: "/health" },
-  { key: "det",        name: "Detection",        defaultUrl: "http://localhost:8002", defaultKey: "change-me-detection",  healthPath: "/health" },
-  { key: "rsp",        name: "Response",         defaultUrl: "http://localhost:8003", defaultKey: "change-me-response",   healthPath: "/health" },
-  { key: "identity",   name: "Identity",         defaultUrl: "http://localhost:8004", defaultKey: "change-me-identity",   healthPath: "/health" },
-  { key: "siem",       name: "SIEM Connector",   defaultUrl: "http://localhost:8005", defaultKey: "change-me-siem",       healthPath: "/health" },
-  { key: "compliance", name: "Compliance",       defaultUrl: "http://localhost:8006", defaultKey: "change-me-compliance", healthPath: "/health" },
-  { key: "px",         name: "Proxy Agent",      defaultUrl: "http://localhost:8010", defaultKey: "change-me-proxy",      healthPath: "/health" },
+  { key: "cp",         name: "Control Plane",    proxyBase: "/admin-api/control-plane",    healthPath: "/health" },
+  { key: "pol",        name: "Policy",           proxyBase: "/admin-api/policy",           healthPath: "/health" },
+  { key: "det",        name: "Detection",        proxyBase: "/admin-api/detection",        healthPath: "/health" },
+  { key: "rsp",        name: "Response",         proxyBase: "/admin-api/response",         healthPath: "/health" },
+  { key: "identity",   name: "Identity",         proxyBase: "/admin-api/identity",         healthPath: "/health" },
+  { key: "siem",       name: "SIEM Connector",   proxyBase: "/admin-api/siem",             healthPath: "/health" },
+  { key: "compliance", name: "Compliance",       proxyBase: "/admin-api/compliance",       healthPath: "/health" },
+  { key: "px",         name: "Proxy Agent",      proxyBase: "/admin-api/proxy-agent",      healthPath: "/health" },
   // AI Identity Control Plane services
-  { key: "agentId",    name: "Agent Identity",   defaultUrl: "http://localhost:8008", defaultKey: "change-me-agent-identity", healthPath: "/health" },
-  { key: "aiRouter",   name: "AI Router",        defaultUrl: "http://localhost:8009", defaultKey: "change-me-router", healthPath: "/health" },
-  { key: "auditGraph", name: "Audit Graph",      defaultUrl: "http://localhost:8011", defaultKey: "change-me-audit",  healthPath: "/health" },
+  { key: "agentId",    name: "Agent Identity",   proxyBase: "/admin-api/agent-identity",   healthPath: "/health" },
+  { key: "aiRouter",   name: "AI Router",        proxyBase: "/admin-api/ai-router",        healthPath: "/health" },
+  { key: "auditGraph", name: "Audit Graph",      proxyBase: "/admin-api/audit",            healthPath: "/health" },
 ];
 
 // ─── Settings ────────────────────────────────────────────
-function buildDefaults() {
-  const d = { tenantScope: "" };
-  SERVICES.forEach(s => { d[s.key + "Url"] = s.defaultUrl; d[s.key + "Key"] = s.defaultKey; });
-  return d;
-}
-const DEFAULTS = buildDefaults();
-
-const INTERNAL_SERVICE_HOSTS = new Set([
-  "control-plane",
-  "policy",
-  "detection",
-  "response",
-  "identity",
-  "siem-connector",
-  "compliance",
-  "proxy-agent",
-  "agent-identity",
-  "ai-router",
-  "audit",
-]);
-
-function normalizeServiceUrl(url, fallbackUrl) {
-  try {
-    const parsed = new URL(String(url || "").trim());
-    const host = parsed.hostname.toLowerCase();
-    if (INTERNAL_SERVICE_HOSTS.has(host)) return fallbackUrl;
-    if (host === "0.0.0.0") {
-      parsed.hostname = "localhost";
-      return parsed.toString().replace(/\/$/, "");
-    }
-    return parsed.toString().replace(/\/$/, "");
-  } catch {
-    return fallbackUrl;
-  }
-}
+const DEFAULTS = { tenantScope: "" };
 
 function loadSettings() {
   const raw = localStorage.getItem("cyberarmor_settings");
-  const merged = raw ? { ...DEFAULTS, ...JSON.parse(raw) } : { ...DEFAULTS };
-  SERVICES.forEach(s => {
-    const k = s.key + "Url";
-    merged[k] = normalizeServiceUrl(merged[k], s.defaultUrl);
-  });
-  return merged;
+  return raw ? { ...DEFAULTS, ...JSON.parse(raw) } : { ...DEFAULTS };
 }
 function saveSettingsToStorage(s) { localStorage.setItem("cyberarmor_settings", JSON.stringify(s)); }
 let settings = loadSettings();
@@ -210,7 +171,13 @@ function toast(msg, type = "info") {
 
 async function apiFetch(url, { headers = {}, ...opts } = {}) {
   try {
-    const res = await fetch(url, { ...opts, headers });
+    const method = String(opts.method || "GET").toUpperCase();
+    const mergedHeaders = { ...headers };
+    if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
+      const csrf = readDashboardCsrf();
+      if (csrf) mergedHeaders["x-csrf-token"] = csrf;
+    }
+    const res = await fetch(url, { ...opts, method, headers: mergedHeaders });
     const text = await res.text();
     let data;
     try { data = JSON.parse(text); } catch { data = text; }
@@ -221,13 +188,104 @@ async function apiFetch(url, { headers = {}, ...opts } = {}) {
   }
 }
 
-function svcUrl(svcKey) { return settings[svcKey + "Url"]; }
+function svcUrl(svcKey) {
+  const svc = SERVICES.find((item) => item.key === svcKey);
+  return svc?.proxyBase || "";
+}
 function svcHeaders(svcKey) {
-  const key = settings[svcKey + "Key"];
-  return key ? { "x-api-key": key, "Content-Type": "application/json" } : { "Content-Type": "application/json" };
+  return { "Content-Type": "application/json" };
 }
 
 function getTenant() { return settings.tenantScope || "default"; }
+
+function browserCoverageNote(pkg) {
+  if (!pkg || pkg.package_key !== "edge-extension") return "";
+  return `<div class="mt-2 text-xs text-cyan-300">Supports Chrome, Edge, Brave, Opera, and similar Chromium-based browsers.</div>`;
+}
+
+function bootstrapSetupCardHtml(tenantId = getTenant()) {
+  return card(`
+    <div class="text-lg font-semibold">Bootstrap Setup</div>
+    <p class="mt-2 text-sm text-slate-400">Use a one-time bootstrap token during installation, then redeem it into an install-scoped credential. Avoid shipping tenant-wide secrets inside distributed agents, SDKs, browser extensions, and add-ins.</p>
+    <div class="mt-4 grid gap-3 lg:grid-cols-2">
+      <div>
+        <div class="text-xs uppercase tracking-[0.18em] text-slate-500">Recommended Flow</div>
+        <ol class="mt-2 space-y-2 text-sm text-slate-300">
+          <li>1. Download the package bundle.</li>
+          <li>2. Issue a one-time bootstrap token for that package.</li>
+          <li>3. Set <span class="font-mono text-cyan-200">CYBERARMOR_BOOTSTRAP_TOKEN</span> during setup.</li>
+          <li>4. Let the package redeem it into an install-scoped credential.</li>
+        </ol>
+      </div>
+      <div>
+        <div class="text-xs uppercase tracking-[0.18em] text-slate-500">Shared Env</div>
+        <pre class="mt-2 overflow-x-auto rounded-xl border border-slate-800 bg-slate-950 p-3 text-xs text-cyan-200">CYBERARMOR_CONTROL_PLANE_URL=https://control-plane.example
+CYBERARMOR_TENANT_ID=${esc(tenantId)}
+CYBERARMOR_BOOTSTRAP_TOKEN=cabt_...</pre>
+      </div>
+    </div>
+    <div class="mt-3 text-xs text-slate-500">See shared docs: docs/architecture/client-bootstrap-setup.md</div>
+  `);
+}
+
+function bindAdminBootstrapButtons() {
+  document.querySelectorAll(".adminBootstrapBtn").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const panel = $("#adminBootstrapResult");
+      if (panel) panel.innerHTML = card(`<div class="text-sm text-slate-400">Issuing bootstrap token for ${esc(button.dataset.packageTitle || button.dataset.packageKey || "package")}...</div>`);
+      try {
+        const issued = await apiFetch(`${svcUrl("cp")}/bootstrap/tokens`, {
+          method: "POST",
+          headers: svcHeaders("cp"),
+          body: JSON.stringify({
+            tenant_id: getTenant(),
+            package_key: button.dataset.packageKey,
+            ttl_minutes: 30,
+          }),
+        });
+        const envLines = Object.entries(issued.bootstrap_env || {}).map(([key, value]) => `${key}=${value}`).join("\n");
+        const redeemExample = [
+          "curl -X POST",
+          `  ${issued.redeem_url}`,
+          "  -H 'Content-Type: application/json'",
+          `  -d '${JSON.stringify({ bootstrap_token: issued.bootstrap_token, package_key: button.dataset.packageKey }, null, 2)}'`,
+        ].join("\n");
+        if (panel) {
+          panel.innerHTML = card(`
+            <div class="text-lg font-semibold">Bootstrap Token Issued</div>
+            <p class="mt-2 text-sm text-slate-400">Shown once for tenant <span class="font-mono text-cyan-200">${esc(issued.tenant_id || "")}</span>. Expires at ${esc(issued.expires_at ? new Date(issued.expires_at).toLocaleString() : "")}. Redeem it during setup into an install-scoped credential rather than storing it as a permanent secret.</p>
+            <div class="mt-4 grid gap-3 lg:grid-cols-2">
+              <div>
+                <div class="text-xs uppercase tracking-[0.18em] text-slate-500">Bootstrap Token</div>
+                <div class="mt-2 rounded-xl bg-slate-950 px-3 py-3 font-mono text-xs text-emerald-300 break-all">${esc(issued.bootstrap_token || "")}</div>
+              </div>
+              <div>
+                <div class="text-xs uppercase tracking-[0.18em] text-slate-500">Suggested Env</div>
+                <pre class="mt-2 overflow-x-auto rounded-xl border border-slate-800 bg-slate-950 p-3 text-xs text-cyan-200">${esc(envLines)}</pre>
+              </div>
+            </div>
+            <div class="mt-4">
+              <div class="text-xs uppercase tracking-[0.18em] text-slate-500">Redeem Example</div>
+              <pre class="mt-2 overflow-x-auto rounded-xl border border-slate-800 bg-slate-950 p-3 text-xs text-cyan-200">${esc(redeemExample)}</pre>
+            </div>
+            <div class="mt-3 text-xs text-slate-500">Package: ${esc(issued.package_key || "")}</div>
+          `);
+        }
+      } catch (error) {
+        if (panel) panel.innerHTML = card(`<div class="text-sm text-rose-300">${esc(error.message)}</div>`);
+      }
+    });
+  });
+}
+
+function bindAdminBootstrapHelpButtons() {
+  document.querySelectorAll(".adminBootstrapHelpBtn").forEach((button) => {
+    button.addEventListener("click", () => {
+      const panel = $("#adminBootstrapResult");
+      if (panel) panel.innerHTML = bootstrapSetupCardHtml(button.dataset.tenantId || getTenant());
+    });
+  });
+}
 let activeViewCleanup = null;
 
 function setViewCleanup(fn) {
@@ -301,16 +359,24 @@ function buildServiceStatus() {
 
 function buildSettingsFields() {
   const el = $("#settingsFields");
-  el.innerHTML = SERVICES.map(s => `
-    <div class="space-y-2">
-      <label class="text-xs text-slate-300">${s.name} URL</label>
-      <input id="set_${s.key}Url" class="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800" value="${esc(settings[s.key+'Url'])}" />
+  el.innerHTML = `
+    <div class="md:col-span-2 rounded-2xl border border-emerald-900/60 bg-emerald-950/30 p-4 text-sm text-emerald-100">
+      Service API keys are now held server-side by the dashboard auth proxy and are never stored in this browser.
     </div>
-    <div class="space-y-2">
-      <label class="text-xs text-slate-300">${s.name} API Key</label>
-      <input id="set_${s.key}Key" class="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800" value="${esc(settings[s.key+'Key'])}" type="password" />
+    <div class="md:col-span-2 rounded-2xl border border-slate-800 bg-slate-900 p-4">
+      <div class="text-sm font-medium text-slate-100">How the admin console connects</div>
+      <div class="mt-2 text-sm text-slate-400">
+        All admin API calls go through same-origin <span class="font-mono text-cyan-200">/admin-api/*</span> proxy routes after dashboard authentication.
+        The browser no longer stores or sends service secrets directly.
+      </div>
     </div>
-  `).join("");
+    <div class="md:col-span-2 rounded-2xl border border-slate-800 bg-slate-900 p-4">
+      <div class="text-sm font-medium text-slate-100">Tenant Scope</div>
+      <div class="mt-2 text-sm text-slate-400">
+        Tenant scope is still a local operator preference for filtering global views. Use the header control on the main page to switch tenants.
+      </div>
+    </div>
+  `;
 }
 
 // ─── Health Check ────────────────────────────────────────
@@ -1198,6 +1264,7 @@ function viewScan() {
       ${card(`
         <div class="font-semibold mb-3">Sensitive Data Scan</div>
         <textarea id="scanData" rows="4" class="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-sm" placeholder="Enter text to scan for PII/secrets..."></textarea>
+        <div class="mt-2 text-xs text-slate-500">Formatted SSNs like <span class="font-mono">123-45-6789</span> are detected directly. Bare 9-digit values like <span class="font-mono">123456789</span> are only flagged when nearby context suggests an SSN field.</div>
         <button id="runDataScan" class="mt-2 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-sm">Scan</button>
         <div id="dataResult" class="mt-3"></div>
       `)}
@@ -1241,14 +1308,22 @@ async function viewEndpoints() {
   app.innerHTML = loading();
 
   let agents = [];
+  let catalog = [];
   try {
-    // No tenant_id filter — Endpoints is an admin view; show all registered agents.
-    const resp = await apiFetch(
-      `${svcUrl("cp")}/agents?limit=500`,
-      { headers: svcHeaders("cp") }
-    );
-    agents = Array.isArray(resp) ? resp : [];
+    const [agentResp, catalogResp] = await Promise.all([
+      apiFetch(
+        `${svcUrl("cp")}/agents?limit=500`,
+        { headers: svcHeaders("cp") }
+      ),
+      apiFetch(
+        `${svcUrl("cp")}/bootstrap/catalog?tenant_id=${encodeURIComponent(getTenant())}`,
+        { headers: svcHeaders("cp") }
+      ).catch(() => []),
+    ]);
+    agents = Array.isArray(agentResp) ? agentResp : [];
+    catalog = Array.isArray(catalogResp) ? catalogResp : [];
   } catch (_) { /* fall through to empty state */ }
+  const endpointPackages = catalog.filter((pkg) => ["agent", "extension", "browser_extension"].includes(pkg.category));
 
   const now = Date.now();
   // "online" = last heartbeat within 2 minutes
@@ -1284,25 +1359,56 @@ async function viewEndpoints() {
     </tr>`;
   }).join("");
 
-  app.innerHTML = card(`
-    <div class="flex items-center justify-between mb-4">
-      <div class="font-semibold">Registered Endpoints</div>
-      <button id="endpointRefreshBtn" class="text-xs px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700">↻ Refresh</button>
-    </div>
-    <div class="text-xs text-slate-400 mb-4">Endpoints register automatically on agent startup. Online = heartbeat within last 2 min.</div>
-    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
-      ${metricCard("Desktop Agents",   desktopCount,               "indigo", "macOS / Windows / Linux")}
-      ${metricCard("Online Now",       onlineCount,                "green",  "heartbeat < 2 min")}
-      ${metricCard("Total Registered", agents.length,              "cyan",   "all tenants")}
-      ${metricCard("Offline",          agents.length - onlineCount,"rose",   "no recent heartbeat")}
-    </div>
-    ${tableWrap(
-      th("Agent ID") + th("Tenant") + th("Type") + th("Hostname") + th("Username") + th("Platform") + th("Agent Version") + th("Last Seen") + th("Status"),
-      rows || `<tr><td colspan="9">${emptyState("No endpoints registered yet. Deploy the agent installer and point it at this control plane.")}</td></tr>`
-    )}
-  `);
+  app.innerHTML = `
+    ${card(`
+      <div class="flex items-center justify-between mb-4">
+        <div class="font-semibold">Registered Endpoints</div>
+        <button id="endpointRefreshBtn" class="text-xs px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700">↻ Refresh</button>
+      </div>
+      <div class="text-xs text-slate-400 mb-4">Endpoints register automatically on agent startup. Online = heartbeat within last 2 min.</div>
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+        ${metricCard("Desktop Agents",   desktopCount,               "indigo", "macOS / Windows / Linux")}
+        ${metricCard("Online Now",       onlineCount,                "green",  "heartbeat < 2 min")}
+        ${metricCard("Total Registered", agents.length,              "cyan",   "all tenants")}
+        ${metricCard("Offline",          agents.length - onlineCount,"rose",   "no recent heartbeat")}
+      </div>
+      ${tableWrap(
+        th("Agent ID") + th("Tenant") + th("Type") + th("Hostname") + th("Username") + th("Platform") + th("Agent Version") + th("Last Seen") + th("Status"),
+        rows || `<tr><td colspan="9">${emptyState("No endpoints registered yet. Deploy the agent installer and point it at this control plane.")}</td></tr>`
+      )}
+    `)}
+    <div class="mt-4"></div>
+    ${card(`
+      <div class="flex items-center justify-between gap-3">
+        <div>
+          <div class="text-lg font-semibold">Agent, Extension, and Browser Packages</div>
+          <p class="mt-1 text-sm text-slate-400">Download the bundle, issue a one-time bootstrap token, then redeem it into an install-scoped credential during setup instead of baking a long-lived secret into distributed code.</p>
+        </div>
+        <div class="text-xs text-slate-500">Tenant scope: <span class="font-mono text-cyan-200">${esc(getTenant())}</span></div>
+      </div>
+      <div class="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+        ${endpointPackages.map((pkg) => `
+          <div class="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+            <div class="text-xs uppercase tracking-[0.18em] text-slate-500">${esc(pkg.category.replaceAll("_", " "))}</div>
+            <div class="mt-2 text-base font-semibold">${esc(pkg.title)}</div>
+            <p class="mt-2 text-sm text-slate-400">${esc(pkg.description || "")}</p>
+            ${browserCoverageNote(pkg)}
+            <div class="mt-3 rounded-xl bg-slate-950 px-3 py-2 text-xs font-mono text-cyan-200">${esc(pkg.install_hint || "")}</div>
+            <div class="mt-4 flex flex-wrap gap-2">
+              <a class="rounded-xl bg-cyan-500 px-3 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400" href="${esc(`${svcUrl("cp")}/bootstrap/packages/${pkg.package_key}?tenant_id=${encodeURIComponent(getTenant())}`)}">Download ZIP</a>
+              <button class="adminBootstrapBtn rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 hover:bg-slate-800" data-package-key="${esc(pkg.package_key)}" data-package-title="${esc(pkg.title)}" type="button">Issue Bootstrap Token</button>
+              <button class="adminBootstrapHelpBtn rounded-xl border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-300 hover:bg-slate-800" data-tenant-id="${esc(getTenant())}" type="button" title="Bootstrap Setup: download, issue a one-time token, and redeem it into an install-scoped credential during setup.">Bootstrap Setup</button>
+            </div>
+          </div>
+        `).join("") || `<div class="text-sm text-slate-500">Package catalog unavailable.</div>`}
+      </div>
+      <div id="adminBootstrapResult" class="mt-4"></div>
+    `)}
+  `;
   // Attach refresh — inline onclick="..." fails when app.js is type="module"
   $("#endpointRefreshBtn")?.addEventListener("click", viewEndpoints);
+  bindAdminBootstrapButtons();
+  bindAdminBootstrapHelpButtons();
 }
 
 // ---------- Shadow AI ----------
@@ -2585,8 +2691,9 @@ async function viewDelegations() {
 }
 
 // ---------- SDK & Onboarding ----------
-function viewOnboarding() {
+async function viewOnboarding() {
   const app = $("#app");
+  const tenant = getTenant();
   const SDKs = [
     { lang: "Python",       icon: "🐍", install: "pip install cyberarmor-sdk",                        pkg: "cyberarmor-sdk" },
     { lang: "Node.js / TS", icon: "🟨", install: "npm install @cyberarmor/sdk",                       pkg: "@cyberarmor/sdk" },
@@ -2631,12 +2738,19 @@ app.add_middleware(CyberArmorMiddleware, client=client)`,
     { v: "CYBERARMOR_URL",            d: "Agent Identity Service URL",                  def: "http://localhost:8008" },
     { v: "CYBERARMOR_AGENT_ID",       d: "Your registered agent ID",                    def: "agt_..." },
     { v: "CYBERARMOR_AGENT_SECRET",   d: "Agent shared secret (from registration)",     def: "(secret)" },
+    { v: "CYBERARMOR_BOOTSTRAP_TOKEN", d: "One-time bootstrap token issued from the portal", def: "cabt_..." },
     { v: "CYBERARMOR_ENFORCE_MODE",   d: "enforce | monitor | off",                     def: "enforce" },
     { v: "CYBERARMOR_FAIL_OPEN",      d: "Allow requests if control plane unreachable", def: "false" },
     { v: "CYBERARMOR_AUDIT_URL",      d: "Audit Graph Service URL",                     def: "http://localhost:8011" },
     { v: "CYBERARMOR_ROUTER_URL",     d: "AI Router Service URL",                       def: "http://localhost:8009" },
     { v: "CYBERARMOR_URL",             d: "Legacy alias for CYBERARMOR_URL",             def: "(same)" },
   ];
+
+  const catalog = await apiFetch(
+    `${svcUrl("cp")}/bootstrap/catalog?tenant_id=${encodeURIComponent(tenant)}`,
+    { headers: svcHeaders("cp") }
+  ).catch(() => []);
+  const packageCards = (Array.isArray(catalog) ? catalog : []).filter((pkg) => ["sdk", "rasp", "extension"].includes(pkg.category));
 
   app.innerHTML = `
     <div class="mb-6">
@@ -2708,7 +2822,36 @@ app.add_middleware(CyberArmorMiddleware, client=client)`,
           </div>`).join("")}
       </div>
     `,"mt-4")}
+    <div class="mt-4"></div>
+    ${card(`
+      <div class="flex items-center justify-between gap-3">
+        <div>
+          <div class="text-lg font-semibold">Bootstrap-Safe Packages</div>
+          <p class="mt-1 text-sm text-slate-400">Download the package, issue a one-time bootstrap token, then redeem it into an install-scoped credential during setup instead of shipping a tenant-wide secret in source or sample code.</p>
+        </div>
+        <div class="text-xs text-slate-500">Tenant scope: <span class="font-mono text-cyan-200">${esc(tenant)}</span></div>
+      </div>
+      <div class="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+        ${packageCards.map((pkg) => `
+          <div class="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+            <div class="text-xs uppercase tracking-[0.18em] text-slate-500">${esc(pkg.category)}</div>
+            <div class="mt-2 text-base font-semibold">${esc(pkg.title)}</div>
+            <p class="mt-2 text-sm text-slate-400">${esc(pkg.description || "")}</p>
+            ${browserCoverageNote(pkg)}
+            <div class="mt-3 rounded-xl bg-slate-950 px-3 py-2 text-xs font-mono text-cyan-200">${esc(pkg.install_hint || "")}</div>
+            <div class="mt-4 flex flex-wrap gap-2">
+              <a class="rounded-xl bg-cyan-500 px-3 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400" href="${esc(`${svcUrl("cp")}/bootstrap/packages/${pkg.package_key}?tenant_id=${encodeURIComponent(tenant)}`)}">Download ZIP</a>
+              <button class="adminBootstrapBtn rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 hover:bg-slate-800" data-package-key="${esc(pkg.package_key)}" data-package-title="${esc(pkg.title)}" type="button">Issue Bootstrap Token</button>
+              <button class="adminBootstrapHelpBtn rounded-xl border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-300 hover:bg-slate-800" data-tenant-id="${esc(tenant)}" type="button" title="Bootstrap Setup: download, issue a one-time token, and redeem it into an install-scoped credential during setup.">Bootstrap Setup</button>
+            </div>
+          </div>
+        `).join("") || `<div class="text-sm text-slate-500">Package catalog unavailable.</div>`}
+      </div>
+      <div id="adminBootstrapResult" class="mt-4"></div>
+    `)}
   `;
+  bindAdminBootstrapButtons();
+  bindAdminBootstrapHelpButtons();
 }
 
 // ─── Router ──────────────────────────────────────────────
@@ -2767,13 +2910,8 @@ function setConnectionLabels() {
 $("#openSettings").onclick = () => { buildSettingsFields(); $("#settingsModal").classList.remove("hidden"); $("#settingsModal").classList.add("flex"); };
 $("#closeSettings").onclick = () => { $("#settingsModal").classList.add("hidden"); $("#settingsModal").classList.remove("flex"); };
 $("#saveSettings").onclick = () => {
-  SERVICES.forEach(s => {
-    settings[s.key+"Url"] = $(`#set_${s.key}Url`)?.value || s.defaultUrl;
-    settings[s.key+"Key"] = $(`#set_${s.key}Key`)?.value || s.defaultKey;
-  });
-  saveSettingsToStorage(settings);
   buildServiceStatus();
-  toast("Settings saved", "success");
+  toast("Server-side proxy settings are active", "success");
   $("#settingsModal").classList.add("hidden");
   $("#settingsModal").classList.remove("flex");
 };

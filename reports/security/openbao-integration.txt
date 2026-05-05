@@ -1,27 +1,27 @@
 Starting local verification stack...
  Network cyberarmor-openbao-ci_default Creating 
  Network cyberarmor-openbao-ci_default Created 
- Volume cyberarmor-openbao-ci_pgdata Creating 
- Volume cyberarmor-openbao-ci_pgdata Created 
  Volume cyberarmor-openbao-ci_certs Creating 
  Volume cyberarmor-openbao-ci_certs Created 
  Volume cyberarmor-openbao-ci_openbao_data Creating 
  Volume cyberarmor-openbao-ci_openbao_data Created 
- Container cyberarmor-openbao-ci-opa-1 Creating 
+ Volume cyberarmor-openbao-ci_pgdata Creating 
+ Volume cyberarmor-openbao-ci_pgdata Created 
  Container cyberarmor-openbao-ci-redis-1 Creating 
- Container cyberarmor-openbao-ci-postgres-1 Creating 
  Container cyberarmor-openbao-ci-openbao-1 Creating 
+ Container cyberarmor-openbao-ci-opa-1 Creating 
+ Container cyberarmor-openbao-ci-postgres-1 Creating 
  Container cyberarmor-openbao-ci-opa-1 Created 
- Container cyberarmor-openbao-ci-postgres-1 Created 
- Container cyberarmor-openbao-ci-policy-1 Creating 
  Container cyberarmor-openbao-ci-redis-1 Created 
- Container cyberarmor-openbao-ci-audit-1 Creating 
- Container cyberarmor-openbao-ci-agent-identity-1 Creating 
  Container cyberarmor-openbao-ci-openbao-1 Created 
  Container cyberarmor-openbao-ci-secrets-service-1 Creating 
+ Container cyberarmor-openbao-ci-postgres-1 Created 
+ Container cyberarmor-openbao-ci-policy-1 Creating 
+ Container cyberarmor-openbao-ci-agent-identity-1 Creating 
+ Container cyberarmor-openbao-ci-audit-1 Creating 
+ Container cyberarmor-openbao-ci-policy-1 Created 
  Container cyberarmor-openbao-ci-secrets-service-1 Created 
  Container cyberarmor-openbao-ci-agent-identity-1 Created 
- Container cyberarmor-openbao-ci-policy-1 Created 
  Container cyberarmor-openbao-ci-ai-router-1 Creating 
  Container cyberarmor-openbao-ci-audit-1 Created 
  Container cyberarmor-openbao-ci-ai-router-1 Created 
@@ -29,23 +29,23 @@ Starting local verification stack...
  Container cyberarmor-openbao-ci-postgres-1 Starting 
  Container cyberarmor-openbao-ci-openbao-1 Starting 
  Container cyberarmor-openbao-ci-opa-1 Starting 
+ Container cyberarmor-openbao-ci-opa-1 Started 
+ Container cyberarmor-openbao-ci-redis-1 Started 
  Container cyberarmor-openbao-ci-openbao-1 Started 
  Container cyberarmor-openbao-ci-openbao-1 Waiting 
- Container cyberarmor-openbao-ci-redis-1 Started 
- Container cyberarmor-openbao-ci-opa-1 Started 
  Container cyberarmor-openbao-ci-postgres-1 Started 
  Container cyberarmor-openbao-ci-postgres-1 Waiting 
+ Container cyberarmor-openbao-ci-redis-1 Waiting 
+ Container cyberarmor-openbao-ci-redis-1 Waiting 
+ Container cyberarmor-openbao-ci-postgres-1 Waiting 
+ Container cyberarmor-openbao-ci-postgres-1 Waiting 
  Container cyberarmor-openbao-ci-opa-1 Waiting 
- Container cyberarmor-openbao-ci-redis-1 Waiting 
- Container cyberarmor-openbao-ci-postgres-1 Waiting 
- Container cyberarmor-openbao-ci-redis-1 Waiting 
- Container cyberarmor-openbao-ci-postgres-1 Waiting 
- Container cyberarmor-openbao-ci-redis-1 Healthy 
  Container cyberarmor-openbao-ci-postgres-1 Healthy 
- Container cyberarmor-openbao-ci-agent-identity-1 Starting 
  Container cyberarmor-openbao-ci-redis-1 Healthy 
  Container cyberarmor-openbao-ci-postgres-1 Healthy 
  Container cyberarmor-openbao-ci-audit-1 Starting 
+ Container cyberarmor-openbao-ci-redis-1 Healthy 
+ Container cyberarmor-openbao-ci-agent-identity-1 Starting 
  Container cyberarmor-openbao-ci-postgres-1 Healthy 
  Container cyberarmor-openbao-ci-audit-1 Started 
  Container cyberarmor-openbao-ci-agent-identity-1 Started 
@@ -53,14 +53,14 @@ Starting local verification stack...
  Container cyberarmor-openbao-ci-secrets-service-1 Starting 
  Container cyberarmor-openbao-ci-opa-1 Healthy 
  Container cyberarmor-openbao-ci-policy-1 Starting 
- Container cyberarmor-openbao-ci-policy-1 Started 
  Container cyberarmor-openbao-ci-secrets-service-1 Started 
+ Container cyberarmor-openbao-ci-policy-1 Started 
+ Container cyberarmor-openbao-ci-policy-1 Waiting 
  Container cyberarmor-openbao-ci-secrets-service-1 Waiting 
  Container cyberarmor-openbao-ci-agent-identity-1 Waiting 
- Container cyberarmor-openbao-ci-policy-1 Waiting 
  Container cyberarmor-openbao-ci-agent-identity-1 Healthy 
- Container cyberarmor-openbao-ci-secrets-service-1 Healthy 
  Container cyberarmor-openbao-ci-policy-1 Healthy 
+ Container cyberarmor-openbao-ci-secrets-service-1 Healthy 
  Container cyberarmor-openbao-ci-ai-router-1 Starting 
  Container cyberarmor-openbao-ci-ai-router-1 Started 
 Bootstrapping OpenBao mounts and transit keys...
@@ -72,7 +72,7 @@ Verification summary
 - secrets-service stored key: sk-verify-secrets-service
 - ai-router backend: secrets-service
 - ai-router secret key: sk-verify-ai-router
-- agent-identity PQC key id: 83735e35fb353dd6b77a3190af7965c3
+- agent-identity PQC key id: 4d2fee00aa6802b953fc0d10af18126e
 - ai-router local PQC files: <none>
 - agent-identity local PQC files: <none>
 

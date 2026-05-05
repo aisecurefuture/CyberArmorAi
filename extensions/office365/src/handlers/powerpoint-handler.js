@@ -3,6 +3,8 @@
  * DLP scanning for slides, notes, and embedded content.
  */
 
+import { redeemBootstrapConfig } from "./bootstrap.js";
+
 const DLP_PATTERNS = [
   { name: "SSN", pattern: /\b\d{3}-\d{2}-\d{4}\b/g, severity: "critical", classification: "RESTRICTED" },
   { name: "Credit Card", pattern: /\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/g, severity: "critical", classification: "RESTRICTED" },
@@ -19,10 +21,13 @@ const AI_CONTENT_PATTERNS = [
   { name: "Code Blocks", pattern: /```[\s\S]*?```/g },
 ];
 
-let config = { serverUrl: "", apiKey: "", tenantId: "", enabled: true };
+let config = { serverUrl: "", apiKey: "", tenantId: "", enabled: true, bootstrapToken: "" };
 
 function init(cfg) {
   config = { ...config, ...cfg };
+  redeemBootstrapConfig(config, "office365-addin", "powerpoint-addin").then((resolved) => {
+    config = resolved;
+  }).catch(() => {});
 }
 
 async function scan() {

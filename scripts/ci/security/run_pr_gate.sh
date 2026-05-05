@@ -34,7 +34,10 @@ print_semgrep_summary() {
   fi
   log "semgrep findings summary"
   jq -r '
-    .runs[0].results[:20][]? |
+    [
+      .runs[0].results[]?
+      | select(((.suppressions // []) | length) == 0)
+    ][:20][]? |
     "- rule=" + (.ruleId // "unknown") +
     " file=" + (.locations[0].physicalLocation.artifactLocation.uri // "unknown") +
     " line=" + ((.locations[0].physicalLocation.region.startLine // 0) | tostring) +

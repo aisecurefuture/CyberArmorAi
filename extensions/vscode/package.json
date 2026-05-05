@@ -49,6 +49,10 @@
       {
         "command": "cyberarmor.toggleMonitoring",
         "title": "CyberArmor: Toggle AI Monitoring"
+      },
+      {
+        "command": "cyberarmor.redeemBootstrapToken",
+        "title": "CyberArmor: Redeem Bootstrap Token"
       }
     ],
     "configuration": {
@@ -63,6 +67,16 @@
           "type": "string",
           "default": "",
           "description": "Plaintext API key or precomputed PQC credential value for authenticating with the control plane"
+        },
+        "cyberarmor.bootstrapToken": {
+          "type": "string",
+          "default": "",
+          "description": "One-time bootstrap token that will be redeemed into an install-scoped credential"
+        },
+        "cyberarmor.tenantId": {
+          "type": "string",
+          "default": "default",
+          "description": "Tenant identifier used for policy sync and telemetry"
         },
         "cyberarmor.enableAIMonitoring": {
           "type": "boolean",

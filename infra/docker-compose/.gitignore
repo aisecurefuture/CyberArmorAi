@@ -1,0 +1,9 @@
+# Local compose env files with real secrets
+.env
+.env.local-demo
+.env.local-dev
+.env.production
+
+# Keep templates committed
+!.env.example
+!.env.production.example

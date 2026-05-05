@@ -42,6 +42,7 @@ public final class CyberArmorLegacyAgent {
     // -------------------------------------------------------------------------
     private static volatile AgentConfig config = AgentConfig.defaults();
     private static final AtomicBoolean initialized = new AtomicBoolean(false);
+    private static final AtomicBoolean bootstrapRedeemed = new AtomicBoolean(false);
 
     // Telemetry queue (bounded, non-blocking)
     private static final BlockingQueue<TelemetryEvent> telemetryQueue =
@@ -142,7 +143,7 @@ public final class CyberArmorLegacyAgent {
             inst.addTransformer(new CyberArmorTransformer(), inst.isRetransformClassesSupported());
 
             // Register shutdown hook
-            Runtime.getRuntime().addShutdownHook(new Thread(CyberArmorAgent::shutdown, "cyberarmor-shutdown"));
+            Runtime.getRuntime().addShutdownHook(new Thread(CyberArmorLegacyAgent::shutdown, "cyberarmor-shutdown"));
 
             LOG.info("CyberArmor RASP agent initialized successfully. Mode: " + config.enforcementMode);
         } catch (Exception ex) {
@@ -358,7 +359,7 @@ public final class CyberArmorLegacyAgent {
             return t;
         });
         telemetryExecutor.scheduleWithFixedDelay(
-                CyberArmorAgent::flushTelemetry,
+                CyberArmorLegacyAgent::flushTelemetry,
                 config.telemetryFlushIntervalMs,
                 config.telemetryFlushIntervalMs,
                 TimeUnit.MILLISECONDS
@@ -419,7 +420,7 @@ public final class CyberArmorLegacyAgent {
             return t;
         });
         policySyncExecutor.scheduleWithFixedDelay(
-                CyberArmorAgent::syncPolicies,
+                CyberArmorLegacyAgent::syncPolicies,
                 0,
                 config.policySyncIntervalMs,
                 TimeUnit.MILLISECONDS
@@ -446,6 +447,7 @@ public final class CyberArmorLegacyAgent {
     // -------------------------------------------------------------------------
 
     private static void sendToControlPlane(String path, String jsonPayload) throws IOException {
+        ensureBootstrapRedeemed();
         URL url = new URL(config.controlPlaneUrl + path);
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         try {
@@ -471,6 +473,7 @@ public final class CyberArmorLegacyAgent {
     }
 
     private static String fetchFromControlPlane(String path) throws IOException {
+        ensureBootstrapRedeemed();
         URL url = new URL(config.controlPlaneUrl + path);
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         try {
@@ -587,6 +590,70 @@ public final class CyberArmorLegacyAgent {
                 .replace("\n", "\\n")
                 .replace("\r", "\\r")
                 .replace("\t", "\\t");
+    }
+
+    private static void ensureBootstrapRedeemed() throws IOException {
+        if (bootstrapRedeemed.get() || config.bootstrapToken == null || config.bootstrapToken.isBlank() ||
+                (config.apiKey != null && !config.apiKey.isBlank())) {
+            bootstrapRedeemed.set(true);
+            return;
+        }
+
+        synchronized (CyberArmorLegacyAgent.class) {
+            if (bootstrapRedeemed.get() || (config.apiKey != null && !config.apiKey.isBlank())) {
+                bootstrapRedeemed.set(true);
+                return;
+            }
+
+            String payload = "{\"bootstrap_token\":\"" + escapeJson(config.bootstrapToken) + "\"," +
+                    "\"package_key\":\"rasp-java\"," +
+                    "\"subject_type\":\"rasp_runtime\"," +
+                    "\"subject_name\":\"" + escapeJson(runtimeSubjectName()) + "\"}";
+            URL url = new URL(config.controlPlaneUrl + "/bootstrap/redeem");
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            try {
+                conn.setRequestMethod("POST");
+                conn.setRequestProperty("Content-Type", "application/json");
+                conn.setConnectTimeout(5000);
+                conn.setReadTimeout(10000);
+                conn.setDoOutput(true);
+                try (OutputStream os = conn.getOutputStream()) {
+                    os.write(payload.getBytes(StandardCharsets.UTF_8));
+                }
+                int status = conn.getResponseCode();
+                InputStream responseStream = status >= 400 ? conn.getErrorStream() : conn.getInputStream();
+                String response = "";
+                if (responseStream != null) {
+                    try (BufferedReader reader = new BufferedReader(new InputStreamReader(responseStream, StandardCharsets.UTF_8))) {
+                        response = reader.lines().collect(Collectors.joining("\n"));
+                    }
+                }
+                if (status >= 400) {
+                    throw new IOException("Bootstrap redeem failed with HTTP " + status + ": " + response);
+                }
+
+                String apiKey = extractJsonString(response, "api_key");
+                config = config.withRuntimeCredential(
+                        apiKey != null ? apiKey : config.apiKey
+                );
+                bootstrapRedeemed.set(true);
+            } finally {
+                conn.disconnect();
+            }
+        }
+    }
+
+    private static String runtimeSubjectName() {
+        String subject = System.getenv("CYBERARMOR_RASP_SUBJECT_NAME");
+        if (subject != null && !subject.isBlank()) return subject;
+        String host = System.getenv("HOSTNAME");
+        return (host != null && !host.isBlank()) ? host : "java-rasp";
+    }
+
+    private static String extractJsonString(String json, String key) {
+        Pattern p = Pattern.compile("\"" + Pattern.quote(key) + "\"\\s*:\\s*\"([^\"]*)\"");
+        Matcher m = p.matcher(json);
+        return m.find() ? m.group(1) : null;
     }
 
     // =========================================================================
@@ -800,6 +867,7 @@ public final class CyberArmorLegacyAgent {
     static final class AgentConfig {
         final String controlPlaneUrl;
         final String apiKey;
+        final String bootstrapToken;
         final String agentId;
         final EnforcementMode enforcementMode;
         final long telemetryFlushIntervalMs;
@@ -808,12 +876,13 @@ public final class CyberArmorLegacyAgent {
         final String logFilePath;
         final List<String> customAIEndpoints;
 
-        AgentConfig(String controlPlaneUrl, String apiKey, String agentId,
+        AgentConfig(String controlPlaneUrl, String apiKey, String bootstrapToken, String agentId,
                     EnforcementMode enforcementMode, long telemetryFlushIntervalMs,
                     long policySyncIntervalMs, Level logLevel, String logFilePath,
                     List<String> customAIEndpoints) {
             this.controlPlaneUrl = controlPlaneUrl;
             this.apiKey = apiKey;
+            this.bootstrapToken = bootstrapToken;
             this.agentId = agentId;
             this.enforcementMode = enforcementMode;
             this.telemetryFlushIntervalMs = telemetryFlushIntervalMs;
@@ -825,9 +894,10 @@ public final class CyberArmorLegacyAgent {
 
         static AgentConfig defaults() {
             return new AgentConfig(
-                    "https://api.cyberarmor.ai",
-                    "",
-                    UUID.randomUUID().toString(),
+                "https://api.cyberarmor.ai",
+                "",
+                "",
+                UUID.randomUUID().toString(),
                     EnforcementMode.MONITOR,
                     5000,
                     60000,
@@ -851,6 +921,7 @@ public final class CyberArmorLegacyAgent {
         static AgentConfig fromProperties(Properties props) {
             String url = props.getProperty("cyberarmor.controlPlane.url", "https://api.cyberarmor.ai");
             String key = props.getProperty("cyberarmor.apiKey", "");
+            String bootstrapToken = props.getProperty("cyberarmor.bootstrapToken", "");
             String id = props.getProperty("cyberarmor.agentId", UUID.randomUUID().toString());
             EnforcementMode mode;
             try {
@@ -875,19 +946,21 @@ public final class CyberArmorLegacyAgent {
                     ? List.of()
                     : Arrays.asList(customEndpoints.split(","));
 
-            return new AgentConfig(url, key, id, mode, telemetryInterval, policyInterval,
+            return new AgentConfig(url, key, bootstrapToken, id, mode, telemetryInterval, policyInterval,
                     level, logFile, endpoints);
         }
 
         static AgentConfig applyEnvironmentOverrides(AgentConfig base) {
             String envUrl = System.getenv("CYBERARMOR_CONTROL_PLANE_URL");
             String envKey = System.getenv("CYBERARMOR_API_KEY");
+            String envBootstrapToken = System.getenv("CYBERARMOR_BOOTSTRAP_TOKEN");
             String envMode = System.getenv("CYBERARMOR_MODE");
             String envId = System.getenv("CYBERARMOR_AGENT_ID");
 
             return new AgentConfig(
                     envUrl != null ? envUrl : base.controlPlaneUrl,
                     envKey != null ? envKey : base.apiKey,
+                    envBootstrapToken != null ? envBootstrapToken : base.bootstrapToken,
                     envId != null ? envId : base.agentId,
                     envMode != null ? EnforcementMode.valueOf(envMode.toUpperCase()) : base.enforcementMode,
                     base.telemetryFlushIntervalMs,
@@ -895,6 +968,21 @@ public final class CyberArmorLegacyAgent {
                     base.logLevel,
                     base.logFilePath,
                     base.customAIEndpoints
+            );
+        }
+
+        AgentConfig withRuntimeCredential(String runtimeApiKey) {
+            return new AgentConfig(
+                    controlPlaneUrl,
+                    runtimeApiKey,
+                    bootstrapToken,
+                    agentId,
+                    enforcementMode,
+                    telemetryFlushIntervalMs,
+                    policySyncIntervalMs,
+                    logLevel,
+                    logFilePath,
+                    customAIEndpoints
             );
         }
     }

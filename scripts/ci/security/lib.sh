@@ -151,6 +151,7 @@ run_semgrep_configs() {
       --exclude=**/dist/** \
       --exclude=**/.venv/** \
       --exclude=**/out/** \
+      --exclude=reports/security/** \
       --error \
       --sarif \
       --output "/src/${output_file#$ROOT_DIR/}" \

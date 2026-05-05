@@ -18,7 +18,37 @@ function getCyberArmorConfig(): vscode.WorkspaceConfiguration {
   return vscode.workspace.getConfiguration('cyberarmor');
 }
 
-export function activate(context: vscode.ExtensionContext) {
+async function redeemBootstrapToken(config: vscode.WorkspaceConfiguration): Promise<boolean> {
+  const bootstrapToken = config.get<string>('bootstrapToken', '');
+  const existingApiKey = config.get<string>('apiKey', '');
+  const controlPlaneUrl = config.get<string>('controlPlaneUrl', 'http://localhost:8000');
+  const tenantId = config.get<string>('tenantId', 'default');
+  if (!bootstrapToken || existingApiKey) {
+    return false;
+  }
+  const response = await fetch(`${controlPlaneUrl.replace(/\/$/, '')}/bootstrap/redeem`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      bootstrap_token: bootstrapToken,
+      package_key: 'vscode-extension',
+      subject_type: 'extension',
+      subject_name: vscode.env.machineId || 'vscode-extension',
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(`Bootstrap redeem failed (${response.status}): ${await response.text()}`);
+  }
+  const redeemed = await response.json();
+  await config.update('apiKey', redeemed.service_api_key || '', vscode.ConfigurationTarget.Global);
+  await config.update('tenantId', redeemed.tenant_id || tenantId, vscode.ConfigurationTarget.Global);
+  await config.update('controlPlaneUrl', redeemed.control_plane_url || controlPlaneUrl, vscode.ConfigurationTarget.Global);
+  await config.update('bootstrapToken', '', vscode.ConfigurationTarget.Global);
+  authLogChannel?.appendLine(`[${new Date().toISOString()}] bootstrap redeemed subject=${redeemed.subject_id || 'unknown'}`);
+  return true;
+}
+
+export async function activate(context: vscode.ExtensionContext) {
   console.log('CyberArmor extension activating...');
 
   // Status bar
@@ -33,6 +63,14 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Init components
   const config = getCyberArmorConfig();
+  try {
+    const redeemed = await redeemBootstrapToken(config);
+    if (redeemed) {
+      vscode.window.showInformationMessage('CyberArmor bootstrap token redeemed successfully.');
+    }
+  } catch (error: any) {
+    vscode.window.showErrorMessage(`CyberArmor bootstrap redeem failed: ${error.message || error}`);
+  }
   policyClient = new PolicyClient(
     config.get('controlPlaneUrl', 'http://localhost:8000'),
     config.get('apiKey', ''),
@@ -47,6 +85,19 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('cyberarmor.scanFile', () => scanCurrentFile()),
     vscode.commands.registerCommand('cyberarmor.scanWorkspace', () => scanWorkspace()),
     vscode.commands.registerCommand('cyberarmor.toggleMonitoring', () => toggleMonitoring()),
+    vscode.commands.registerCommand('cyberarmor.redeemBootstrapToken', async () => {
+      try {
+        const current = getCyberArmorConfig();
+        const redeemed = await redeemBootstrapToken(current);
+        if (redeemed) {
+          vscode.window.showInformationMessage('CyberArmor bootstrap token redeemed successfully.');
+        } else {
+          vscode.window.showInformationMessage('CyberArmor bootstrap redeem skipped. Add a bootstrap token or clear the existing API key first.');
+        }
+      } catch (error: any) {
+        vscode.window.showErrorMessage(`CyberArmor bootstrap redeem failed: ${error.message || error}`);
+      }
+    }),
   );
 
   // File save hook — scan for secrets

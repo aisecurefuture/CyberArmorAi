@@ -9,18 +9,61 @@ namespace CyberArmor\RASP;
 class Config {
     public string $controlPlaneUrl;
     public string $apiKey;
+    public string $bootstrapToken;
     public string $tenantId;
     public string $mode; // 'monitor' or 'block'
     public bool $dlpEnabled;
     public bool $promptInjectionEnabled;
 
     public function __construct() {
-        $this->controlPlaneUrl = getenv('CYBERARMOR_URL') ?: 'http://localhost:8000';
+        $this->controlPlaneUrl = getenv('CYBERARMOR_CONTROL_PLANE_URL') ?: (getenv('CYBERARMOR_URL') ?: 'http://localhost:8000');
         $this->apiKey = getenv('CYBERARMOR_API_KEY') ?: '';
-        $this->tenantId = getenv('CYBERARMOR_TENANT') ?: 'default';
+        $this->bootstrapToken = getenv('CYBERARMOR_BOOTSTRAP_TOKEN') ?: '';
+        $this->tenantId = getenv('CYBERARMOR_TENANT_ID') ?: (getenv('CYBERARMOR_TENANT') ?: 'default');
         $this->mode = getenv('CYBERARMOR_MODE') ?: 'monitor';
         $this->dlpEnabled = true;
         $this->promptInjectionEnabled = true;
+        $this->redeemBootstrapTokenIfNeeded();
+    }
+
+    private function redeemBootstrapTokenIfNeeded(): void {
+        if ($this->bootstrapToken === '' || $this->apiKey !== '') {
+            return;
+        }
+
+        $subjectName = getenv('CYBERARMOR_RASP_SUBJECT_NAME') ?: (gethostname() ?: 'php-rasp');
+        $payload = json_encode([
+            'bootstrap_token' => $this->bootstrapToken,
+            'package_key' => 'rasp-php',
+            'subject_type' => 'rasp_runtime',
+            'subject_name' => $subjectName,
+        ]);
+
+        $context = stream_context_create([
+            'http' => [
+                'method' => 'POST',
+                'header' => "Content-Type: application/json\r\n",
+                'content' => $payload,
+                'timeout' => 10,
+                'ignore_errors' => true,
+            ],
+        ]);
+
+        $response = @file_get_contents(rtrim($this->controlPlaneUrl, '/') . '/bootstrap/redeem', false, $context);
+        if ($response === false) {
+            error_log('[CyberArmor RASP] bootstrap redeem failed');
+            return;
+        }
+
+        $decoded = json_decode($response, true);
+        if (is_array($decoded)) {
+            if (!empty($decoded['api_key'])) {
+                $this->apiKey = $decoded['api_key'];
+            }
+            if (!empty($decoded['tenant_id'])) {
+                $this->tenantId = $decoded['tenant_id'];
+            }
+        }
     }
 }
 

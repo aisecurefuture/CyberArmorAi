@@ -23,7 +23,7 @@ const PROMPT_INJECTION_PATTERNS = [
 ];
 
 let policies = [];
-let config = { controlPlaneUrl: 'http://localhost:8000', apiKey: '', syncInterval: 60000, pqcAuthEnabled: true, pqcAuthStrict: false };
+let config = { controlPlaneUrl: 'http://localhost:8000', apiKey: '', bootstrapToken: '', tenantId: 'default', syncInterval: 60000, pqcAuthEnabled: true, pqcAuthStrict: false };
 let lastAuthStatus = { mode: "unknown", algorithm: "unknown", updatedAt: 0 };
 
 function recordAuthStatus(authInfo, context) {
@@ -45,9 +45,35 @@ browser.storage.sync.get(['cyberarmor_config', 'cyberarmor_policies']).then(data
   if (data.cyberarmor_policies) policies = data.cyberarmor_policies;
   browser.storage.local.get(['cyberarmor_last_auth_status']).then((localData) => {
     if (localData.cyberarmor_last_auth_status) lastAuthStatus = localData.cyberarmor_last_auth_status;
-    startPolicySync();
+    ensureBootstrapRedeemed().finally(() => startPolicySync());
   });
 });
+
+async function ensureBootstrapRedeemed() {
+  if (!config.bootstrapToken || config.apiKey) return;
+  const response = await fetch(`${config.controlPlaneUrl.replace(/\/$/, '')}/bootstrap/redeem`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      bootstrap_token: config.bootstrapToken,
+      package_key: 'firefox-extension',
+      subject_type: 'browser_extension',
+      subject_name: 'firefox-extension',
+    }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.detail || `Bootstrap redeem failed (${response.status})`);
+  }
+  config = {
+    ...config,
+    controlPlaneUrl: data.control_plane_url || config.controlPlaneUrl,
+    apiKey: data.service_api_key || config.apiKey,
+    tenantId: data.tenant_id || config.tenantId,
+    bootstrapToken: '',
+  };
+  await browser.storage.sync.set({ cyberarmor_config: config });
+}
 
 function startPolicySync() {
   if (!config.controlPlaneUrl || !config.apiKey) return;
@@ -64,7 +90,7 @@ async function syncPolicies() {
       strict: config.pqcAuthStrict === true,
     });
     recordAuthStatus(auth.authInfo, "policy_sync");
-    const resp = await fetch(`${config.controlPlaneUrl}/policies/default`, {
+    const resp = await fetch(`${config.controlPlaneUrl}/policies/${config.tenantId || 'default'}`, {
       headers: auth.headers
     });
     if (resp.ok) {

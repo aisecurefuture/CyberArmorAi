@@ -17,6 +17,8 @@ import sys
 import shutil
 import subprocess
 import tempfile
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -562,10 +564,41 @@ def deploy_files(source_dir: Path, install_dir: Path) -> bool:
 # Main Installer Logic
 # ---------------------------------------------------------------------------
 
+def redeem_bootstrap_token(
+    control_plane_url: str,
+    bootstrap_token: str,
+    subject_name: str = "",
+) -> Dict:
+    """Exchange a one-time bootstrap token for an install-scoped credential."""
+    payload = {
+        "bootstrap_token": bootstrap_token,
+        "package_key": "endpoint-agent",
+        "subject_type": "endpoint_agent",
+        "subject_name": subject_name or platform.node(),
+        "hostname": platform.node(),
+    }
+    url = f"{control_plane_url.rstrip('/')}/bootstrap/redeem"
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Bootstrap redeem failed ({exc.code}): {body[:400]}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Bootstrap redeem failed: {exc.reason}") from exc
+
 def install(
     control_plane_url: str = "",
     api_key: str = "",
+    bootstrap_token: str = "",
     tenant_id: str = "",
+    subject_name: str = "",
     silent: bool = False,
     skip_service: bool = False,
     install_dir: Optional[Path] = None,
@@ -612,6 +645,20 @@ def install(
 
     # 7. Write configuration
     config = DEFAULT_CONFIG.copy()
+    if bootstrap_token:
+        redeem_url = control_plane_url or DEFAULT_CONFIG["control_plane_url"]
+        logger.info("Redeeming bootstrap token against %s", redeem_url)
+        try:
+            redeemed = redeem_bootstrap_token(redeem_url, bootstrap_token, subject_name=subject_name)
+        except Exception as exc:
+            logger.error("Bootstrap redeem failed: %s", exc)
+            return False
+        config.update(redeemed.get("config", {}))
+        control_plane_url = str(redeemed.get("control_plane_url") or control_plane_url)
+        api_key = str(redeemed.get("service_api_key") or api_key)
+        tenant_id = str(redeemed.get("tenant_id") or tenant_id)
+        if redeemed.get("subject_id"):
+            config["agent_id"] = str(redeemed["subject_id"])
     if control_plane_url:
         config["control_plane_url"] = control_plane_url
     if api_key:
@@ -694,7 +741,9 @@ def main():
     inst = sub.add_parser("install", help="Install the endpoint agent")
     inst.add_argument("--control-plane-url", default="", help="Control plane URL")
     inst.add_argument("--api-key", default="", help="API key for authentication")
+    inst.add_argument("--bootstrap-token", default="", help="One-time bootstrap token to redeem into an install credential")
     inst.add_argument("--tenant-id", default="", help="Tenant identifier")
+    inst.add_argument("--subject-name", default="", help="Friendly name for this install during bootstrap enrollment")
     inst.add_argument("--silent", action="store_true", help="Silent installation")
     inst.add_argument("--skip-service", action="store_true", help="Skip service registration")
     inst.add_argument("--install-dir", type=Path, default=None, help="Custom install directory")
@@ -712,7 +761,9 @@ def main():
         success = install(
             control_plane_url=args.control_plane_url,
             api_key=args.api_key,
+            bootstrap_token=args.bootstrap_token,
             tenant_id=args.tenant_id,
+            subject_name=args.subject_name,
             silent=args.silent,
             skip_service=args.skip_service,
             install_dir=args.install_dir,

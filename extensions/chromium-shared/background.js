@@ -17,6 +17,7 @@ importScripts("pqc_auth.js");
 const DEFAULT_CONFIG = {
   controlPlaneUrl: "http://localhost:8000",
   apiKey: "",
+  bootstrapToken: "",
   tenantId: "demo",
   telemetryEnabled: true,
   redactPIIEnabled: true,
@@ -102,6 +103,30 @@ async function saveConfig(updates) {
       Object.assign(cachedConfig, updates);
       resolve(cachedConfig);
     });
+  });
+}
+
+async function ensureBootstrapRedeemed() {
+  if (!cachedConfig.bootstrapToken || cachedConfig.apiKey) return;
+  const response = await fetch(`${cachedConfig.controlPlaneUrl.replace(/\/$/, "")}/bootstrap/redeem`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      bootstrap_token: cachedConfig.bootstrapToken,
+      package_key: "edge-extension",
+      subject_type: "browser_extension",
+      subject_name: "chromium-extension",
+    }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.detail || `Bootstrap redeem failed (${response.status})`);
+  }
+  await saveConfig({
+    controlPlaneUrl: data.control_plane_url || cachedConfig.controlPlaneUrl,
+    apiKey: data.service_api_key || cachedConfig.apiKey,
+    tenantId: data.tenant_id || cachedConfig.tenantId,
+    bootstrapToken: "",
   });
 }
 
@@ -386,6 +411,7 @@ chrome.runtime.onInstalled.addListener(async () => {
   chrome.storage.local.get(["cyberarmorLastAuthStatus"], (data) => {
     if (data.cyberarmorLastAuthStatus) lastAuthStatus = data.cyberarmorLastAuthStatus;
   });
+  try { await ensureBootstrapRedeemed(); } catch (err) { console.warn("[CyberArmor] Bootstrap redeem failed:", err.message); }
   await setupPhishingRules();
   startPolicySync();
   console.log("[CyberArmor] Extension installed and initialized");
@@ -396,6 +422,7 @@ chrome.runtime.onStartup.addListener(async () => {
   chrome.storage.local.get(["cyberarmorLastAuthStatus"], (data) => {
     if (data.cyberarmorLastAuthStatus) lastAuthStatus = data.cyberarmorLastAuthStatus;
   });
+  try { await ensureBootstrapRedeemed(); } catch (err) { console.warn("[CyberArmor] Bootstrap redeem failed:", err.message); }
   await setupPhishingRules();
   startPolicySync();
   console.log("[CyberArmor] Extension started");

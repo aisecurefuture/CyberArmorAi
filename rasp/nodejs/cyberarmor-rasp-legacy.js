@@ -19,13 +19,70 @@ function pickEnv(...keys) {
 
 // ── Config ───────────────────────────────────────────────
 const config = {
-  controlPlaneUrl: pickEnv('CYBERARMOR_URL') || 'http://localhost:8000',
+  controlPlaneUrl: pickEnv('CYBERARMOR_CONTROL_PLANE_URL', 'CYBERARMOR_URL') || 'http://localhost:8000',
   apiKey: pickEnv('CYBERARMOR_API_KEY') || '',
-  tenantId: pickEnv('CYBERARMOR_TENANT') || 'default',
+  bootstrapToken: pickEnv('CYBERARMOR_BOOTSTRAP_TOKEN') || '',
+  tenantId: pickEnv('CYBERARMOR_TENANT_ID', 'CYBERARMOR_TENANT') || 'default',
   mode: pickEnv('CYBERARMOR_MODE') || 'monitor', // monitor | block
   dlpEnabled: true,
   promptInjectionEnabled: true,
 };
+
+let bootstrapPromise = null;
+
+function getRuntimeSubjectName() {
+  return pickEnv('CYBERARMOR_RASP_SUBJECT_NAME', 'HOSTNAME') || 'nodejs-rasp';
+}
+
+async function redeemBootstrapToken() {
+  if (!config.bootstrapToken || config.apiKey || !config.controlPlaneUrl) return null;
+  const payload = JSON.stringify({
+    bootstrap_token: config.bootstrapToken,
+    package_key: 'rasp-nodejs',
+    subject_type: 'rasp_runtime',
+    subject_name: getRuntimeSubjectName(),
+  });
+
+  const u = new URL('/bootstrap/redeem', config.controlPlaneUrl);
+  const mod = u.protocol === 'https:' ? https : http;
+
+  const responseText = await new Promise((resolve, reject) => {
+    const req = mod.request(u, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } }, (res) => {
+      let body = '';
+      res.on('data', chunk => { body += chunk; });
+      res.on('end', () => {
+        if (res.statusCode >= 400) {
+          reject(new Error(`Bootstrap redeem failed with status ${res.statusCode}: ${body}`));
+          return;
+        }
+        resolve(body);
+      });
+    });
+    req.on('error', reject);
+    req.write(payload);
+    req.end();
+  });
+
+  const data = JSON.parse(responseText || '{}');
+  if (data.api_key) {
+    config.apiKey = data.api_key;
+  }
+  if (data.tenant_id) {
+    config.tenantId = data.tenant_id;
+  }
+  return data;
+}
+
+async function ensureBootstrapRedeemed() {
+  if (!config.bootstrapToken || config.apiKey) return;
+  if (!bootstrapPromise) {
+    bootstrapPromise = redeemBootstrapToken().catch((err) => {
+      bootstrapPromise = null;
+      throw err;
+    });
+  }
+  await bootstrapPromise;
+}
 
 // ── AI Endpoints ─────────────────────────────────────────
 const AI_DOMAINS = new Set([
@@ -82,6 +139,7 @@ function recordEvent(type, url, detail = '') {
 async function flushTelemetry(batch) {
   if (!config.controlPlaneUrl) return;
   try {
+    await ensureBootstrapRedeemed();
     const body = JSON.stringify(batch);
     const u = new URL('/telemetry/ingest', config.controlPlaneUrl);
     const mod = u.protocol === 'https:' ? https : http;
@@ -119,10 +177,15 @@ function inspect(url, body = '') {
 
 // ── Express Middleware ────────────────────────────────────
 function expressMiddleware() {
-  return (req, res, next) => {
+  return async (req, res, next) => {
     if (req.method !== 'POST') return next();
     const host = req.headers['x-forwarded-host'] || req.headers.host || '';
     if (!isAiEndpoint(host)) return next();
+    try {
+      await ensureBootstrapRedeemed();
+    } catch (err) {
+      return next(err);
+    }
 
     let body = '';
     req.on('data', chunk => { body += chunk; });
@@ -142,6 +205,7 @@ function koaMiddleware() {
     if (ctx.method === 'POST') {
       const host = ctx.headers['x-forwarded-host'] || ctx.host || '';
       if (isAiEndpoint(host)) {
+        await ensureBootstrapRedeemed();
         const body = typeof ctx.request.body === 'string' ? ctx.request.body : JSON.stringify(ctx.request.body || '');
         const result = inspect(`https://${host}${ctx.path}`, body);
         if (!result.allowed) {
@@ -177,10 +241,11 @@ function patch() {
 }
 
 // ── Init ─────────────────────────────────────────────────
-function init(opts = {}) {
+async function init(opts = {}) {
   Object.assign(config, opts);
+  await ensureBootstrapRedeemed();
   patch();
   console.log(`[CyberArmor RASP] Initialized (mode=${config.mode})`);
 }
 
-module.exports = { init, config, inspect, expressMiddleware, koaMiddleware, patch, isAiEndpoint, detectPromptInjection, scanDlp };
+module.exports = { init, config, inspect, expressMiddleware, koaMiddleware, patch, isAiEndpoint, detectPromptInjection, scanDlp, ensureBootstrapRedeemed };

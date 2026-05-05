@@ -1,0 +1,45 @@
+# Caddy reverse proxy for the CyberArmor production stack.
+# Activated by Docker Compose only when the "prod" profile is set.
+# Auto-issues + renews Let's Encrypt certs (no certbot needed).
+
+{
+	# Account email used by Let's Encrypt. Override per-host in the env file.
+	email {$LE_EMAIL:ops@cyberarmor.ai}
+}
+
+# Marketing site — apex (canonical)
+{$MARKETING_DOMAIN:cyberarmor.ai} {
+	encode zstd gzip
+	reverse_proxy marketing:3003
+}
+
+# www subdomain redirects to apex
+{$WWW_MARKETING_DOMAIN:www.cyberarmor.ai} {
+	redir https://{$MARKETING_DOMAIN:cyberarmor.ai}{uri} permanent
+}
+
+# Customer portal
+{$APP_DOMAIN:app.cyberarmor.ai} {
+	encode zstd gzip
+	reverse_proxy customer-portal:80
+}
+
+# Admin dashboard
+{$ADMIN_DOMAIN:admin.cyberarmor.ai} {
+	encode zstd gzip
+	reverse_proxy dashboard:80
+}
+
+# Documentation
+{$DOCS_DOMAIN:docs.cyberarmor.ai} {
+	encode zstd gzip
+	reverse_proxy docs:80
+}
+
+# Support — rewrites to the /support route inside the marketing app so the
+# brand and layout stay consistent with the rest of the site.
+{$SUPPORT_DOMAIN:support.cyberarmor.ai} {
+	encode zstd gzip
+	rewrite * /support{uri}
+	reverse_proxy marketing:3003
+}

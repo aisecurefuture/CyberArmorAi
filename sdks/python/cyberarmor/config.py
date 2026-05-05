@@ -5,6 +5,9 @@ Environment variable prefix: CYBERARMOR_
 from __future__ import annotations
 
 import os
+import json
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -37,6 +40,37 @@ def _env_list(key: str, default: Optional[List[str]] = None) -> List[str]:
     if raw:
         return [item.strip() for item in raw.split(",") if item.strip()]
     return default or []
+
+
+def _redeem_bootstrap_token(
+    bootstrap_token: str,
+    *,
+    package_key: str,
+    control_plane_url: str,
+    subject_type: str,
+    subject_name: Optional[str] = None,
+) -> dict:
+    payload = {
+        "bootstrap_token": bootstrap_token,
+        "package_key": package_key,
+        "subject_type": subject_type,
+    }
+    if subject_name:
+        payload["subject_name"] = subject_name
+    request = urllib.request.Request(
+        f"{control_plane_url.rstrip('/')}/bootstrap/redeem",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise ValueError(f"Bootstrap redeem failed ({exc.code}): {body[:400]}") from exc
+    except urllib.error.URLError as exc:
+        raise ValueError(f"Bootstrap redeem failed: {exc.reason}") from exc
 
 
 @dataclass
@@ -72,8 +106,10 @@ class CyberArmorConfig:
     # Core authentication
     api_key: Optional[str] = None
     api_url: str = "https://api.cyberarmor.ai/v1"
+    control_plane_url: Optional[str] = None
     tenant_id: Optional[str] = None
     agent_id: Optional[str] = None
+    bootstrap_token: Optional[str] = None
 
     # Runtime environment tag
     environment: str = "production"
@@ -130,8 +166,10 @@ class CyberArmorConfig:
                 "CYBERARMOR_API_URL",
                 "https://api.cyberarmor.ai/v1",
             ),  # type: ignore[arg-type]
+            control_plane_url=_env("CYBERARMOR_CONTROL_PLANE_URL"),
             tenant_id=_env("CYBERARMOR_TENANT_ID"),
             agent_id=_env("CYBERARMOR_AGENT_ID"),
+            bootstrap_token=_env("CYBERARMOR_BOOTSTRAP_TOKEN"),
             environment=_env(
                 "CYBERARMOR_ENVIRONMENT", "production"
             ),  # type: ignore[arg-type]
@@ -154,7 +192,26 @@ class CyberArmorConfig:
             blocked_models=_env_list("CYBERARMOR_BLOCKED_MODELS"),
             token_ttl=_env_int("CYBERARMOR_TOKEN_TTL", 3600),
             max_delegation_depth=_env_int("CYBERARMOR_MAX_DELEGATION_DEPTH", 0),
+        )._apply_bootstrap_if_needed()
+
+    def _apply_bootstrap_if_needed(self) -> "CyberArmorConfig":
+        if self.api_key or not self.bootstrap_token:
+            return self
+        control_plane_url = self.control_plane_url or self.api_url.rsplit("/v1", 1)[0]
+        redeemed = _redeem_bootstrap_token(
+            self.bootstrap_token,
+            package_key="sdk-python",
+            control_plane_url=control_plane_url,
+            subject_type="sdk_client",
+            subject_name=self.agent_id or "python-sdk",
         )
+        runtime_env = redeemed.get("runtime_env", {})
+        self.api_key = runtime_env.get("CYBERARMOR_API_KEY") or redeemed.get("service_api_key")
+        self.tenant_id = runtime_env.get("CYBERARMOR_TENANT_ID") or redeemed.get("tenant_id") or self.tenant_id
+        self.control_plane_url = redeemed.get("control_plane_url") or control_plane_url
+        self.api_url = self.control_plane_url.rstrip("/") + "/v1"
+        self.agent_id = runtime_env.get("CYBERARMOR_AGENT_ID") or redeemed.get("subject_id") or self.agent_id
+        return self
 
     # ------------------------------------------------------------------
     # Validation

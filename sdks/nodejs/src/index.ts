@@ -4,7 +4,7 @@
  */
 
 export { CyberArmorClient } from './client';
-export { CyberArmorConfig } from './config';
+export { CyberArmorConfig, redeemBootstrapToken, loadConfigFromEnvAsync } from './config';
 export { Decision, DecisionType, PolicyViolationError } from './policy/decision';
 export { AgentIdentity } from './identity/agent';
 export { TokenManager } from './identity/tokenManager';

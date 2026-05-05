@@ -140,6 +140,92 @@ function featureGrid(items) {
   `)).join("")}</div>`;
 }
 
+function browserCoverageNote(pkg) {
+  if (!pkg || pkg.package_key !== "edge-extension") return "";
+  return `<div class="mt-2 text-xs text-cyan-300">Supports Chrome, Edge, Brave, Opera, and similar Chromium-based browsers.</div>`;
+}
+
+function bootstrapSetupCardHtml(tenantId = session?.tenant_id || "") {
+  return card(`
+    <div class="text-lg font-semibold">Bootstrap Setup</div>
+    <p class="mt-2 text-sm text-slate-400">Use a one-time bootstrap token during installation, then redeem it into an install-scoped credential. Avoid embedding shared tenant secrets inside distributed agents, SDKs, browser extensions, and add-ins.</p>
+    <div class="mt-4 grid gap-3 lg:grid-cols-2">
+      <div>
+        <div class="text-xs uppercase tracking-[0.18em] text-slate-500">Recommended Flow</div>
+        <ol class="mt-2 space-y-2 text-sm text-slate-300">
+          <li>1. Download the package bundle.</li>
+          <li>2. Issue a one-time bootstrap token for that package.</li>
+          <li>3. Set <span class="font-mono text-cyan-200">CYBERARMOR_BOOTSTRAP_TOKEN</span> during setup.</li>
+          <li>4. Let the package redeem it into an install-scoped credential.</li>
+        </ol>
+      </div>
+      <div>
+        <div class="text-xs uppercase tracking-[0.18em] text-slate-500">Shared Env</div>
+        <pre class="mt-2 overflow-x-auto rounded-xl border border-slate-800 bg-slate-950 p-3 text-xs text-cyan-200">CYBERARMOR_CONTROL_PLANE_URL=https://control-plane.example
+CYBERARMOR_TENANT_ID=${esc(tenantId)}
+CYBERARMOR_BOOTSTRAP_TOKEN=cabt_...</pre>
+      </div>
+    </div>
+    <div class="mt-3 text-xs text-slate-500">See shared docs: docs/architecture/client-bootstrap-setup.md</div>
+  `);
+}
+
+function bindCustomerBootstrapButtons() {
+  document.querySelectorAll(".customerBootstrapBtn").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const panel = $("#customerBootstrapResult");
+      if (panel) {
+        panel.innerHTML = card(`<div class="text-sm text-slate-400">Issuing bootstrap token for ${esc(button.dataset.packageTitle || button.dataset.packageKey || "package")}...</div>`);
+      }
+      try {
+        const issued = await api("/api/customer/bootstrap-tokens", {
+          method: "POST",
+          body: JSON.stringify({ package_key: button.dataset.packageKey, ttl_minutes: 30 }),
+        });
+        const envLines = Object.entries(issued.bootstrap_env || {}).map(([key, value]) => `${key}=${value}`).join("\n");
+        const redeemExample = [
+          "curl -X POST",
+          `  ${issued.redeem_url}`,
+          "  -H 'Content-Type: application/json'",
+          `  -d '${JSON.stringify({ bootstrap_token: issued.bootstrap_token, package_key: button.dataset.packageKey }, null, 2)}'`,
+        ].join("\n");
+        if (panel) {
+          panel.innerHTML = card(`
+            <div class="text-lg font-semibold">Bootstrap Token Issued</div>
+            <p class="mt-2 text-sm text-slate-400">This token is shown once. It expires at ${esc(fmt(issued.expires_at))}. Redeem it into an install-scoped credential instead of using it as a permanent API key.</p>
+            <div class="mt-4 grid gap-3 lg:grid-cols-2">
+              <div>
+                <div class="text-xs uppercase tracking-[0.18em] text-slate-500">Bootstrap Token</div>
+                <div class="mt-2 rounded-xl bg-slate-950 px-3 py-3 font-mono text-xs text-emerald-300 break-all">${esc(issued.bootstrap_token || "")}</div>
+              </div>
+              <div>
+                <div class="text-xs uppercase tracking-[0.18em] text-slate-500">Suggested Env</div>
+                <pre class="mt-2 overflow-x-auto rounded-xl border border-slate-800 bg-slate-950 p-3 text-xs text-cyan-200">${esc(envLines)}</pre>
+              </div>
+            </div>
+            <div class="mt-4">
+              <div class="text-xs uppercase tracking-[0.18em] text-slate-500">Redeem Example</div>
+              <pre class="mt-2 overflow-x-auto rounded-xl border border-slate-800 bg-slate-950 p-3 text-xs text-cyan-200">${esc(redeemExample)}</pre>
+            </div>
+            <div class="mt-3 text-xs text-slate-500">Package: ${esc(issued.package_key)} | Tenant: ${esc(issued.tenant_id)}</div>
+          `);
+        }
+      } catch (error) {
+        if (panel) panel.innerHTML = card(`<div class="text-sm text-rose-300">${esc(error.message)}</div>`);
+      }
+    });
+  });
+}
+
+function bindCustomerBootstrapHelpButtons() {
+  document.querySelectorAll(".customerBootstrapHelpBtn").forEach((button) => {
+    button.addEventListener("click", () => {
+      const panel = $("#customerBootstrapResult");
+      if (panel) panel.innerHTML = bootstrapSetupCardHtml(button.dataset.tenantId || session?.tenant_id || "");
+    });
+  });
+}
+
 function simpleTable(headers, rows, emptyMessage) {
   return `<div class="overflow-x-auto rounded-2xl border border-slate-800">
     <table class="w-full text-left text-sm">
@@ -1299,7 +1385,13 @@ async function viewPolicies() {
 async function viewEndpoints() {
   $("#pageTitle").textContent = "Endpoints";
   $("#pageSubtitle").textContent = "Tenant-scoped endpoint and agent inventory";
-  const agents = await api("/api/customer/agents?limit=500");
+  const [agents, catalog] = await Promise.all([
+    api("/api/customer/agents?limit=500"),
+    api("/api/customer/downloads/catalog").catch(() => []),
+  ]);
+  const endpointPackages = (Array.isArray(catalog) ? catalog : []).filter((pkg) =>
+    ["agent", "extension", "browser_extension"].includes(pkg.category)
+  );
   const rows = agents.map((a) => `
     <tr class="border-t border-slate-800">
       <td class="px-3 py-3 font-mono text-xs">${esc(a.agent_id || "")}</td>
@@ -1309,7 +1401,40 @@ async function viewEndpoints() {
       <td class="px-3 py-3 text-xs text-slate-400">${esc(fmt(a.last_seen))}</td>
     </tr>
   `).join("");
-  $("#app").innerHTML = card(`<table class="w-full text-left text-sm"><thead class="text-xs uppercase tracking-[0.18em] text-slate-500"><tr><th class="px-3 py-2">Agent ID</th><th class="px-3 py-2">Hostname</th><th class="px-3 py-2">User</th><th class="px-3 py-2">Status</th><th class="px-3 py-2">Last Seen</th></tr></thead><tbody>${rows || emptyRow("No endpoints found for this tenant.", 5)}</tbody></table>`);
+  $("#app").innerHTML = `
+    ${card(`<table class="w-full text-left text-sm"><thead class="text-xs uppercase tracking-[0.18em] text-slate-500"><tr><th class="px-3 py-2">Agent ID</th><th class="px-3 py-2">Hostname</th><th class="px-3 py-2">User</th><th class="px-3 py-2">Status</th><th class="px-3 py-2">Last Seen</th></tr></thead><tbody>${rows || emptyRow("No endpoints found for this tenant.", 5)}</tbody></table>`)}
+    <div class="mt-4"></div>
+    ${card(`
+      <div class="flex items-center justify-between gap-3">
+        <div>
+          <div class="text-lg font-semibold">Agent & Extension Downloads</div>
+          <p class="mt-1 text-sm text-slate-400">Download the bundle, issue a one-time bootstrap token, then redeem it into an install-scoped credential during setup instead of embedding a shared secret.</p>
+        </div>
+        ${session.role === "tenant_admin" ? `<div class="text-xs text-emerald-300">Tenant admins can issue bootstrap tokens</div>` : `<div class="text-xs text-slate-500">Bootstrap token issuance requires a tenant admin</div>`}
+      </div>
+      <div class="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+        ${endpointPackages.map((pkg) => `
+          <div class="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+            <div class="text-xs uppercase tracking-[0.18em] text-slate-500">${esc(pkg.category.replaceAll("_", " "))}</div>
+            <div class="mt-2 text-base font-semibold">${esc(pkg.title)}</div>
+            <p class="mt-2 text-sm text-slate-400">${esc(pkg.description || "")}</p>
+            ${browserCoverageNote(pkg)}
+            <div class="mt-3 rounded-xl bg-slate-950 px-3 py-2 text-xs font-mono text-cyan-200">${esc(pkg.install_hint || "")}</div>
+            <div class="mt-4 flex flex-wrap gap-2">
+              <a class="rounded-xl bg-cyan-500 px-3 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400" href="${esc(pkg.download_url)}">Download ZIP</a>
+              ${session.role === "tenant_admin"
+                ? `<button class="customerBootstrapBtn rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 hover:bg-slate-800" data-package-key="${esc(pkg.package_key)}" data-package-title="${esc(pkg.title)}" type="button">Issue Bootstrap Token</button>`
+                : ""}
+              <button class="customerBootstrapHelpBtn rounded-xl border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-300 hover:bg-slate-800" data-tenant-id="${esc(session.tenant_id || "")}" type="button" title="Bootstrap Setup: download, issue a one-time token, and redeem it into an install-scoped credential during setup.">Bootstrap Setup</button>
+            </div>
+          </div>
+        `).join("") || `<div class="text-sm text-slate-500">Package catalog unavailable.</div>`}
+      </div>
+      <div id="customerBootstrapResult" class="mt-4"></div>
+    `)}
+  `;
+  bindCustomerBootstrapButtons();
+  bindCustomerBootstrapHelpButtons();
 }
 
 async function viewShadowAi() {
@@ -1580,6 +1705,10 @@ async function viewDelegations() {
 }
 
 async function viewOnboarding() {
+  const catalog = await api("/api/customer/downloads/catalog").catch(() => []);
+  const sdkPackages = (Array.isArray(catalog) ? catalog : []).filter((pkg) =>
+    ["sdk", "rasp"].includes(pkg.category)
+  );
   const snippets = [
     { title: "Node.js", body: "Install the CyberArmor SDK and set the tenant API key created from this portal.", badge: "npm", tone: "green" },
     { title: "Python", body: "Configure the Python client with tenant-scoped policy and audit settings.", badge: "pip", tone: "cyan" },
@@ -1592,6 +1721,36 @@ async function viewOnboarding() {
     checklist: ["create_api_key", "configure_sdk", "send_test_event", "verify_policy_decision", "confirm_audit_log"],
     sdk_languages: ["nodejs", "python", "go", "java", "dotnet"],
   });
+  const app = $("#app");
+  if (!app) return;
+  app.insertAdjacentHTML("beforeend", `
+    <div class="mt-4"></div>
+    ${card(`
+      <div class="text-lg font-semibold">SDK, RASP, and Add-in Packages</div>
+      <p class="mt-2 text-sm text-slate-400">Download the package, issue a one-time bootstrap token, then redeem it into an install-scoped credential during setup instead of embedding a shared secret.</p>
+      <div class="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+        ${sdkPackages.map((pkg) => `
+          <div class="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+            <div class="text-xs uppercase tracking-[0.18em] text-slate-500">${esc(pkg.category)}</div>
+            <div class="mt-2 text-base font-semibold">${esc(pkg.title)}</div>
+            <p class="mt-2 text-sm text-slate-400">${esc(pkg.description || "")}</p>
+            ${browserCoverageNote(pkg)}
+            <div class="mt-3 rounded-xl bg-slate-950 px-3 py-2 text-xs font-mono text-cyan-200">${esc(pkg.install_hint || "")}</div>
+            <div class="mt-4 flex flex-wrap gap-2">
+              <a class="rounded-xl bg-cyan-500 px-3 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400" href="${esc(pkg.download_url)}">Download ZIP</a>
+              ${session.role === "tenant_admin"
+                ? `<button class="customerBootstrapBtn rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 hover:bg-slate-800" data-package-key="${esc(pkg.package_key)}" data-package-title="${esc(pkg.title)}" type="button">Issue Bootstrap Token</button>`
+                : ""}
+              <button class="customerBootstrapHelpBtn rounded-xl border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-300 hover:bg-slate-800" data-tenant-id="${esc(session.tenant_id || "")}" type="button" title="Bootstrap Setup: download, issue a one-time token, and redeem it into an install-scoped credential during setup.">Bootstrap Setup</button>
+            </div>
+          </div>
+        `).join("") || `<div class="text-sm text-slate-500">Package catalog unavailable.</div>`}
+      </div>
+      <div id="customerBootstrapResult" class="mt-4"></div>
+    `)}
+  `);
+  bindCustomerBootstrapButtons();
+  bindCustomerBootstrapHelpButtons();
 }
 
 async function viewUsers() {
