@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { sendLeadEmail } from "@/lib/lead-mailer";
+import { enforceAllowedOrigin, enforceRateLimit } from "@/lib/request-guards";
 
 const interestOptions = [
   "AI Security Platform Overview",
@@ -45,6 +46,16 @@ function escapeHtml(value: string): string {
 
 export async function POST(req: NextRequest) {
   try {
+    const originFailure = enforceAllowedOrigin(req);
+    if (originFailure) {
+      return originFailure;
+    }
+
+    const rateLimitFailure = enforceRateLimit(req, "contact");
+    if (rateLimitFailure) {
+      return rateLimitFailure;
+    }
+
     const body = await req.json();
     const parsed = ContactSchema.safeParse(body);
     if (!parsed.success) {

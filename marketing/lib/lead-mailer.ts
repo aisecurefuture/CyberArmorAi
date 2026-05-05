@@ -29,11 +29,20 @@ function smtpSecureMode(): boolean {
   return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
 }
 
+function shouldUseImplicitTls(port: number, tlsEnabled: boolean): boolean {
+  // Port 465 uses implicit TLS. Port 587 typically upgrades via STARTTLS.
+  return tlsEnabled && port === 465;
+}
+
 function buildTransport() {
+  const port = parsePort(process.env.MARKETING_CONTACT_SMTP_PORT ?? "587");
+  const tlsEnabled = smtpSecureMode();
+
   return nodemailer.createTransport({
     host: requiredEnv("MARKETING_CONTACT_SMTP_HOST"),
-    port: parsePort(process.env.MARKETING_CONTACT_SMTP_PORT ?? "587"),
-    secure: smtpSecureMode(),
+    port,
+    secure: shouldUseImplicitTls(port, tlsEnabled),
+    requireTLS: tlsEnabled,
     auth: {
       user: requiredEnv("MARKETING_CONTACT_SMTP_USER"),
       pass: requiredEnv("MARKETING_CONTACT_SMTP_PASSWORD"),

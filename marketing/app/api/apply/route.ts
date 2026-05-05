@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { sendLeadEmail } from "@/lib/lead-mailer";
+import { enforceAllowedOrigin, enforceRateLimit } from "@/lib/request-guards";
 
 const ApplySchema = z.object({
   name: z.string().min(2).max(100).transform((v) => v.trim()),
@@ -24,6 +25,16 @@ function escapeHtml(value: string): string {
 
 export async function POST(req: NextRequest) {
   try {
+    const originFailure = enforceAllowedOrigin(req);
+    if (originFailure) {
+      return originFailure;
+    }
+
+    const rateLimitFailure = enforceRateLimit(req, "apply");
+    if (rateLimitFailure) {
+      return rateLimitFailure;
+    }
+
     const body = await req.json();
     const parsed = ApplySchema.safeParse(body);
     if (!parsed.success) {

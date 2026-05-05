@@ -10,9 +10,9 @@ export function proxy(request: NextRequest) {
   const supportDomain = (process.env.SUPPORT_DOMAIN ?? "support.cyberarmor.ai").toLowerCase();
   const { pathname } = request.nextUrl;
 
-  if (host === supportDomain && !pathname.startsWith("/support")) {
+  if (host === supportDomain && pathname === "/") {
     const url = request.nextUrl.clone();
-    url.pathname = `/support${pathname === "/" ? "" : pathname}`;
+    url.pathname = "/support";
     return NextResponse.rewrite(url);
   }
 
