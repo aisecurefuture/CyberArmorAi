@@ -31,6 +31,7 @@ import getpass
 import json
 import logging
 import os
+import random
 import sys
 import time
 
@@ -56,6 +57,8 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
     datefmt="%Y-%m-%dT%H:%M:%S%z",
+    stream=sys.stdout,
+    force=True,
 )
 logger = logging.getLogger("cyberarmor.endpoint_agent")
 
@@ -66,6 +69,8 @@ AGENT_VERSION = "1.0.0"
 HEARTBEAT_INTERVAL_SECONDS = 30
 POLICY_SYNC_INTERVAL_SECONDS = 300
 TELEMETRY_FLUSH_INTERVAL_SECONDS = 10
+POLICY_SYNC_RETRY_ATTEMPTS = 3
+POLICY_SYNC_RETRY_BASE_DELAY_SECONDS = 1.0
 # Local docker-compose exposes the control plane over plain HTTP on port 8000.
 # Production installs should override this with the appropriate HTTPS URL.
 DEFAULT_CONTROL_PLANE_URL = "http://localhost:8000"
@@ -461,28 +466,43 @@ class EndpointAgent:
 
     async def _sync_policies(self) -> None:
         """Fetch the latest policies from the control plane."""
-        try:
-            client = await self._ensure_http_client()
-            resp = await client.get(
-                f"{self.control_plane_url}/policies/{self.tenant_id}",
-                headers=await self._auth_headers(),
-            )
-            if resp.status_code == 200:
-                self._policies = resp.json()
-                logger.info("Policy sync complete: %d policies", len(self._policies))
-                # Notify policy enforcer (optional local enforcement)
-                try:
-                    from policy_enforcer import PolicyEnforcer
+        for attempt in range(1, POLICY_SYNC_RETRY_ATTEMPTS + 1):
+            try:
+                client = await self._ensure_http_client()
+                resp = await client.get(
+                    f"{self.control_plane_url}/policies/{self.tenant_id}",
+                    headers=await self._auth_headers(),
+                )
+                if resp.status_code == 200:
+                    self._policies = resp.json()
+                    logger.info("Policy sync complete: %d policies", len(self._policies))
+                    # Notify policy enforcer (optional local enforcement)
+                    try:
+                        from policy_enforcer import PolicyEnforcer
 
-                    PolicyEnforcer.get_or_create().update_policies(self._policies)
-                except Exception:  # noqa: BLE001 — optional component; never crash sync
-                    pass
-            else:
+                        PolicyEnforcer.get_or_create().update_policies(self._policies)
+                    except Exception:  # noqa: BLE001 — optional component; never crash sync
+                        pass
+                    return
                 logger.warning("Policy sync failed status=%s", resp.status_code)
-        except Exception as exc:
-            if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
-                await self._reset_http_client()
-            logger.error("Policy sync error: %r", exc)
+                return
+            except Exception as exc:
+                if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
+                    await self._reset_http_client()
+                    if attempt < POLICY_SYNC_RETRY_ATTEMPTS:
+                        delay = POLICY_SYNC_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
+                        delay += random.uniform(0.0, 0.5)
+                        logger.warning(
+                            "Policy sync transient error on attempt %d/%d: %r; retrying in %.1fs",
+                            attempt,
+                            POLICY_SYNC_RETRY_ATTEMPTS,
+                            exc,
+                            delay,
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+                logger.error("Policy sync error: %r", exc)
+                return
 
     async def _flush_telemetry(self) -> None:
         """Drain buffered telemetry events and POST them to the control plane."""

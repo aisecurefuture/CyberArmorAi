@@ -10,6 +10,7 @@ Handles:
 """
 
 import argparse
+import copy
 import json
 import logging
 import os
@@ -153,6 +154,22 @@ def write_config(config_dir: Path, config: Dict) -> Path:
     return config_file
 
 
+def load_existing_config(config_dir: Path) -> Dict:
+    """Load an existing agent config if present, else return an empty dict."""
+    config_file = config_dir / "agent.json"
+    if not config_file.exists():
+        return {}
+    try:
+        with open(config_file, "r") as f:
+            loaded = json.load(f)
+        if isinstance(loaded, dict):
+            logger.info("Preserving existing configuration from %s", config_file)
+            return loaded
+    except Exception as exc:
+        logger.warning("Could not read existing configuration %s: %s", config_file, exc)
+    return {}
+
+
 def write_bridge_config(config_dir: Path, config: Dict) -> Path:
     """Write kernel bridge JSON configuration file."""
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -233,9 +250,18 @@ def install_dependencies(install_dir: Path) -> bool:
         return False
 
     logger.info("Installing endpoint dependencies into %s", venv_dir(install_dir))
+    pip_env = os.environ.copy()
+    pip_env.setdefault("PIP_NO_CACHE_DIR", "1")
+    pip_env.setdefault("PIP_DISABLE_PIP_VERSION_CHECK", "1")
     try:
-        subprocess.check_call([str(python_bin), "-m", "pip", "install", "--quiet", "--upgrade", "pip", "setuptools", "wheel"])
-        subprocess.check_call([str(python_bin), "-m", "pip", "install", "--quiet", "-r", str(requirements)])
+        subprocess.check_call(
+            [str(python_bin), "-m", "pip", "install", "--quiet", "--upgrade", "pip", "setuptools", "wheel"],
+            env=pip_env,
+        )
+        subprocess.check_call(
+            [str(python_bin), "-m", "pip", "install", "--quiet", "-r", str(requirements)],
+            env=pip_env,
+        )
         logger.info("Dependencies installed successfully")
         return True
     except subprocess.CalledProcessError as e:
@@ -655,7 +681,10 @@ def install(
         return False
 
     # 7. Write configuration
-    config = DEFAULT_CONFIG.copy()
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    existing_config = load_existing_config(config_dir)
+    if existing_config:
+        config.update(existing_config)
     if bootstrap_token:
         redeem_url = control_plane_url or DEFAULT_CONFIG["control_plane_url"]
         logger.info("Redeeming bootstrap token against %s", redeem_url)

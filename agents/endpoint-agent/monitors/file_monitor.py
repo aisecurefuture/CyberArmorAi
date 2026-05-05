@@ -8,6 +8,7 @@ activity involving sensitive content.
 from __future__ import annotations
 
 import asyncio
+import glob
 import logging
 import os
 import platform
@@ -79,6 +80,23 @@ DEFAULT_WATCH_PATHS_WINDOWS: List[str] = [
     os.environ.get("TEMP", "C:\\Temp"),
 ]
 
+TRANSIENT_PATH_PREFIXES: tuple[str, ...] = (
+    "/tmp/",
+    "/private/tmp/",
+    "/private/var/folders/",
+    "/var/folders/",
+)
+
+TRANSIENT_FILE_SUFFIXES: tuple[str, ...] = (
+    ".tmp",
+    ".temp",
+    ".part",
+    ".download",
+    ".crdownload",
+    ".swp",
+    ".swx",
+)
+
 
 # ---------------------------------------------------------------------------
 # Exfiltration detector
@@ -91,16 +109,26 @@ class ExfiltrationTracker:
 
     window_seconds: float = 60.0
     threshold_count: int = 50
-    _events: List[float] = field(default_factory=list)
+    cooldown_seconds: float = 300.0
+    _events: Dict[str, float] = field(default_factory=dict)
+    _last_alert_at: float = 0.0
 
-    def record(self) -> bool:
-        """Record a file event.  Returns True if threshold exceeded."""
+    def record(self, path: str) -> tuple[bool, int]:
+        """Record a file event. Returns ``(alert, count)``."""
         now = time.monotonic()
-        self._events.append(now)
-        # Prune events outside the window
         cutoff = now - self.window_seconds
-        self._events = [t for t in self._events if t >= cutoff]
-        return len(self._events) >= self.threshold_count
+        normalized = os.path.realpath(path)
+        self._events[normalized] = now
+        self._events = {
+            candidate: ts for candidate, ts in self._events.items() if ts >= cutoff
+        }
+        event_count = len(self._events)
+        if event_count < self.threshold_count:
+            return False, event_count
+        if now - self._last_alert_at < self.cooldown_seconds:
+            return False, event_count
+        self._last_alert_at = now
+        return True, event_count
 
 
 # ---------------------------------------------------------------------------
@@ -168,15 +196,34 @@ class FileMonitor:
 
         # Determine watch paths
         system = platform.system()
-        if system == "Windows":
-            self._watch_paths = list(DEFAULT_WATCH_PATHS_WINDOWS)
-        else:
-            self._watch_paths = list(DEFAULT_WATCH_PATHS_UNIX)
+        self._watch_paths = self._resolve_watch_paths(system)
         if extra_watch_paths:
             self._watch_paths.extend(extra_watch_paths)
 
         # Filter to paths that actually exist
-        self._watch_paths = [p for p in self._watch_paths if os.path.isdir(p)]
+        seen: Set[str] = set()
+        resolved_watch_paths: List[str] = []
+        for candidate in self._watch_paths:
+            normalized = os.path.realpath(candidate)
+            if not os.path.isdir(normalized) or normalized in seen:
+                continue
+            seen.add(normalized)
+            resolved_watch_paths.append(normalized)
+        self._watch_paths = resolved_watch_paths
+
+    @staticmethod
+    def _resolve_watch_paths(system: str) -> List[str]:
+        if system == "Windows":
+            return list(DEFAULT_WATCH_PATHS_WINDOWS)
+        if system == "Darwin":
+            expanded: List[str] = []
+            for pattern in ("/Users/*/Documents", "/Users/*/Downloads", "/Users/*/Desktop"):
+                expanded.extend(glob.glob(pattern))
+            # Keep /tmp for malware/model visibility, but temp churn is excluded
+            # from exfiltration heuristics below.
+            expanded.append("/tmp")
+            return expanded
+        return list(DEFAULT_WATCH_PATHS_UNIX)
 
     # ------------------------------------------------------------------
     # Analysis helpers
@@ -211,6 +258,22 @@ class FileMonitor:
             return os.path.getsize(path)
         except OSError:
             return 0
+
+    def _should_track_exfil_path(self, path: str) -> bool:
+        normalized = os.path.realpath(path)
+        lowered = normalized.lower()
+        if any(lowered.startswith(prefix) for prefix in TRANSIENT_PATH_PREFIXES):
+            return False
+        file_name = os.path.basename(lowered)
+        if not file_name:
+            return False
+        if file_name.startswith(".") and not self._is_archive_file(file_name):
+            return False
+        if file_name.startswith("com.apple.") or file_name.startswith(".ds_store"):
+            return False
+        if file_name.endswith(TRANSIENT_FILE_SUFFIXES):
+            return False
+        return True
 
     # ------------------------------------------------------------------
     # Event emission
@@ -255,13 +318,17 @@ class FileMonitor:
 
         # --- Exfiltration pattern detection ---
         if fs_event in ("created", "moved"):
-            if self._exfil_tracker.record():
+            if self._should_track_exfil_path(src_path):
+                should_alert, event_count = self._exfil_tracker.record(src_path)
+            else:
+                should_alert, event_count = False, 0
+            if should_alert:
                 logger.warning("Potential exfiltration pattern detected (rapid file creation)")
                 await self._emit_event(
                     "exfiltration_pattern_detected",
                     {
                         "path": src_path,
-                        "event_count_in_window": len(self._exfil_tracker._events),
+                        "event_count_in_window": event_count,
                         "severity": "critical",
                     },
                 )
