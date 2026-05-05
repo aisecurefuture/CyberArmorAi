@@ -10,6 +10,8 @@ This guide deploys the CyberArmor public surfaces onto one Hetzner Ubuntu server
 
 It uses Caddy in Docker Compose for automatic Let's Encrypt issuance and renewal, so certificates stay valid without host-level Nginx or Certbot.
 
+If the host uses `systemd-resolved` with the stub resolver at `127.0.0.53`, keep the default `CADDY_DNS_1` and `CADDY_DNS_2` values in the server env file so the Caddy container can resolve ACME endpoints directly.
+
 Before first public boot, use:
 
 - [`.env.production.example`](/Users/patrickkelly/Documents/CyberArmorAi/infra/docker-compose/.env.production.example)

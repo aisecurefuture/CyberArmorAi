@@ -177,7 +177,12 @@ async function apiFetch(url, { headers = {}, ...opts } = {}) {
       const csrf = readDashboardCsrf();
       if (csrf) mergedHeaders["x-csrf-token"] = csrf;
     }
-    const res = await fetch(url, { ...opts, method, headers: mergedHeaders });
+    const res = await fetch(url, {
+      ...opts,
+      method,
+      headers: mergedHeaders,
+      credentials: "same-origin",
+    });
     const text = await res.text();
     let data;
     try { data = JSON.parse(text); } catch { data = text; }
