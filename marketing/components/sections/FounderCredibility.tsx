@@ -8,8 +8,11 @@ const signals = [
 ];
 
 export default function FounderCredibility({ compact = false }: { compact?: boolean }) {
+  const ctaHref = compact ? "/contact" : "/about#founder-story";
+  const ctaLabel = compact ? "Talk to our team" : "Read the company story";
+
   return (
-    <section style={{ backgroundColor: compact ? "#050508" : "#000000", padding: compact ? "4rem 0" : "5rem 0" }}>
+    <section id="founder-story" style={{ backgroundColor: compact ? "#050508" : "#000000", padding: compact ? "4rem 0" : "5rem 0" }}>
       <div className="container-wide">
         <div style={{
           background: "#0F1117",
@@ -37,8 +40,8 @@ export default function FounderCredibility({ compact = false }: { compact?: bool
               The company is intentionally transparent about product maturity, design-partner work,
               and where the platform is strongest today. That posture is part of the product.
             </p>
-            <Link href="/about" className="btn-ghost" style={{ padding: "12px 20px", fontSize: 14 }}>
-              Read the company story <ArrowRight size={15} />
+            <Link href={ctaHref} className="btn-ghost" style={{ padding: "12px 20px", fontSize: 14 }}>
+              {ctaLabel} <ArrowRight size={15} />
             </Link>
           </div>
 
