@@ -1552,6 +1552,7 @@ async function viewDlp() {
   await tenantScopedConfigPage("dlp", "DLP & Data Class.", "Tenant data classification and loss prevention", [
     { title: "Classification Labels", body: "Define tenant labels such as Public, Internal, Confidential, and Restricted.", badge: "tenant taxonomy", tone: "cyan" },
     { title: "Detection Patterns", body: "Track PII, secrets, credentials, and regulated data classes for this tenant.", badge: "policy linked", tone: "green" },
+    { title: "Credential Leak Prevention", body: "Use redaction-mode decisions for AI-bound prompts and responses that contain keys, tokens, passwords, or other secrets.", badge: "pre-breach control", tone: "amber" },
     { title: "Response Actions", body: "Connect DLP findings to redact, block, escalate, or audit-only policy outcomes.", badge: "enforcement ready", tone: "slate" },
   ], { labels: ["Public", "Internal", "Confidential", "Restricted"], patterns: ["pii", "secrets", "credentials"], default_action: "redact" }, true);
 }

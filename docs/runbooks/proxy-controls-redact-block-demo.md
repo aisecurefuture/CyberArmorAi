@@ -6,6 +6,13 @@ Show cached proxy policy controls in action:
 1. PII content triggers `warn` (redaction workflow signal).
 1. Prompt-injection content triggers `block`.
 
+For the local AI-aware policy engine path that returns `ALLOW_WITH_REDACTION`
+and redacted prompt/response text for simulated credentials, run:
+
+```bash
+bash scripts/demo/run_credential_redaction_demo.sh
+```
+
 ## Run
 
 ```bash

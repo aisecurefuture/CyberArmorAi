@@ -2,7 +2,8 @@ import { CheckCircle2, Clock3, FileCheck2, ShieldCheck } from "lucide-react";
 
 const availableToday = [
   "AI request monitoring and policy decision logging",
-  "Prompt-risk and sensitive-data inspection",
+  "Prompt-risk, credential leak, and sensitive-data inspection",
+  "Redaction-mode policy decisions for supported SDK and provider paths",
   "Endpoint-assisted AI tool and connection discovery",
   "Tenant-scoped policy builder, artifacts, and API-key flows",
   "Bootstrap onboarding for agents, SDKs, and extensions",

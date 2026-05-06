@@ -69,6 +69,7 @@ const solutions = [
     solution: "CyberArmor AI classifies data entering AI pipelines, enforces data handling policy at the point of ingestion, prevents unauthorized processing, and generates compliance evidence for regulated data in AI workflows.",
     outcomes: [
       "Real-time data classification in AI interactions",
+      "Credential and secret leak detection with redaction-mode policy outcomes",
       "Policy-based data handling enforcement per AI system",
       "Prevention of unauthorized PII or regulated data exposure",
       "Compliance-ready evidence for AI data processing activities",

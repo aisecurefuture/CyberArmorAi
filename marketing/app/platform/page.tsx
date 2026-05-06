@@ -48,7 +48,7 @@ const layers = [
     capabilities: [
       "Real-time interception of AI API calls, model queries, and agent actions",
       "Prompt injection detection and blocking before reaching the model layer",
-      "Adaptive enforcement: block, alert, limit, or redirect based on risk level",
+      "Adaptive enforcement: block, redact in supported paths, alert, limit, or redirect based on risk level",
       "Protection for AI chatbots, LLM-powered applications, and autonomous workflows",
     ],
   },
@@ -91,7 +91,7 @@ const layers = [
       "Automated response playbooks for AI-specific threat scenarios",
       "Bi-directional integration with SIEM and SOAR platforms",
       "Structured alert context: policy violated, actor identity, action taken, evidence ID",
-      "Containment capabilities: agent suspension, scope reduction, access revocation",
+      "Containment capabilities: redaction-mode response, agent suspension, scope reduction, access revocation",
     ],
   },
 ];

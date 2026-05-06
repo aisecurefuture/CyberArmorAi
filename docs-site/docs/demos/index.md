@@ -8,6 +8,19 @@ CyberArmor.AI includes three polished demo paths for different buyers.
 - [Security Architect Demo](security-architect.md)
 - [AppSec Demo](appsec.md)
 
+## Credential redaction check
+
+Use this quick verification when you want to show pre-breach protection for
+credential leaks into generative AI:
+
+```bash
+bash scripts/demo/run_credential_redaction_demo.sh
+```
+
+The demo feeds simulated AWS, GitHub, generic API key, OpenAI key, and password
+values into the AI-aware policy engine. The expected result is
+`ALLOW_WITH_REDACTION` plus redacted prompt and response text.
+
 ## Seed and reset
 
 Seed a persona-specific demo tenant:

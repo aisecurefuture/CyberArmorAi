@@ -19,7 +19,7 @@ const capabilities = [
   {
     icon: Database,
     title: "Sensitive Data Protection",
-    body: "Inspect AI-bound data for PII, IP, credentials, and regulated content so risky requests can be flagged, logged, or blocked by policy.",
+    body: "Inspect AI-bound data for PII, IP, credentials, and regulated content so risky requests can be flagged, redacted in supported paths, logged, or blocked by policy.",
   },
   {
     icon: UserCheck,
