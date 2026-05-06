@@ -28,13 +28,13 @@ export default function SuccessPage() {
         </h1>
 
         <p style={{ fontSize: "1.05rem", color: "#8892A4", lineHeight: 1.8, marginBottom: 12 }}>
-          Thank you for your purchase. You&apos;ll receive a confirmation email shortly with instructions
-          on how to submit your intake information.
+          Thank you for your purchase. You&apos;ll receive a confirmation email shortly with either your
+          download or the next intake steps for your order.
         </p>
 
         <p style={{ fontSize: "1.05rem", color: "#8892A4", lineHeight: 1.8, marginBottom: 40 }}>
-          All deliverables are sent via email as PDF documents within the stated turnaround window.
-          If you have any questions, reach out directly at{" "}
+          Instant-delivery products arrive by email, and custom written deliverables begin once we receive
+          your intake details. If you have any questions, reach out directly at{" "}
           <a href="mailto:hello@cyberarmor.ai" style={{ color: "#00A3FF", textDecoration: "none" }}>
             hello@cyberarmor.ai
           </a>

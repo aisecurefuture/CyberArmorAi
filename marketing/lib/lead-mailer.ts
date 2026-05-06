@@ -6,6 +6,11 @@ type MailPayload = {
   text: string;
   html: string;
   to?: string;
+  attachments?: Array<{
+    filename: string;
+    path: string;
+    contentType?: string;
+  }>;
 };
 
 function requiredEnv(name: string): string {
@@ -59,5 +64,6 @@ export async function sendLeadEmail(payload: MailPayload): Promise<void> {
     replyTo: payload.replyTo,
     text: payload.text,
     html: payload.html,
+    attachments: payload.attachments,
   });
 }

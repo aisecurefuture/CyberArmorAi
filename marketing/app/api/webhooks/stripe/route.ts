@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import Stripe from "stripe";
 import { sendLeadEmail } from "@/lib/lead-mailer";
+import { buildCustomerFulfillmentEmail } from "@/lib/stripe-fulfillment";
 
 // Product labels for email notifications
 const PRODUCT_LABELS: Record<string, string> = {
@@ -10,6 +11,15 @@ const PRODUCT_LABELS: Record<string, string> = {
   BRIEF:     "Executive AI Security Brief ($1,500)",
   ADVISORY:  "Priority Async Advisory ($3,000/month)",
 };
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
 
 function getStripeClient(): Stripe {
   const secretKey = process.env.STRIPE_SECRET_KEY?.trim();
@@ -75,15 +85,27 @@ export async function POST(req: NextRequest) {
             ].join("\n"),
             html: `
               <h2>New CyberArmor purchase</h2>
-              <p><strong>Product:</strong> ${PRODUCT_LABELS[product] ?? product}</p>
-              <p><strong>Customer:</strong> ${customerName}</p>
-              <p><strong>Email:</strong> ${customerEmail}</p>
-              <p><strong>Amount:</strong> ${amount}</p>
-              <p><strong>Session:</strong> ${session.id}</p>
+              <p><strong>Product:</strong> ${escapeHtml(PRODUCT_LABELS[product] ?? product)}</p>
+              <p><strong>Customer:</strong> ${escapeHtml(customerName)}</p>
+              <p><strong>Email:</strong> ${escapeHtml(customerEmail)}</p>
+              <p><strong>Amount:</strong> ${escapeHtml(amount)}</p>
+              <p><strong>Session:</strong> ${escapeHtml(session.id)}</p>
             `,
           });
         } catch (mailErr) {
           console.error("Purchase notification email failed:", mailErr);
+        }
+
+        if (customerEmail !== "unknown") {
+          try {
+            const fulfillmentEmail = await buildCustomerFulfillmentEmail(product, session);
+            await sendLeadEmail({
+              ...fulfillmentEmail,
+              to: customerEmail,
+            });
+          } catch (fulfillmentErr) {
+            console.error("Customer fulfillment email failed:", fulfillmentErr);
+          }
         }
 
         break;
