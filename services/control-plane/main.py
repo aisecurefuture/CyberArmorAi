@@ -1788,6 +1788,32 @@ def _tenant_agent_rows(db: Session, tenant_id: str, limit: int = 200) -> List[Di
     return agents[:limit]
 
 
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    return value
+
+
+def _readiness_summary(overview: Dict[str, Any]) -> Dict[str, Any]:
+    checks = [
+        {"key": "policies", "label": "At least one policy exists", "complete": int(overview.get("policy_count") or 0) > 0},
+        {"key": "endpoints", "label": "At least one endpoint or agent is enrolled", "complete": int(overview.get("agent_count") or 0) > 0},
+        {"key": "telemetry", "label": "Tenant telemetry is flowing", "complete": int(overview.get("telemetry_count") or 0) > 0},
+        {
+            "key": "evidence",
+            "label": "Audit or incident evidence exists",
+            "complete": int(overview.get("audit_count") or 0) + int(overview.get("incident_count") or 0) > 0,
+        },
+        {"key": "providers", "label": "Provider posture has been reviewed", "complete": int(overview.get("provider_count") or 0) > 0},
+    ]
+    complete = sum(1 for item in checks if item["complete"])
+    return {"score": round((complete / len(checks)) * 100), "complete": complete, "total": len(checks), "checks": checks}
+
+
 @app.get("/customer/overview")
 def customer_overview(
     ctx: Annotated[CustomerContext, Depends(get_customer_context)],
@@ -2023,6 +2049,99 @@ def customer_incidents(
         reverse=True,
     )
     return incidents[: max(1, min(limit, 500))]
+
+
+@app.get("/customer/evidence/export")
+def customer_evidence_export(
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    db: Annotated[Session, Depends(get_db)],
+    scope: str = Query("summary", pattern="^(summary|full)$"),
+) -> Dict[str, Any]:
+    """Create a tenant-scoped evidence export pack for reports, demos, and audits."""
+    full = scope == "full"
+    telemetry_limit = 500 if full else 50
+    audit_limit = 500 if full else 50
+    incident_limit = 250 if full else 25
+
+    tenant = db.query(Tenant).filter(Tenant.id == ctx.tenant_id).first()
+    policies = _fetch_policy_service(f"/policies/{ctx.tenant_id}", ctx.tenant_id)
+    providers = _fetch_ai_router("/ai/providers", ctx.tenant_id)
+    agents = _tenant_agent_rows(db, ctx.tenant_id, limit=500 if full else 50)
+    telemetry_rows = (
+        db.query(TelemetryRecord)
+        .filter(TelemetryRecord.tenant_id == ctx.tenant_id)
+        .order_by(desc(TelemetryRecord.occurred_at), desc(TelemetryRecord.created_at))
+        .limit(telemetry_limit)
+        .all()
+    )
+    audit_rows = (
+        db.query(AuditLog)
+        .filter(AuditLog.tenant_id == ctx.tenant_id)
+        .order_by(AuditLog.created_at.desc())
+        .limit(audit_limit)
+        .all()
+    )
+    incidents = sorted(
+        _INCIDENTS.get(ctx.tenant_id, {}).values(),
+        key=lambda x: x.get("received_at", ""),
+        reverse=True,
+    )[:incident_limit]
+    overview = {
+        "tenant_id": ctx.tenant_id,
+        "policy_count": len(policies) if isinstance(policies, list) else 0,
+        "agent_count": len(agents),
+        "audit_count": db.query(AuditLog).filter(AuditLog.tenant_id == ctx.tenant_id).count(),
+        "telemetry_count": db.query(TelemetryRecord).filter(TelemetryRecord.tenant_id == ctx.tenant_id).count(),
+        "incident_count": len(_INCIDENTS.get(ctx.tenant_id, {})),
+        "provider_count": len((providers or {}).get("providers", [])) if isinstance(providers, dict) else 0,
+    }
+
+    return {
+        "export_type": "cyberarmor_tenant_evidence",
+        "schema_version": "2026-05-06",
+        "scope": scope,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_by": {"email": ctx.email, "role": ctx.role},
+        "tenant": {
+            "id": ctx.tenant_id,
+            "name": tenant.name if tenant else ctx.tenant_id,
+        },
+        "overview": overview,
+        "readiness": _readiness_summary(overview),
+        "policies": _json_safe(policies if isinstance(policies, list) else []),
+        "agents": _json_safe(agents),
+        "providers": _json_safe(providers if isinstance(providers, dict) else {}),
+        "telemetry": [
+            {
+                "id": row.id,
+                "agent_id": row.agent_id,
+                "hostname": row.hostname,
+                "user_id": row.user_id,
+                "event_type": row.event_type,
+                "source": row.source,
+                "payload": _coerce_meta(row.payload) or {},
+                "occurred_at": row.occurred_at.isoformat() if row.occurred_at else None,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+            }
+            for row in telemetry_rows
+        ],
+        "audit": [
+            {
+                "id": row.id,
+                "method": row.method,
+                "path": row.path,
+                "status": row.status,
+                "meta": _coerce_meta(row.meta) or {},
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+            }
+            for row in audit_rows
+        ],
+        "incidents": _json_safe(incidents),
+        "notes": [
+            "This export is tenant-scoped and generated from the customer portal session.",
+            "Secrets and write-only configuration fields are not included.",
+        ],
+    }
 
 
 @app.get("/customer/providers")

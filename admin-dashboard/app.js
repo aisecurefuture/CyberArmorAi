@@ -147,6 +147,58 @@ function metricCard(label, value, tone = "slate", subtitle = "") {
   `);
 }
 
+function tenantReadinessFromSignals(signals = {}) {
+  const checks = [
+    { key: "policies", label: "Policies active", complete: Number(signals.policyCount || 0) > 0 },
+    { key: "agents", label: "Agents enrolled", complete: Number(signals.agentCount || 0) > 0 },
+    { key: "telemetry", label: "Telemetry flowing", complete: Number(signals.telemetryCount || 0) > 0 },
+    { key: "audit", label: "Audit evidence present", complete: Number(signals.auditCount || 0) > 0 },
+    { key: "providers", label: "Providers reviewed", complete: Number(signals.providerCount || 0) > 0 },
+  ];
+  const complete = checks.filter((item) => item.complete).length;
+  const score = Math.round((complete / checks.length) * 100);
+  return { checks, complete, total: checks.length, score };
+}
+
+function readinessTone(score) {
+  if (score >= 80) return "green";
+  if (score >= 45) return "amber";
+  return "red";
+}
+
+function readinessBar(score) {
+  const tone = readinessTone(score);
+  const color = tone === "green" ? "bg-emerald-500" : tone === "amber" ? "bg-amber-500" : "bg-rose-500";
+  return `<div class="h-1.5 w-full rounded-full bg-slate-800"><div class="${color} h-1.5 rounded-full" style="width:${Math.max(0, Math.min(100, score))}%"></div></div>`;
+}
+
+async function fetchTenantReadiness(tenantId) {
+  const tenant = tenantId || getTenant();
+  const signals = { policyCount: 0, agentCount: 0, telemetryCount: 0, auditCount: 0, providerCount: 0 };
+  try {
+    const policies = await apiFetch(`${svcUrl("pol")}/policies/${tenant}`, { headers: svcHeaders("pol") });
+    signals.policyCount = Array.isArray(policies) ? policies.length : 0;
+  } catch {}
+  try {
+    const agents = await apiFetch(`${svcUrl("agentId")}/agents?tenant_id=${encodeURIComponent(tenant)}&limit=1000`, { headers: svcHeaders("agentId") });
+    const rows = Array.isArray(agents) ? agents : (agents.agents || []);
+    signals.agentCount = rows.length;
+  } catch {}
+  try {
+    const telemetry = await apiFetch(`${svcUrl("cp")}/telemetry/${encodeURIComponent(tenant)}?limit=1000`, { headers: svcHeaders("cp") });
+    signals.telemetryCount = Array.isArray(telemetry) ? telemetry.length : 0;
+  } catch {}
+  try {
+    const audit = await apiFetch(`${svcUrl("cp")}/audit?tenant_id=${encodeURIComponent(tenant)}&limit=1000`, { headers: svcHeaders("cp") });
+    signals.auditCount = Array.isArray(audit) ? audit.length : 0;
+  } catch {}
+  try {
+    const providers = await apiFetch(`${svcUrl("aiRouter")}/ai/providers`, { headers: svcHeaders("aiRouter") });
+    signals.providerCount = (providers.providers || []).length;
+  } catch {}
+  return { tenant, signals, readiness: tenantReadinessFromSignals(signals) };
+}
+
 function tableWrap(headersHtml, rowsHtml) {
   return `<div class="overflow-x-auto"><table class="w-full text-sm">
     <thead><tr class="text-left text-xs text-slate-400 border-b border-slate-800">${headersHtml}</tr></thead>
@@ -406,6 +458,7 @@ async function viewOverview() {
   app.innerHTML = loading();
 
   let tenantCount = "—", policyCount = "—", auditCount = "—", alertCount = "—", agentCount = "—", providerCount = "—";
+  let tenantReadiness = null;
   try {
     const tenants = await apiFetch(`${svcUrl("cp")}/tenants`, { headers: svcHeaders("cp") });
     tenantCount = Array.isArray(tenants) ? tenants.length : "?";
@@ -429,6 +482,9 @@ async function viewOverview() {
     const providers = await apiFetch(`${svcUrl("aiRouter")}/ai/providers`, { headers: svcHeaders("aiRouter") });
     providerCount = (providers.providers||[]).length;
   } catch {}
+  try {
+    tenantReadiness = await fetchTenantReadiness(getTenant());
+  } catch {}
 
   app.innerHTML = `
     <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
@@ -439,7 +495,21 @@ async function viewOverview() {
       ${metricCard("Audit Events",     auditCount,   "slate",   "last 1000")}
       ${metricCard("Blocked Threats",  alertCount,   "red")}
     </div>
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+    ${tenantReadiness ? card(`
+      <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <div class="text-xs uppercase tracking-[0.18em] text-slate-500">Tenant Readiness</div>
+          <div class="mt-2 text-2xl font-bold">${esc(tenantReadiness.readiness.score)}%</div>
+          <p class="mt-2 text-sm text-slate-400">Operational readiness for tenant <span class="font-mono text-cyan-200">${esc(tenantReadiness.tenant)}</span> based on policies, agents, telemetry, audit evidence, and provider visibility.</p>
+        </div>
+        <div class="min-w-48">${badge(`${tenantReadiness.readiness.complete}/${tenantReadiness.readiness.total} ready`, readinessTone(tenantReadiness.readiness.score))}</div>
+      </div>
+      <div class="mt-4">${readinessBar(tenantReadiness.readiness.score)}</div>
+      <div class="mt-4 grid gap-2 md:grid-cols-5">
+        ${tenantReadiness.readiness.checks.map((item) => `<div class="rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-xs"><div class="mb-1">${item.complete ? badge("ready", "green") : badge("gap", "amber")}</div><div class="text-slate-300">${esc(item.label)}</div></div>`).join("")}
+      </div>
+    `) : ""}
+    <div class="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
       ${card(`
         <div class="font-semibold mb-3">Quick Actions</div>
         <div class="grid grid-cols-2 gap-2 text-sm">
@@ -475,15 +545,31 @@ async function viewTenants() {
   app.innerHTML = loading();
   try {
     const tenants = await apiFetch(`${svcUrl("cp")}/tenants`, { headers: svcHeaders("cp") });
-    const rows = (Array.isArray(tenants) ? tenants : []).map(t => `
-      <tr class="hover:bg-slate-900/50"><td class="py-2 px-3 font-mono text-xs">${esc(t.tenant_id||t.id||"")}</td><td class="py-2 px-3">${esc(t.name||"")}</td><td class="py-2 px-3">${esc(t.created_at||"")}</td><td class="py-2 px-3">${badge(t.status||"active","green")}</td></tr>
-    `).join("");
+    const tenantRows = Array.isArray(tenants) ? tenants : [];
+    const readinessRows = await Promise.all(tenantRows.slice(0, 25).map(async (t) => {
+      const id = t.tenant_id || t.id || "";
+      const ready = await fetchTenantReadiness(id).catch(() => null);
+      return { tenant: t, ready };
+    }));
+    const rows = readinessRows.map(({ tenant: t, ready }) => {
+      const id = t.tenant_id || t.id || "";
+      const score = ready?.readiness?.score ?? null;
+      return `
+        <tr class="hover:bg-slate-900/50">
+          <td class="py-2 px-3 font-mono text-xs">${esc(id)}</td>
+          <td class="py-2 px-3">${esc(t.name||"")}</td>
+          <td class="py-2 px-3">${score === null ? badge("unknown", "slate") : badge(`${score}%`, readinessTone(score))}<div class="mt-1 min-w-28">${score === null ? "" : readinessBar(score)}</div></td>
+          <td class="py-2 px-3">${esc(t.created_at||"")}</td>
+          <td class="py-2 px-3">${badge(t.status||"active","green")}</td>
+        </tr>
+      `;
+    }).join("");
     app.innerHTML = card(`
       <div class="flex items-center justify-between mb-4">
         <div class="font-semibold">Tenants</div>
         <button onclick="document.dispatchEvent(new Event('createTenant'))" class="text-xs px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500">+ New Tenant</button>
       </div>
-      ${tableWrap(th("Tenant ID")+th("Name")+th("Created")+th("Status"), rows || `<tr><td colspan="4">${emptyState("No tenants found")}</td></tr>`)}
+      ${tableWrap(th("Tenant ID")+th("Name")+th("Readiness")+th("Created")+th("Status"), rows || `<tr><td colspan="5">${emptyState("No tenants found")}</td></tr>`)}
     `);
   } catch (e) { app.innerHTML = card(`<div class="text-rose-400">Error: ${esc(e.message)}</div>`); }
 }

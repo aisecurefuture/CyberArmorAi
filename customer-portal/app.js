@@ -241,6 +241,122 @@ function tabButton(id, label, active = false) {
   return `<button class="sectionTab rounded-2xl border px-4 py-2 text-sm ${active ? "border-cyan-900 bg-cyan-500/10 text-cyan-100" : "border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800"}" data-tab="${esc(id)}" type="button">${esc(label)}</button>`;
 }
 
+function downloadJson(filename, data) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function readinessFromOverview(overview = {}) {
+  const checks = [
+    { key: "policies", label: "Create at least one policy", complete: Number(overview.policy_count || 0) > 0, href: "#/policy-builder" },
+    { key: "endpoints", label: "Enroll an endpoint or agent", complete: Number(overview.agent_count || 0) > 0, href: "#/onboarding" },
+    { key: "telemetry", label: "Receive tenant telemetry", complete: Number(overview.telemetry_count || 0) > 0, href: "#/telemetry" },
+    { key: "evidence", label: "Generate audit or incident evidence", complete: Number(overview.audit_count || 0) + Number(overview.incident_count || 0) > 0, href: "#/reports" },
+    { key: "providers", label: "Review provider posture", complete: Number(overview.provider_count || 0) > 0, href: "#/providers" },
+  ];
+  const complete = checks.filter((item) => item.complete).length;
+  return { checks, complete, total: checks.length, score: Math.round((complete / checks.length) * 100) };
+}
+
+function readinessTone(score) {
+  if (score >= 80) return "green";
+  if (score >= 45) return "amber";
+  return "red";
+}
+
+function progressBar(score, tone = "cyan") {
+  const colors = { green: "bg-emerald-500", amber: "bg-amber-500", red: "bg-rose-500", cyan: "bg-cyan-500" };
+  return `<div class="h-2 w-full rounded-full bg-slate-800"><div class="${colors[tone] || colors.cyan} h-2 rounded-full" style="width:${Math.max(0, Math.min(100, score))}%"></div></div>`;
+}
+
+function missionControlHtml(settings, overview) {
+  const readiness = readinessFromOverview(overview);
+  const tone = readinessTone(readiness.score);
+  const nextActions = readiness.checks.filter((item) => !item.complete).slice(0, 3);
+  const completedRows = readiness.checks.map((item) => `
+    <a href="${item.href}" class="flex items-start gap-3 rounded-2xl border border-slate-800 bg-slate-900/50 px-4 py-3 hover:bg-slate-900">
+      <span class="mt-0.5 inline-flex h-5 w-5 items-center justify-center rounded-full ${item.complete ? "bg-emerald-500/20 text-emerald-200" : "bg-slate-800 text-slate-400"}">${item.complete ? "✓" : "•"}</span>
+      <span>
+        <span class="block text-sm font-medium text-slate-100">${esc(item.label)}</span>
+        <span class="mt-1 block text-xs text-slate-500">${item.complete ? "Complete" : "Recommended next step"}</span>
+      </span>
+    </a>
+  `).join("");
+
+  return `
+    <div class="grid gap-3 md:grid-cols-3 lg:grid-cols-6">
+      ${metricCard("Policies", overview.policy_count ?? "0", "cyan", "active and archived")}
+      ${metricCard("Endpoints", overview.agent_count ?? "0", "green", "registered or telemetry-only")}
+      ${metricCard("Telemetry", overview.telemetry_count ?? "0", "cyan", "tenant events")}
+      ${metricCard("Incidents", overview.incident_count ?? "0", "amber", "evidence candidates")}
+      ${metricCard("AI Providers", overview.provider_count ?? "0", "green", "router visible")}
+      ${metricCard("Audit Events", overview.audit_count ?? "0", "slate", "reviewable records")}
+    </div>
+
+    <div class="mt-5 grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
+      ${card(`
+        <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <div class="text-xs uppercase tracking-[0.18em] text-slate-500">Mission Control</div>
+            <div class="mt-2 text-2xl font-semibold">Tenant readiness: ${readiness.score}%</div>
+            <p class="mt-2 max-w-2xl text-sm text-slate-400">A practical readiness score based on policy, endpoint, telemetry, provider, and evidence signals for this tenant.</p>
+          </div>
+          <div class="min-w-44">${badge(`${readiness.complete}/${readiness.total} controls ready`, tone)}</div>
+        </div>
+        <div class="mt-5">${progressBar(readiness.score, tone)}</div>
+        <div class="mt-5 grid gap-3 md:grid-cols-2">${completedRows}</div>
+      `)}
+      ${card(`
+        <div class="text-xs uppercase tracking-[0.18em] text-slate-500">Next Best Actions</div>
+        <div class="mt-3 space-y-3">
+          ${nextActions.length ? nextActions.map((item) => `
+            <a href="${item.href}" class="block rounded-2xl border border-slate-800 bg-slate-900/60 p-4 hover:bg-slate-900">
+              <div class="text-sm font-semibold">${esc(item.label)}</div>
+              <div class="mt-1 text-xs text-cyan-200">Open workflow →</div>
+            </a>
+          `).join("") : `<div class="rounded-2xl border border-emerald-900 bg-emerald-950/30 p-4 text-sm text-emerald-100">Core pilot readiness is in place. Review Reports for evidence exports or tune policies.</div>`}
+        </div>
+        <div class="mt-4 grid grid-cols-2 gap-2 text-sm">
+          <a class="rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 hover:bg-slate-800" href="#/onboarding">Guided Onboarding</a>
+          <a class="rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 hover:bg-slate-800" href="#/reports">Export Evidence</a>
+        </div>
+      `)}
+    </div>
+
+    <div class="mt-5 grid gap-4 lg:grid-cols-2">
+      ${card(`
+        <div class="font-semibold">Quick Actions</div>
+        <div class="mt-4 grid grid-cols-2 gap-2 text-sm">
+          <a class="rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 hover:bg-slate-800" href="#/policies">Policies</a>
+          <a class="rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 hover:bg-slate-800" href="#/policy-builder">Policy Builder</a>
+          <a class="rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 hover:bg-slate-800" href="#/endpoints">Endpoints</a>
+          <a class="rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 hover:bg-slate-800" href="#/agents">Agent Directory</a>
+          <a class="rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 hover:bg-slate-800" href="#/telemetry">Telemetry</a>
+          <a class="rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 hover:bg-slate-800" href="#/users">Users</a>
+          <a class="rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 hover:bg-slate-800" href="#/api-keys">API Keys</a>
+          <a class="rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 hover:bg-slate-800" href="#/reports">Reports</a>
+        </div>
+      `)}
+      ${card(`
+        <div class="font-semibold">Tenant Scope</div>
+        <div class="mt-4 space-y-3 text-sm text-slate-300">
+          <div class="flex justify-between gap-4"><span class="text-slate-500">Tenant</span><span>${esc(settings.tenant.name)}</span></div>
+          <div class="flex justify-between gap-4"><span class="text-slate-500">Tenant ID</span><span class="font-mono text-cyan-100">${esc(settings.tenant.id)}</span></div>
+          <div class="flex justify-between gap-4"><span class="text-slate-500">Signed in</span><span>${esc(settings.user.email)}</span></div>
+          <div class="flex justify-between gap-4"><span class="text-slate-500">Enforcement</span>${badge("server-side tenant session", "green")}</div>
+        </div>
+      `)}
+    </div>
+  `;
+}
+
 function buildShadowAiHtml({ agents = [], telemetry = [] }) {
   const explainSeverity = (event) => {
     const payload = event.payload || {};
@@ -711,46 +827,13 @@ async function tenantScopedConfigPage(section, title, subtitle, items, defaults 
 }
 
 async function viewOverview() {
-  $("#pageTitle").textContent = "Customer Portal";
-  $("#pageSubtitle").textContent = "Security posture overview for your tenant";
+  $("#pageTitle").textContent = "Mission Control";
+  $("#pageSubtitle").textContent = "Tenant readiness, next actions, and evidence posture";
   const [settings, overview] = await Promise.all([
     api("/api/customer/settings"),
     api("/api/customer/overview"),
   ]);
-  $("#app").innerHTML = `
-    <div class="grid gap-3 md:grid-cols-3 lg:grid-cols-6">
-      ${metricCard("Policies", overview.policy_count ?? "0", "cyan")}
-      ${metricCard("Endpoints", overview.agent_count ?? "0", "green")}
-      ${metricCard("Telemetry", overview.telemetry_count ?? "0", "cyan")}
-      ${metricCard("Incidents", overview.incident_count ?? "0", "amber")}
-      ${metricCard("AI Providers", overview.provider_count ?? "0", "green")}
-      ${metricCard("Audit Events", overview.audit_count ?? "0", "slate")}
-    </div>
-    <div class="mt-5 grid gap-4 lg:grid-cols-2">
-      ${card(`
-        <div class="font-semibold">Quick Actions</div>
-        <div class="mt-4 grid grid-cols-2 gap-2 text-sm">
-          <a class="rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 hover:bg-slate-800" href="#/policies">Policies</a>
-          <a class="rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 hover:bg-slate-800" href="#/policy-builder">Policy Builder</a>
-          <a class="rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 hover:bg-slate-800" href="#/endpoints">Endpoints</a>
-          <a class="rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 hover:bg-slate-800" href="#/agents">Agent Directory</a>
-          <a class="rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 hover:bg-slate-800" href="#/telemetry">Telemetry</a>
-          <a class="rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 hover:bg-slate-800" href="#/users">Users</a>
-          <a class="rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 hover:bg-slate-800" href="#/api-keys">API Keys</a>
-          <a class="rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 hover:bg-slate-800" href="#/reports">Reports</a>
-        </div>
-      `)}
-      ${card(`
-        <div class="font-semibold">Tenant Scope</div>
-        <div class="mt-4 space-y-3 text-sm text-slate-300">
-          <div class="flex justify-between gap-4"><span class="text-slate-500">Tenant</span><span>${esc(settings.tenant.name)}</span></div>
-          <div class="flex justify-between gap-4"><span class="text-slate-500">Tenant ID</span><span class="font-mono text-cyan-100">${esc(settings.tenant.id)}</span></div>
-          <div class="flex justify-between gap-4"><span class="text-slate-500">Signed in</span><span>${esc(settings.user.email)}</span></div>
-          <div class="flex justify-between gap-4"><span class="text-slate-500">Enforcement</span>${badge("server-side tenant session", "green")}</div>
-        </div>
-      `)}
-    </div>
-  `;
+  $("#app").innerHTML = missionControlHtml(settings, overview);
 }
 
 async function viewPolicyBuilder() {
@@ -1474,11 +1557,49 @@ async function viewDlp() {
 }
 
 async function viewReports() {
-  await tenantScopedConfigPage("reports", "Reports", "Tenant security and compliance reports", [
+  await tenantScopedConfigPage("reports", "Reports & Evidence Export", "Tenant security, compliance, and evidence export packages", [
     { title: "Compliance Report", body: "Generate a tenant-scoped summary of framework assessment results and evidence gaps.", badge: "SOC 2 / NIST / GDPR", tone: "green" },
     { title: "DLP Activity Report", body: "Summarize tenant data-classification hits, DLP detections, and response outcomes.", badge: "tenant data only", tone: "cyan" },
     { title: "AI Risk Report", body: "Package tenant AI providers, agents, policy decisions, incidents, and audit findings.", badge: "executive ready", tone: "amber" },
   ], { enabled_reports: ["compliance", "dlp", "ai_risk"], schedule: "manual", recipients: [] });
+  $("#app").insertAdjacentHTML("beforeend", `
+    <div class="mt-4"></div>
+    ${card(`
+      <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <div class="text-lg font-semibold">Evidence Export</div>
+          <p class="mt-2 max-w-2xl text-sm text-slate-400">Create tenant-scoped JSON evidence packs for audit review, incident triage, demo validation, or customer success handoff.</p>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <button class="evidenceExport rounded-2xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400" data-scope="summary" type="button">Export Summary</button>
+          <button class="evidenceExport rounded-2xl border border-slate-700 bg-slate-900 px-4 py-2 text-sm text-slate-200 hover:bg-slate-800" data-scope="full" type="button">Export Full Pack</button>
+        </div>
+      </div>
+      <div class="mt-4 grid gap-3 md:grid-cols-3">
+        <div class="rounded-2xl border border-slate-800 bg-slate-900/60 p-4"><div class="text-sm font-semibold">Audit logs</div><p class="mt-1 text-xs text-slate-400">Policy, portal, and API activity records.</p></div>
+        <div class="rounded-2xl border border-slate-800 bg-slate-900/60 p-4"><div class="text-sm font-semibold">Telemetry</div><p class="mt-1 text-xs text-slate-400">Endpoint and runtime events for the tenant.</p></div>
+        <div class="rounded-2xl border border-slate-800 bg-slate-900/60 p-4"><div class="text-sm font-semibold">Incidents</div><p class="mt-1 text-xs text-slate-400">Runtime decisions, findings, and evidence candidates.</p></div>
+      </div>
+      <div id="evidenceExportMessage" class="mt-4 text-sm text-slate-400"></div>
+    `)}
+  `);
+  document.querySelectorAll(".evidenceExport").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const scope = button.dataset.scope || "summary";
+      const message = $("#evidenceExportMessage");
+      message.textContent = `Preparing ${scope} evidence export...`;
+      message.className = "mt-4 text-sm text-slate-400";
+      try {
+        const pack = await api(`/api/customer/evidence/export?scope=${encodeURIComponent(scope)}`);
+        downloadJson(`cyberarmor_${session.tenant_id}_${scope}_evidence_${new Date().toISOString().slice(0, 10)}.json`, pack);
+        message.textContent = "Evidence export created.";
+        message.className = "mt-4 text-sm text-emerald-300";
+      } catch (error) {
+        message.textContent = error.message;
+        message.className = "mt-4 text-sm text-rose-300";
+      }
+    });
+  });
 }
 
 async function viewTelemetry() {
@@ -1705,6 +1826,8 @@ async function viewDelegations() {
 }
 
 async function viewOnboarding() {
+  const overview = await api("/api/customer/overview").catch(() => ({}));
+  const readiness = readinessFromOverview(overview);
   const catalog = await api("/api/customer/downloads/catalog").catch(() => []);
   const sdkPackages = (Array.isArray(catalog) ? catalog : []).filter((pkg) =>
     ["sdk", "rasp"].includes(pkg.category)
@@ -1723,8 +1846,31 @@ async function viewOnboarding() {
   });
   const app = $("#app");
   if (!app) return;
-  app.insertAdjacentHTML("beforeend", `
+  app.insertAdjacentHTML("afterbegin", `
+    ${card(`
+      <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <div class="text-lg font-semibold">Guided Onboarding</div>
+          <p class="mt-2 max-w-2xl text-sm text-slate-400">Follow this path to get from a blank tenant to a demo-ready, evidence-producing pilot environment.</p>
+        </div>
+        <div class="min-w-48">${badge(`${readiness.score}% ready`, readinessTone(readiness.score))}</div>
+      </div>
+      <div class="mt-4">${progressBar(readiness.score, readinessTone(readiness.score))}</div>
+      <div class="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+        ${readiness.checks.map((item, index) => `
+          <a href="${item.href}" class="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 hover:bg-slate-900">
+            <div class="flex items-center justify-between gap-2">
+              <div class="text-xs uppercase tracking-[0.18em] text-slate-500">Step ${index + 1}</div>
+              ${item.complete ? badge("done", "green") : badge("next", "amber")}
+            </div>
+            <div class="mt-3 text-sm font-semibold">${esc(item.label)}</div>
+          </a>
+        `).join("")}
+      </div>
+    `)}
     <div class="mt-4"></div>
+  `);
+  app.insertAdjacentHTML("beforeend", `
     ${card(`
       <div class="text-lg font-semibold">SDK, RASP, and Add-in Packages</div>
       <p class="mt-2 text-sm text-slate-400">Download the package, issue a one-time bootstrap token, then redeem it into an install-scoped credential during setup instead of embedding a shared secret.</p>

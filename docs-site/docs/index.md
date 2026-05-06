@@ -49,6 +49,24 @@ operate, and integrate the platform in real environments.
 
     [:octicons-arrow-right-24: Open the support center](support/index.md)
 
+-   :material-monitor-dashboard: **Operate tenant portals**
+
+    ---
+
+    Use Mission Control, guided onboarding, admin readiness, and evidence export
+    to move a tenant from blank state to demo-ready.
+
+    [:octicons-arrow-right-24: Customer portal guide](customer-portal/index.md)
+
+-   :material-presentation-play: **Run polished demos**
+
+    ---
+
+    Follow CISO, security architect, and AppSec demo paths with seed/reset
+    scripts and buyer-specific talk tracks.
+
+    [:octicons-arrow-right-24: Demo runbooks](demos/index.md)
+
 </div>
 
 ## Product boundary
@@ -88,4 +106,7 @@ CyberArmor currently includes:
 3. [Architecture](platform/architecture.md)
 4. [Services](platform/services.md)
 5. [Deployment](operations/deployment.md)
-6. [Support Center](support/index.md)
+6. [Customer Portal](customer-portal/index.md)
+7. [Evidence Export](evidence/export.md)
+8. [Demo Runbooks](demos/index.md)
+9. [Support Center](support/index.md)

@@ -65,9 +65,18 @@ extra_css:
 
 nav:
   - Home: index.md
+  - Evaluation:
+      - Demo Runbooks: demos/index.md
+      - CISO Demo: demos/ciso.md
+      - Security Architect Demo: demos/security-architect.md
+      - AppSec Demo: demos/appsec.md
   - Getting Started:
       - Overview: getting-started/index.md
       - Install: getting-started/install.md
+  - Portals:
+      - Customer Portal: customer-portal/index.md
+      - Admin Portal: admin-portal/index.md
+      - Evidence Export: evidence/export.md
   - Platform:
       - Architecture: platform/architecture.md
       - Services: platform/services.md
@@ -77,6 +86,7 @@ nav:
       - Troubleshooting: operations/troubleshooting.md
   - Support:
       - Support Center: support/index.md
+      - Support Intake: support/intake.md
 
 extra:
   social:
