@@ -25,7 +25,8 @@ const footerLinks = {
   Company: [
     { label: "About", href: "/about" },
     { label: "Contact", href: "/contact" },
-    { label: "Support", href: "/support" },
+    { label: "Support", href: "https://support.cyberarmor.ai" },
+    { label: "Docs", href: "https://docs.cyberarmor.ai" },
     { label: "Request Demo", href: "/contact" },
   ],
 };
@@ -58,7 +59,7 @@ export default function Footer() {
               </span>
             </Link>
               <p style={{ fontSize: 14, color: "#8892A4", lineHeight: 1.7, marginBottom: 20, maxWidth: 220 }}>
-                The AI Security & Cyber Trust Platform for the enterprise.
+                CyberArmor.AI is the AI security and cyber trust platform operated by CyberArmor AI, Inc.
               </p>
               <div style={{ display: "flex", gap: 10 }}>
               {[
@@ -120,6 +121,8 @@ export default function Footer() {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 16 }}>
           <p style={{ fontSize: 13, color: "#4A5568" }}>
             © {new Date().getFullYear()} CyberArmor AI, Inc. All rights reserved. Patent-pending innovations.
+            <br />
+            CyberArmor.AI is the public brand for CyberArmor AI, Inc. Official properties use cyberarmor.ai and its subdomains.
           </p>
           <div style={{ display: "flex", gap: 24 }}>
             {[

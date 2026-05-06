@@ -105,8 +105,7 @@ export default function Hero() {
           <div style={{ marginBottom: 28, display: "flex", justifyContent: "center", padding: "0 8px" }}>
             <div className="label-tag" style={{ gap: 6, textAlign: "center", whiteSpace: "nowrap", overflow: "hidden", maxWidth: "100%", textOverflow: "ellipsis" }}>
               <ShieldCheck size={11} style={{ flexShrink: 0 }} />
-              <span className="badge-full">Patent-Pending AI Security Innovations</span>
-              <span className="badge-short" style={{ display: "none" }}>Patent-Pending Innovations</span>
+              <span>Patent-pending architecture for AI trust evidence</span>
             </div>
           </div>
 
@@ -154,7 +153,7 @@ export default function Hero() {
             {[
               "Built for security-led enterprises",
               "Runtime enforcement, not policy theater",
-              "Cross-layer coverage across agents, apps, and data",
+              "Evidence for agents, apps, policies, and data flows",
             ].map((t) => (
               <div key={t} style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <div style={{
@@ -211,9 +210,9 @@ export default function Hero() {
             {/* Mock dashboard */}
             <div className="hero-preview-grid" style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, marginBottom: 20 }}>
               {[
-                { label: "AI Assets Discovered", value: "1,284", delta: "+48 today", color: "#00A3FF" },
-                { label: "Policy Violations Blocked", value: "37", delta: "Last 24h", color: "#22C55E" },
-                { label: "Trust Evidence Records", value: "94,201", delta: "Auditable", color: "#A855F7" },
+                { label: "Discovery", value: "Inventory", delta: "Endpoint, browser, API, and integration signals", color: "#00A3FF" },
+                { label: "Policy", value: "Decide", delta: "Monitor, alert, limit, or block by context", color: "#22C55E" },
+                { label: "Evidence", value: "Prove", delta: "Decision logs for audit and investigation", color: "#A855F7" },
               ].map((stat) => (
                 <div key={stat.label} style={{
                   background: "#12151E",
@@ -224,10 +223,10 @@ export default function Hero() {
                   <p style={{ fontSize: 11, color: "#4A5568", fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 8 }}>
                     {stat.label}
                   </p>
-                  <p style={{ fontSize: 26, fontWeight: 700, color: stat.color, letterSpacing: "-0.03em", marginBottom: 4 }}>
+                  <p style={{ fontSize: 24, fontWeight: 700, color: stat.color, letterSpacing: "-0.03em", marginBottom: 6 }}>
                     {stat.value}
                   </p>
-                  <p style={{ fontSize: 12, color: "#8892A4" }}>{stat.delta}</p>
+                  <p style={{ fontSize: 12, color: "#8892A4", lineHeight: 1.45 }}>{stat.delta}</p>
                 </div>
               ))}
             </div>

@@ -1,24 +1,19 @@
-"use client";
-
-import { useState } from "react";
-import { ChevronDown } from "lucide-react";
-
 const faqs = [
   {
     q: "What exactly does CyberArmor AI protect?",
-    a: "CyberArmor AI is designed to protect the full enterprise AI attack surface: AI systems and models, autonomous agents, AI-powered applications and APIs, user interactions with AI tools, data flowing through AI pipelines, and the runtime environments where AI workloads execute. It's a cross-layer platform — not a single-point solution.",
+    a: "CyberArmor AI is designed to help security teams monitor and control AI systems, agents, applications, API calls, user interactions, data flowing into AI workflows, and the runtime paths where policy decisions need to happen. Coverage depends on the deployment pattern, which is why the platform now separates available pilot-ready controls from capabilities being expanded with design partners.",
   },
   {
     q: "How is this different from existing security tools we already have?",
-    a: "Traditional SIEM, DLP, and endpoint tools were designed for a world without AI agents, LLMs, and autonomous workflows. They don't understand the semantics of AI interactions, can't detect prompt injection, and have no way to verify agent identity or enforce behavioral policy. CyberArmor AI is purpose-built for the AI threat surface that existing tools weren't designed to address.",
+    a: "Existing SIEM, DLP, endpoint, IAM, and cloud tools remain important. CyberArmor AI is meant to complement them by adding AI-specific context: model and provider usage, prompt-risk signals, sensitive-data inspection, policy decisions, agent identity context, and evidence records that can be forwarded into the broader security stack.",
   },
   {
     q: "What does 'shadow AI' mean and why should we care?",
-    a: "Shadow AI refers to AI tools, models, and API connections that employees, developers, or vendors are using without security review or organizational approval — similar to shadow IT, but with the added risks of AI-specific vulnerabilities like data exfiltration via prompts, model misuse, and ungoverned training data. Most organizations have significantly more shadow AI usage than their security teams are aware of.",
+    a: "Shadow AI refers to AI tools, models, API connections, browser assistants, developer workflows, or vendor systems being used without security review. The risk is not only unauthorized software use; it is also sensitive data entering unmanaged AI systems, unreviewed model dependencies, unclear retention terms, and no evidence trail when something goes wrong.",
   },
   {
     q: "What is 'AI runtime protection' and how does it work?",
-    a: "AI runtime protection means applying security controls at the moment an AI system, agent, or application is executing — not after the fact. CyberArmor AI intercepts AI interactions, evaluates them against policy, and takes enforcement action (block, alert, limit, log) in real time. This is the difference between governance and actual defense.",
+    a: "AI runtime protection means evaluating AI activity as requests, model calls, agent actions, or data flows happen. Depending on deployment, CyberArmor AI can inspect context, call detection and policy services, produce a decision, and preserve evidence. Enforcement can begin with monitor and alert modes, then mature toward limit or block actions where the customer has approved control points.",
   },
   {
     q: "Does CyberArmor AI require replacing our existing security infrastructure?",
@@ -26,7 +21,7 @@ const faqs = [
   },
   {
     q: "How does the evidence and traceability capability help with compliance?",
-    a: "Regulations like GDPR, HIPAA, SOC 2, and emerging AI-specific frameworks require organizations to demonstrate that AI systems are operating within defined boundaries and that decisions affecting individuals are explainable and reviewable. CyberArmor AI captures structured, tamper-resistant evidence for every AI interaction, providing the documentation trail that compliance and legal functions need.",
+    a: "Security, legal, compliance, and audit teams need more than screenshots or meeting notes. CyberArmor AI records structured evidence about AI activity, policy decisions, actors, timestamps, and control outcomes so teams can investigate incidents, review governance exceptions, and map technical controls to frameworks such as NIST AI RMF, ISO/IEC 42001, OWASP GenAI guidance, and sector-specific requirements.",
   },
   {
     q: "Is this relevant to my organization if we're early in AI adoption?",
@@ -39,8 +34,6 @@ const faqs = [
 ];
 
 export default function FAQ() {
-  const [open, setOpen] = useState<number | null>(0);
-
   return (
     <section className="section-padding" style={{ backgroundColor: "#000000" }}>
       <div className="container-wide">
@@ -54,57 +47,42 @@ export default function FAQ() {
 
         <div style={{ maxWidth: 820, margin: "0 auto", display: "flex", flexDirection: "column", gap: 8 }}>
           {faqs.map(({ q, a }, i) => (
-            <div
+            <details
               key={i}
+              open={i === 0}
               style={{
                 background: "#0F1117",
-                border: `1px solid ${open === i ? "rgba(0,163,255,0.3)" : "#1E2335"}`,
+                border: "1px solid #1E2335",
                 borderRadius: 12,
                 overflow: "hidden",
-                transition: "border-color 0.2s",
               }}
             >
-              <button
-                onClick={() => setOpen(open === i ? null : i)}
+              <summary
                 style={{
-                  width: "100%",
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "space-between",
                   padding: "22px 28px",
-                  background: "none",
-                  border: "none",
                   cursor: "pointer",
-                  textAlign: "left",
                   gap: 16,
+                  listStyle: "none",
                 }}
               >
                 <span style={{
                   fontSize: 15.5, fontWeight: 600,
-                  color: open === i ? "#ffffff" : "#8892A4",
+                  color: "#ffffff",
                   letterSpacing: "-0.01em",
                   lineHeight: 1.4,
-                  transition: "color 0.2s",
                 }}>
                   {q}
                 </span>
-                <ChevronDown
-                  size={18}
-                  style={{
-                    color: open === i ? "#00A3FF" : "#4A5568",
-                    flexShrink: 0,
-                    transform: open === i ? "rotate(180deg)" : "rotate(0deg)",
-                    transition: "transform 0.3s ease, color 0.2s",
-                  }}
-                />
-              </button>
+                <span style={{ color: "#00A3FF", fontSize: 18, lineHeight: 1 }}>+</span>
+              </summary>
 
-              {open === i && (
-                <div style={{ padding: "0 28px 22px" }}>
-                  <p style={{ fontSize: 14.5, color: "#8892A4", lineHeight: 1.75 }}>{a}</p>
-                </div>
-              )}
-            </div>
+              <div style={{ padding: "0 28px 22px" }}>
+                <p style={{ fontSize: 14.5, color: "#8892A4", lineHeight: 1.75 }}>{a}</p>
+              </div>
+            </details>
           ))}
         </div>
       </div>

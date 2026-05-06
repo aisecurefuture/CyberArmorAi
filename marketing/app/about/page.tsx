@@ -2,11 +2,13 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { ArrowRight, Shield, Target, Eye, FileCheck, Zap } from "lucide-react";
 import FinalCTA from "@/components/sections/FinalCTA";
+import FounderCredibility from "@/components/sections/FounderCredibility";
+import BrandClarification from "@/components/sections/BrandClarification";
 
 export const metadata: Metadata = {
-  title: "About — CyberArmor AI",
+  title: "About — CyberArmor.AI",
   description:
-    "CyberArmor AI is a cybersecurity company building the enterprise AI security and cyber trust platform for the age of AI.",
+    "CyberArmor.AI is the enterprise AI security and cyber trust platform operated by CyberArmor AI, Inc.",
 };
 
 const values = [
@@ -52,7 +54,7 @@ export default function AboutPage() {
         <div className="container-wide" style={{ position: "relative" }}>
           <div style={{ maxWidth: 800 }}>
             <div className="label-tag" style={{ marginBottom: 20, display: "inline-flex" }}>
-              <Shield size={12} /> About CyberArmor AI
+              <Shield size={12} /> About CyberArmor.AI
             </div>
 
             <h1 style={{
@@ -65,7 +67,7 @@ export default function AboutPage() {
             </h1>
 
             <p style={{ fontSize: "1.15rem", color: "#8892A4", lineHeight: 1.8, marginBottom: 24, maxWidth: 700 }}>
-              CyberArmor AI was founded on a straightforward observation: enterprise AI adoption is accelerating at a
+              CyberArmor.AI was founded on a straightforward observation: enterprise AI adoption is accelerating at a
               pace that the security industry was not built to address. Existing tools — SIEM, DLP, endpoint protection,
               network security — were designed for a world without autonomous AI agents, large language models, and
               AI-powered workflows that cross every trust boundary the enterprise spent years establishing.
@@ -73,7 +75,7 @@ export default function AboutPage() {
 
             <p style={{ fontSize: "1.15rem", color: "#8892A4", lineHeight: 1.8, marginBottom: 24, maxWidth: 700 }}>
               The gap between AI adoption speed and AI security capability is real, growing, and creating risk at
-              board-level scale. We built CyberArmor AI to close that gap — with a platform that is technically serious,
+              board-level scale. We built CyberArmor.AI to close that gap — with a platform that is technically serious,
               operationally deployable, and designed for the actual complexity of enterprise security programs.
             </p>
 
@@ -85,6 +87,8 @@ export default function AboutPage() {
           </div>
         </div>
       </section>
+
+      <FounderCredibility compact />
 
       {/* Mission */}
       <section style={{ padding: "5rem 0", backgroundColor: "#050508" }}>
@@ -214,16 +218,18 @@ export default function AboutPage() {
                 Patent-Pending Innovations
               </h3>
               <p style={{ fontSize: 14.5, color: "#8892A4", lineHeight: 1.7, maxWidth: 760 }}>
-                CyberArmor AI&apos;s core architectural innovations — including our approach to AI trust verification,
+                CyberArmor.AI&apos;s core architectural innovations — including our approach to AI trust verification,
                 cross-layer security operationalization, and decision-level evidence capture — are the subject of
                 patent applications currently in process. These innovations represent the foundational differentiators
-                of the CyberArmor AI platform and reflect our commitment to building a technically defensible,
+                of the CyberArmor.AI platform and reflect our commitment to building a technically defensible,
                 category-defining security capability.
               </p>
             </div>
           </div>
         </div>
       </section>
+
+      <BrandClarification />
 
       <FinalCTA />
     </div>

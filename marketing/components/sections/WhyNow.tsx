@@ -1,20 +1,28 @@
 const signals = [
   {
-    value: "Board-Level",
-    label: "AI governance has moved from experimentation to executive oversight.",
+    value: "97%",
+    label: "IBM reported that organizations with an AI-related security incident often lacked proper AI access controls.",
   },
   {
-    value: "Runtime Risk",
-    label: "Prompt injection, unmanaged agents, and AI-driven data exposure are live operational issues now.",
+    value: "OWASP",
+    label: "Prompt injection, sensitive information disclosure, supply chain risk, and excessive agency are recognized GenAI security risks.",
   },
   {
-    value: "Control Gap",
-    label: "Most organizations have policy language before they have technical enforcement.",
+    value: "NIST",
+    label: "AI risk management is moving into governed, measurable, and managed operating practice.",
   },
   {
-    value: "Proof Demand",
-    label: "Security, legal, and compliance teams increasingly need evidence, not just assurance.",
+    value: "EU AI Act",
+    label: "High-risk AI obligations emphasize logging, documentation, transparency, oversight, robustness, and cybersecurity.",
   },
+];
+
+const sources = [
+  { label: "IBM Cost of a Data Breach 2025", href: "https://www.ibm.com/reports/data-breach" },
+  { label: "OWASP GenAI Security Project", href: "https://owasp.org/www-project-top-10-for-large-language-model-applications" },
+  { label: "NIST AI RMF", href: "https://www.nist.gov/itl/ai-risk-management-framework" },
+  { label: "ISO/IEC 42001", href: "https://www.iso.org/standard/42001" },
+  { label: "EU AI Act", href: "https://digital-strategy.ec.europa.eu/en/policies/regulatory-framework-ai" },
 ];
 
 export default function WhyNow() {
@@ -37,23 +45,47 @@ export default function WhyNow() {
           <div>
             <div className="label-tag" style={{ marginBottom: 20 }}>Why Now</div>
             <h2 className="section-headline" style={{ marginBottom: 24 }}>
-              The Window for Establishing{" "}
-              <span className="gradient-text-blue">AI Security Leadership</span> Is Now.
+              Enterprise AI Has Outpaced{" "}
+              <span className="gradient-text-blue">The Control Stack</span> Built for It.
             </h2>
             <p style={{ color: "#8892A4", fontSize: "1.05rem", lineHeight: 1.7, marginBottom: 20 }}>
-              Enterprise AI adoption is accelerating faster than any technology shift in a generation.
-              Generative AI, autonomous agents, and AI-enabled workflows are being deployed across
-              every business function — without the security infrastructure to match.
+              IBM&apos;s 2025 Cost of a Data Breach research puts hard numbers behind the AI
+              oversight gap: among organizations reporting an AI-related security incident,
+              97% lacked proper AI access controls and 63% lacked AI governance policies.
             </p>
             <p style={{ color: "#8892A4", fontSize: "1.05rem", lineHeight: 1.7, marginBottom: 20 }}>
-              Regulators are moving. Boards are asking. Attackers are already exploiting.
-              The enterprises that establish a governed, defensible AI security posture today will
-              have a structural advantage over those that wait.
+              OWASP&apos;s GenAI security work identifies risks like prompt injection, sensitive
+              information disclosure, supply chain vulnerabilities, excessive agency, and model
+              theft. NIST AI RMF and ISO/IEC 42001 give enterprises a governance language; the
+              EU AI Act adds pressure for documentation, traceability, oversight, and cybersecurity.
             </p>
             <p style={{ color: "#ffffff", fontSize: "1.05rem", lineHeight: 1.7, fontWeight: 500 }}>
-              CyberArmor AI exists to give security-minded enterprises that advantage — with a
-              platform built for this moment.
+              Governance alone is not enough. Enterprises need visibility, runtime controls,
+              and evidence they can show to security, legal, audit, and executive stakeholders.
             </p>
+
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 28 }}>
+              {sources.map((source) => (
+                <a
+                  key={source.label}
+                  href={source.href}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{
+                    color: "#60C8FF",
+                    border: "1px solid #1E2335",
+                    background: "#0F1117",
+                    borderRadius: 8,
+                    padding: "8px 10px",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    textDecoration: "none",
+                  }}
+                >
+                  {source.label}
+                </a>
+              ))}
+            </div>
           </div>
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
@@ -71,7 +103,7 @@ export default function WhyNow() {
                   background: "linear-gradient(90deg, transparent, rgba(0,163,255,0.3), transparent)",
                 }} />
                 <p style={{
-                  fontSize: "2.2rem",
+                  fontSize: "clamp(1.6rem, 4vw, 2.2rem)",
                   fontWeight: 800,
                   letterSpacing: "-0.04em",
                   marginBottom: 10,

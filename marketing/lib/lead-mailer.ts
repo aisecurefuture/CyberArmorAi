@@ -8,7 +8,8 @@ type MailPayload = {
   to?: string;
   attachments?: Array<{
     filename: string;
-    path: string;
+    path?: string;
+    content?: Buffer;
     contentType?: string;
   }>;
 };

@@ -17,15 +17,15 @@ const diffs = [
     number: "03",
     title: "Cross-Layer Coverage by Design",
     body:
-      "CyberArmor AI is built to operate across models, agents, applications, APIs, identities, and data movement. It is designed as a platform layer for the AI environment, not a single control for a single tool.",
-    tag: "Unified Architecture",
+      "CyberArmor AI brings together a control plane, policy engine, AI router, endpoint signals, agent identity, audit, compliance, and integration paths so teams can validate coverage layer by layer.",
+    tag: "Layered Architecture",
   },
   {
     number: "04",
     title: "Built for Enterprise Operations, Not Lab Demos",
     body:
-      "Enterprise AI programs inherit hybrid environments, uneven ownership, legacy systems, and limited security capacity. CyberArmor AI is built for that operating reality, not a clean-room demo scenario.",
-    tag: "Enterprise-Ready",
+      "Enterprise AI programs inherit hybrid environments, uneven ownership, legacy systems, and limited security capacity. CyberArmor AI is shaped around that operating reality through controlled pilots and design-partner feedback.",
+    tag: "Operational Fit",
   },
 ];
 

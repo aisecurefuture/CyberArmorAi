@@ -122,6 +122,7 @@ Helpful checks:
   CYBERARMOR_ENV_FILE=${DEMO_ENV_FILE} docker compose --env-file ${DEMO_ENV_FILE} --profile prod ps
   CYBERARMOR_ENV_FILE=${DEMO_ENV_FILE} docker compose --env-file ${DEMO_ENV_FILE} --profile prod logs caddy --tail=100
   CYBERARMOR_ENV_FILE=${DEMO_ENV_FILE} docker compose --env-file ${DEMO_ENV_FILE} --profile prod logs marketing docs --tail=100
+  bash ${DEMO_REPO_DIR}/scripts/public-surface-link-check.sh
 
 EOF
 }

@@ -4,22 +4,22 @@ const capabilities = [
   {
     icon: Eye,
     title: "Shadow AI Discovery",
-    body: "Automatically surface unauthorized AI tools, models, and API connections across every user, team, and workload in your organization.",
+    body: "Surface unauthorized AI tools, model calls, and AI service connections through endpoint, browser, API, and integration signals.",
   },
   {
     icon: Bot,
     title: "AI Agent Trust & Control",
-    body: "Define identity-aware trust policies for AI agents. Verify, bound, and monitor autonomous AI systems before they act in production environments.",
+    body: "Define identity-aware policies for AI agents, verify scope, and monitor autonomous workflows as agent trust controls mature.",
   },
   {
     icon: ShieldAlert,
     title: "Prompt Injection Defense",
-    body: "Detect and block prompt injection, jailbreak attempts, and adversarial inputs targeting AI applications, chatbots, and LLM-powered workflows.",
+    body: "Detect prompt injection, jailbreak attempts, and adversarial inputs targeting AI applications, chatbots, and LLM-powered workflows.",
   },
   {
     icon: Database,
     title: "Sensitive Data Protection",
-    body: "Prevent unauthorized data exposure across AI pipelines. Identify when PII, IP, or regulated data is being processed by ungoverned AI systems.",
+    body: "Inspect AI-bound data for PII, IP, credentials, and regulated content so risky requests can be flagged, logged, or blocked by policy.",
   },
   {
     icon: UserCheck,
@@ -34,12 +34,12 @@ const capabilities = [
   {
     icon: FileText,
     title: "Evidence & Decision Traceability",
-    body: "Capture a full, tamper-resistant audit trail of AI actions, policy decisions, and security events for compliance, forensics, and accountability.",
+    body: "Capture structured records of AI actions, policy decisions, and security events for compliance review, investigation, and accountability.",
   },
   {
     icon: Zap,
     title: "Incident Response for AI",
-    body: "Accelerate investigation and response to AI-related security incidents with structured evidence, context-rich telemetry, and automated containment.",
+    body: "Accelerate investigation of AI-related incidents with structured evidence, context-rich telemetry, and response hooks.",
   },
 ];
 
@@ -54,8 +54,8 @@ export default function Capabilities() {
             <span className="gradient-text-blue">Enterprise AI Risk.</span>
           </h2>
           <p style={{ color: "#8892A4", fontSize: "1.05rem", lineHeight: 1.7 }}>
-            Every capability is designed for the actual threat surface of modern enterprise AI —
-            not hypothetical risks, but the attacks and exposures already happening inside your organization.
+            Every capability maps to a concrete AI security workflow: discover usage,
+            decide policy, inspect runtime activity, preserve evidence, and support response.
           </p>
         </div>
 
