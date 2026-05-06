@@ -12,7 +12,7 @@ RUN pip install --no-cache-dir \
     cryptography
 
 COPY libs/cyberarmor-core /app/libs/cyberarmor-core
-ENV PYTHONPATH="/app/libs/cyberarmor-core:${PYTHONPATH}"
+ENV PYTHONPATH="/app/libs/cyberarmor-core:${PYTHONPATH:-}"
 
 COPY services/policy/main.py           ./main.py
 COPY services/policy/db.py             ./db.py

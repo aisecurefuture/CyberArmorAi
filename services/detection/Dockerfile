@@ -23,7 +23,7 @@ RUN pip install --no-cache-dir \
     sentencepiece
 
 COPY libs/cyberarmor-core /app/libs/cyberarmor-core
-ENV PYTHONPATH="/app/libs/cyberarmor-core:${PYTHONPATH}"
+ENV PYTHONPATH="/app/libs/cyberarmor-core:${PYTHONPATH:-}"
 
 COPY services/detection/ml_models.py ./ml_models.py
 COPY services/detection/main.py ./main.py

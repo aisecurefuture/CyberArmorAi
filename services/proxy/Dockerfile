@@ -6,7 +6,7 @@ WORKDIR /app
 RUN pip install --no-cache-dir mitmproxy fastapi uvicorn httpx cryptography pydantic
 
 COPY libs/cyberarmor-core /app/libs/cyberarmor-core
-ENV PYTHONPATH="/app/libs/cyberarmor-core:${PYTHONPATH}"
+ENV PYTHONPATH="/app/libs/cyberarmor-core:${PYTHONPATH:-}"
 
 COPY services/proxy/ /app/
 
