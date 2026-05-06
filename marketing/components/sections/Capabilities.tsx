@@ -1,45 +1,45 @@
-import { Eye, Bot, ShieldAlert, Database, UserCheck, Activity, FileText, Zap } from "lucide-react";
+import { Eye, Bot, ShieldAlert, Database, UserCheck, Activity, FileText, Route } from "lucide-react";
 
 const capabilities = [
   {
     icon: Eye,
     title: "Shadow AI Discovery",
-    body: "Surface unauthorized AI tools, model calls, and AI service connections through endpoint, browser, API, and integration signals.",
+    body: "Surface unreviewed AI tools, model calls, browser usage, endpoint activity, APIs, and service connections through supported signals.",
   },
   {
     icon: Bot,
     title: "AI Agent Trust & Control",
-    body: "Define identity-aware policies for AI agents, verify scope, and monitor autonomous workflows as agent trust controls mature.",
+    body: "Register AI agents, scope allowed tools, track delegation context, and preserve evidence around autonomous workflows as trust controls mature.",
   },
   {
     icon: ShieldAlert,
     title: "Prompt Injection Defense",
-    body: "Detect prompt injection, jailbreak attempts, and adversarial inputs targeting AI applications, chatbots, and LLM-powered workflows.",
+    body: "Detect prompt injection, jailbreak attempts, adversarial normalization patterns, and suspicious prompt behavior targeting AI applications and workflows.",
   },
   {
     icon: Database,
-    title: "Sensitive Data Protection",
-    body: "Inspect AI-bound data for PII, IP, credentials, and regulated content so risky requests can be flagged, redacted in supported paths, logged, or blocked by policy.",
+    title: "Sensitive Data Redaction",
+    body: "Inspect AI-bound data for credentials, secrets, PII, PCI, bank-routing data, healthcare identifiers, and non-public indicators so supported paths can redact, warn, log, or block by policy.",
   },
   {
     icon: UserCheck,
     title: "Identity-Aware Policy Engine",
-    body: "Apply contextual access controls to humans, services, workloads, and AI agents — with policies that adapt to risk posture in real time.",
+    body: "Apply contextual controls to humans, services, workloads, and AI agents with tenant-scoped policy evaluation and decision records.",
   },
   {
-    icon: Activity,
-    title: "Runtime Monitoring & Enforcement",
-    body: "Observe and enforce security policy at the moment of execution — not hours later in a SIEM. Block, alert, or limit AI actions as they happen.",
+    icon: Route,
+    title: "Provider Routing & Control",
+    body: "Resolve approved AI providers, route OpenAI-compatible and Anthropic-style requests, handle provider credentials, track cost signals, and emit audit events.",
   },
   {
     icon: FileText,
-    title: "Evidence & Decision Traceability",
-    body: "Capture structured records of AI actions, policy decisions, and security events for compliance review, investigation, and accountability.",
+    title: "Action Graph & Evidence",
+    body: "Capture trace IDs, policy decisions, actor context, delegation chains, data classifications, signatures, and chain hashes for reviewable AI activity records.",
   },
   {
-    icon: Zap,
-    title: "Incident Response for AI",
-    body: "Accelerate investigation of AI-related incidents with structured evidence, context-rich telemetry, and response hooks.",
+    icon: Activity,
+    title: "Runtime Response",
+    body: "Connect detection and policy decisions to response actions such as block, redact, route, notify, limit, revoke, or hand off into SOC workflows.",
   },
 ];
 
@@ -54,8 +54,8 @@ export default function Capabilities() {
             <span className="gradient-text-blue">Enterprise AI Risk.</span>
           </h2>
           <p style={{ color: "#8892A4", fontSize: "1.05rem", lineHeight: 1.7 }}>
-            Every capability maps to a concrete AI security workflow: discover usage,
-            decide policy, inspect runtime activity, preserve evidence, and support response.
+            Every capability maps to the integrated runtime loop: identify AI activity,
+            inspect risk, decide policy, enforce the approved response, and prove what happened.
           </p>
         </div>
 

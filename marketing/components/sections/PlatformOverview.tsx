@@ -4,19 +4,19 @@ import Link from "next/link";
 import { ArrowRight, Eye, Shield, Lock, FileSearch, Cpu, Users } from "lucide-react";
 
 const layers = [
-  { icon: Eye, label: "Discover", desc: "Inventory AI tools, agents, workflows, and external model usage across the enterprise" },
-  { icon: Shield, label: "Govern", desc: "Apply policy by tenant, user, workload, model, and risk context" },
-  { icon: Lock, label: "Protect", desc: "Enforce decisions at runtime with detection, blocking, and response hooks" },
-  { icon: FileSearch, label: "Prove", desc: "Capture attributable evidence for audit, compliance, and executive review" },
+  { icon: Eye, label: "Identify", desc: "Understand the actor, tenant, app, agent, provider, model, and data context behind an AI action" },
+  { icon: Shield, label: "Inspect", desc: "Evaluate prompt risk, sensitive data, credentials, provider posture, and policy-relevant signals" },
+  { icon: Lock, label: "Control", desc: "Monitor, warn, block, route, limit, or redact in supported runtime and user workflow paths" },
+  { icon: FileSearch, label: "Prove", desc: "Capture decision-level evidence that explains what happened, what changed, and which policy applied" },
 ];
 
 const protects = [
-  { icon: Cpu, label: "AI Systems & Models" },
-  { icon: Users, label: "AI Agents & Workflows" },
+  { icon: Users, label: "Users & Identities" },
+  { icon: Cpu, label: "Models & Providers" },
   { icon: Lock, label: "Applications & APIs" },
-  { icon: Shield, label: "Identities & Workloads" },
-  { icon: Eye, label: "Data Pipelines" },
-  { icon: FileSearch, label: "Runtime Environments" },
+  { icon: Shield, label: "Agents & Workloads" },
+  { icon: Eye, label: "Data & Prompts" },
+  { icon: FileSearch, label: "Evidence & Audit Trails" },
 ];
 
 export default function PlatformOverview() {
@@ -36,13 +36,13 @@ export default function PlatformOverview() {
         <div style={{ textAlign: "center", maxWidth: 700, margin: "0 auto 64px" }}>
           <div className="label-tag" style={{ justifyContent: "center", marginBottom: 16 }}>The Platform</div>
           <h2 className="section-headline" style={{ marginBottom: 16 }}>
-            One Unified Layer for{" "}
-            <span className="gradient-text-blue">AI Security & Trust.</span>
+            An AI Security Runtime for{" "}
+            <span className="gradient-text-blue">Control and Proof.</span>
           </h2>
           <p style={{ color: "#8892A4", fontSize: "1.05rem", lineHeight: 1.7 }}>
-            CyberArmor AI connects visibility, policy, enforcement, and evidence
-            into one operational system for AI security. Not just a reporting
-            layer. A control layer.
+            CyberArmor.AI connects detection, policy, routing, identity, redaction,
+            response, audit, and evidence into one operating model. It is not
+            evidence alone. It is protection-backed evidence.
           </p>
         </div>
 
@@ -117,7 +117,7 @@ export default function PlatformOverview() {
         }}>
           <div style={{ textAlign: "center", marginBottom: 32 }}>
             <p style={{ fontSize: 12, fontWeight: 700, color: "#00A3FF", letterSpacing: "0.1em", textTransform: "uppercase" }}>
-              Coverage Across the AI Attack Surface
+              Cross-Layer AI Security Context
             </p>
           </div>
           <div style={{

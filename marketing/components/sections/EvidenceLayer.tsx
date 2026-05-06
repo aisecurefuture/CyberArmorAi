@@ -1,10 +1,10 @@
 import { FileSearch, Link2, Clock, Shield, CheckCircle2 } from "lucide-react";
 
 const evidenceItems = [
-  { icon: Clock, label: "Timestamped Actions", desc: "Every AI decision is logged with precise timestamps and contextual metadata" },
-  { icon: Link2, label: "Causality Chains", desc: "Trace the full chain from user intent to model action to system effect" },
-  { icon: Shield, label: "Policy Attribution", desc: "Every enforcement decision is attributed to a specific rule, identity, and context" },
-  { icon: CheckCircle2, label: "Audit-Ready Records", desc: "Structured evidence output designed for compliance, legal, and forensic review" },
+  { icon: Clock, label: "Timestamped Actions", desc: "AI decisions are logged with precise timestamps and contextual metadata" },
+  { icon: Link2, label: "Causality Chains", desc: "Trace relationships across actors, agents, prompts, policy, response, and provider context" },
+  { icon: Shield, label: "Policy Attribution", desc: "Enforcement decisions are attributed to rule, identity, data classification, and deployment context" },
+  { icon: CheckCircle2, label: "Audit-Ready Records", desc: "Structured evidence output designed for SOC, compliance, legal, and forensic review" },
 ];
 
 export default function EvidenceLayer() {
@@ -28,24 +28,25 @@ export default function EvidenceLayer() {
           <div>
             <div className="label-tag" style={{ marginBottom: 20 }}>
               <FileSearch size={12} />
-              Evidence & Traceability
+              Runtime Evidence & Traceability
             </div>
 
             <h2 className="section-headline" style={{ marginBottom: 20, maxWidth: 520 }}>
-              Every AI Action.
+              Not Just Logs.
               <br />
-              <span className="gradient-text-blue">Observed. Attributed. Provable.</span>
+              <span className="gradient-text-blue">Control You Can Prove.</span>
             </h2>
 
             <p style={{ color: "#8892A4", fontSize: "1.05rem", lineHeight: 1.7, marginBottom: 32 }}>
               When something goes wrong with AI — and it will — security teams need more than alerts.
-              They need a structured, reviewable record of exactly what happened: which model, which agent,
-              which user, under which policy, at what moment.
+              They need a structured, reviewable record of the control decision: which user or agent,
+              which provider or model, what data was involved, which policy applied, and what response ran.
             </p>
 
             <p style={{ color: "#8892A4", fontSize: "1.05rem", lineHeight: 1.7, marginBottom: 40 }}>
-              CyberArmor AI captures decision-level evidence that transforms AI security from a reactive,
-              opaque function into an observable, accountable discipline.
+              CyberArmor.AI captures evidence as part of the runtime control loop. That makes investigations
+              stronger because the proof is connected to the action: blocked, redacted, warned, routed,
+              limited, or allowed.
             </p>
 
             <div style={{
@@ -59,7 +60,7 @@ export default function EvidenceLayer() {
             }}>
               <CheckCircle2 size={16} style={{ color: "#00A3FF" }} />
               <span style={{ fontSize: 14, color: "#ffffff", fontWeight: 500 }}>
-                Tamper-resistant. Audit-ready. Decision-level granularity.
+                Protection-backed. Audit-ready. Decision-level granularity.
               </span>
             </div>
           </div>
@@ -86,25 +87,25 @@ export default function EvidenceLayer() {
                 {[
                   {
                     id: "EVT-00481",
-                    action: "Policy enforcement: BLOCK",
-                    detail: "Unauthorized model call from user:sarah@example.com",
-                    policy: "POL-AI-03: External LLM Restriction",
+                    action: "Policy enforcement: REDACT",
+                    detail: "Credential removed before AI-bound browser prompt submission",
+                    policy: "POL-DLP-04: Redact Secrets",
                     ts: "2026-04-11 09:14:32 UTC",
                     color: "#EF4444",
                   },
                   {
                     id: "EVT-00480",
-                    action: "Agent trust verification: PASS",
-                    detail: "Claims processing agent — identity confirmed, scope validated",
-                    policy: "POL-AGENT-07: Scope Boundary Check",
+                    action: "Provider routing: APPROVED",
+                    detail: "Request routed to approved model path with credential handling",
+                    policy: "POL-ROUTE-02: Approved Provider",
                     ts: "2026-04-11 09:14:28 UTC",
                     color: "#22C55E",
                   },
                   {
                     id: "EVT-00479",
-                    action: "Data classification: FLAGGED",
-                    detail: "PII detected in AI pipeline — finance-reporting workflow",
-                    policy: "POL-DATA-12: PII Egress Control",
+                    action: "Agent trust verification: PASS",
+                    detail: "Claims processing agent identity confirmed and scope validated",
+                    policy: "POL-AGENT-07: Scope Boundary Check",
                     ts: "2026-04-11 09:14:20 UTC",
                     color: "#F59E0B",
                   },

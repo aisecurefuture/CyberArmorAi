@@ -4,9 +4,9 @@ import { ArrowRight, Eye, Shield, Lock, FileSearch, Cpu, Network, UserCheck, Act
 import FinalCTA from "@/components/sections/FinalCTA";
 
 export const metadata: Metadata = {
-  title: "Platform — AI Security & Cyber Trust Architecture",
+  title: "Platform — AI Security Runtime Architecture",
   description:
-    "Explore the CyberArmor AI platform: unified discovery, policy enforcement, runtime protection, and evidence-based trust across every AI system in your enterprise.",
+    "Explore CyberArmor.AI's AI security runtime architecture: detection, policy, routing, identity, enforcement, response, secrets, audit, and protection-backed evidence.",
 };
 
 const layers = [
@@ -16,12 +16,12 @@ const layers = [
     title: "AI Asset Discovery & Inventory",
     color: "#00A3FF",
     description:
-      "You cannot govern what you cannot see. CyberArmor AI continuously discovers and catalogs every AI system, model, API connection, and agent operating across your enterprise environment — authorized or not.",
+      "You cannot control what you cannot see. CyberArmor.AI uses supported endpoint, browser, API, and integration signals to surface AI tools, model calls, provider connections, and agent activity.",
     capabilities: [
-      "Automated discovery of shadow AI tools and unauthorized model connections",
-      "Real-time inventory of AI systems, APIs, agents, and workloads",
-      "Continuous monitoring for new AI deployments and drift detection",
-      "Integration with cloud-native environments, SaaS platforms, and on-prem infrastructure",
+      "Discovery signals for shadow AI tools and unauthorized model connections",
+      "Tenant-scoped inventory views for AI systems, APIs, agents, and workloads",
+      "Monitoring for new AI activity and deployment drift in supported paths",
+      "Expansion across SaaS, identity, cloud, and on-prem sources through design-partner work",
     ],
   },
   {
@@ -30,12 +30,12 @@ const layers = [
     title: "Policy Enforcement Engine",
     color: "#A855F7",
     description:
-      "CyberArmor AI's policy engine translates governance requirements into executable, context-sensitive rules that apply across users, workloads, AI agents, and AI systems — and enforces them automatically.",
+      "CyberArmor.AI translates governance requirements into executable policy decisions tied to tenant, actor, workload, model, provider, data, and risk context.",
     capabilities: [
-      "Role-based, identity-aware policy assignment for AI access and usage",
-      "Context-sensitive rule evaluation based on risk posture, data sensitivity, and user behavior",
-      "Policy inheritance and exception management for large enterprise environments",
-      "Integration with existing IAM, PAM, and access governance systems",
+      "Tenant-scoped policy rules for AI access, routing, redaction, blocking, and monitoring",
+      "Context-sensitive evaluation based on risk posture, data sensitivity, provider, and actor context",
+      "OPA-backed evaluation paths with fallback behavior for pilot validation",
+      "Artifact references and policy outcomes that can be preserved in evidence records",
     ],
   },
   {
@@ -44,12 +44,12 @@ const layers = [
     title: "Runtime Protection",
     color: "#22C55E",
     description:
-      "Runtime protection means acting at the moment of execution — not analyzing logs hours later. CyberArmor AI intercepts AI interactions in real time and takes enforcement action based on live policy evaluation.",
+      "Runtime protection means acting when AI activity happens, not simply reviewing logs later. CyberArmor.AI connects detection and policy to approved enforcement outcomes in supported control points.",
     capabilities: [
-      "Real-time interception of AI API calls, model queries, and agent actions",
-      "Prompt injection detection and blocking before reaching the model layer",
-      "Adaptive enforcement: block, redact in supported paths, alert, limit, or redirect based on risk level",
-      "Protection for AI chatbots, LLM-powered applications, and autonomous workflows",
+      "Inspection of AI API calls, model queries, prompt fields, SDK requests, and agent actions where deployed",
+      "Prompt injection detection, credential leak detection, and sensitive-data inspection",
+      "Adaptive enforcement: monitor, warn, block, redact in supported paths, route, limit, or redirect",
+      "Protection patterns for AI chatbots, LLM-powered applications, developer workflows, and autonomous workflows",
     ],
   },
   {
@@ -58,12 +58,12 @@ const layers = [
     title: "Identity-Aware Trust Controls",
     color: "#F59E0B",
     description:
-      "In AI environments, identity is not just about users. CyberArmor AI applies identity-aware trust controls to humans, services, workloads, and AI agents — creating a unified trust model across the entire AI stack.",
+      "In AI environments, identity is not just about users. CyberArmor.AI models humans, services, workloads, and AI agents so security teams can reason about who or what acted.",
     capabilities: [
-      "Trust verification for AI agents: identity confirmation, scope validation, behavioral bounds",
-      "Service and workload identity management for AI API access",
+      "Agent registration, tenant scoping, owner metadata, allowed and denied tools, delegation chains, and revocation paths",
+      "Service and workload context for AI API access and provider use",
       "Cross-domain trust decisions spanning human, non-human, and AI actor types",
-      "Integration with existing identity providers and zero trust frameworks",
+      "Integration patterns for identity providers and zero trust programs as pilots mature",
     ],
   },
   {
@@ -72,12 +72,12 @@ const layers = [
     title: "Evidence & Decision Traceability",
     color: "#EF4444",
     description:
-      "Every AI interaction, policy decision, and enforcement action generates structured, tamper-resistant evidence. CyberArmor AI gives security, compliance, and legal teams a reviewable record of exactly what happened — and why.",
+      "CyberArmor.AI is designed to preserve evidence that is attached to controls: actor, request, provider, data classification, policy decision, response action, and downstream trace context.",
     capabilities: [
-      "Decision-level telemetry for every AI action, model call, and agent behavior",
-      "Tamper-resistant audit log optimized for compliance and legal review",
+      "Decision-level telemetry for AI actions, model calls, and agent behavior in monitored paths",
+      "Audit-chain modeling with trace IDs, span IDs, chain hashes, signatures, and previous-event references",
       "Incident response acceleration through structured, context-rich evidence",
-      "Exportable evidence formats compatible with SIEM, SOAR, and GRC platforms",
+      "Evidence export patterns for SOC, audit, legal, compliance, and executive review",
     ],
   },
   {
@@ -86,12 +86,12 @@ const layers = [
     title: "Detection, Enforcement & Response",
     color: "#06B6D4",
     description:
-      "CyberArmor AI closes the loop from detection to enforcement to response. When a threat or policy violation is identified, the platform acts — and gives security operations teams the context they need to respond decisively.",
+      "CyberArmor.AI closes the loop from detection to policy to enforcement to response. When a threat or policy violation is identified, the platform records context and can trigger approved actions.",
     capabilities: [
-      "Automated response playbooks for AI-specific threat scenarios",
-      "Bi-directional integration with SIEM and SOAR platforms",
+      "Response actions for AI-specific threat scenarios, including block, notify, ticket, webhook, and containment patterns",
+      "SIEM/SOAR integration workflows moving from pilot into production hardening",
       "Structured alert context: policy violated, actor identity, action taken, evidence ID",
-      "Containment capabilities: redaction-mode response, agent suspension, scope reduction, access revocation",
+      "Containment capabilities: redaction-mode response, agent suspension, scope reduction, access revocation, and routing changes",
     ],
   },
 ];
@@ -120,15 +120,16 @@ export default function PlatformPage() {
             fontSize: "clamp(2.4rem, 5vw, 3.6rem)",
             marginBottom: 24, maxWidth: 800, margin: "0 auto 24px",
           }}>
-            A Unified Cyber Trust Layer<br />
-            <span className="gradient-text-blue">for Enterprise AI.</span>
+            AI Runtime Control<br />
+            <span className="gradient-text-blue">with Evidence Built In.</span>
           </h1>
           <p style={{
             fontSize: "1.1rem", color: "#8892A4", lineHeight: 1.75,
             maxWidth: 680, margin: "0 auto 40px",
           }}>
-            CyberArmor AI is not a collection of point tools. It is a purpose-built platform that connects discovery,
-            governance, runtime protection, identity trust, and evidence capture into a single operational system.
+            CyberArmor.AI is not a collection of point tools or a reporting layer.
+            It connects discovery, detection, policy, routing, identity, enforcement,
+            response, secrets, audit, and evidence into a single runtime control system.
           </p>
           <div style={{ display: "flex", gap: 14, justifyContent: "center", flexWrap: "wrap" }}>
             <Link href="/contact" className="btn-primary">
@@ -152,10 +153,10 @@ export default function PlatformPage() {
             textAlign: "center",
           }}>
             <p style={{ fontSize: 12, color: "#00A3FF", fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 32 }}>
-              Platform Architecture — Unified Cyber Trust System
+              Platform Architecture — AI Security Runtime
             </p>
             <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 0, flexWrap: "wrap" }}>
-              {["Discover", "Classify", "Govern", "Enforce", "Monitor", "Prove"].map((step, i, arr) => (
+              {["Identify", "Inspect", "Decide", "Control", "Respond", "Prove"].map((step, i, arr) => (
                 <div key={step} style={{ display: "flex", alignItems: "center" }}>
                   <div style={{
                     background: "rgba(0,163,255,0.08)",
@@ -174,7 +175,7 @@ export default function PlatformPage() {
             </div>
             <div className="glow-line" style={{ margin: "40px 0 32px" }} />
             <div style={{ display: "flex", justifyContent: "center", gap: 12, flexWrap: "wrap" }}>
-              {["AI Systems", "AI Agents", "Applications & APIs", "Data Pipelines", "Identities", "Runtime Environments"].map((layer) => (
+              {["Users", "Applications", "AI Agents", "APIs", "Providers", "Models", "Data", "Evidence"].map((layer) => (
                 <span key={layer} style={{
                   background: "#12151E",
                   border: "1px solid #1E2335",
@@ -188,7 +189,7 @@ export default function PlatformPage() {
               ))}
             </div>
             <p style={{ fontSize: 12, color: "#4A5568", marginTop: 16 }}>
-              CyberArmor AI protects across all layers simultaneously — not one at a time.
+              Coverage depends on deployment pattern; the architecture is designed to connect the layers as control points mature.
             </p>
           </div>
         </div>
@@ -199,19 +200,19 @@ export default function PlatformPage() {
         <div className="container-wide">
           <div style={{ textAlign: "center", maxWidth: 680, margin: "0 auto 64px" }}>
             <h2 className="section-headline" style={{ marginBottom: 16 }}>
-              Six Layers of Protection.<br />
-              <span className="gradient-text-blue">One Integrated System.</span>
+              Six Runtime Capabilities.<br />
+              <span className="gradient-text-blue">One Integrated Control Loop.</span>
             </h2>
             <p style={{ color: "#8892A4", fontSize: "1.05rem", lineHeight: 1.7 }}>
-              Each capability layer is designed to operate independently or as part of the unified platform —
-              giving enterprises a deployment path that meets them where they are.
+              Each capability can support a focused pilot, but the real value appears when the pieces work together:
+              identity, detection, policy, routing, response, and evidence in one explainable flow.
             </p>
           </div>
 
           <div style={{ display: "flex", flexDirection: "column", gap: 32 }}>
             {layers.map(({ id, icon: Icon, title, color, description, capabilities }) => (
               <div key={id} id={id} className="card-base" style={{ padding: "44px 48px" }}>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 48, alignItems: "start" }}>
+                <div className="platform-layer-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 48, alignItems: "start" }}>
                   <div>
                     <div style={{
                       width: 52, height: 52,
@@ -268,7 +269,7 @@ export default function PlatformPage() {
               <span className="gradient-text-blue">Existing Stack.</span>
             </h2>
             <p style={{ color: "#8892A4", lineHeight: 1.7 }}>
-              CyberArmor AI extends your security investment — integrating with the identity, cloud,
+              CyberArmor.AI extends your security investment — integrating with the identity, cloud,
               and security platforms your team already relies on.
             </p>
           </div>

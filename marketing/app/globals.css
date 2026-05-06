@@ -254,9 +254,19 @@
 @media (max-width: 1023px) {
   .use-cases-grid    { grid-template-columns: 1fr !important; }
   .evidence-grid     { grid-template-columns: 1fr !important; }
+  .protection-proof-grid { grid-template-columns: 1fr !important; }
   .whynow-grid       { grid-template-columns: 1fr !important; }
   .about-mission-grid{ grid-template-columns: 1fr !important; }
   .contact-grid      { grid-template-columns: 1fr !important; }
+  .platform-layer-grid { grid-template-columns: 1fr !important; gap: 28px !important; }
+  .solution-card-grid  { grid-template-columns: 1fr !important; gap: 28px !important; }
+  .industry-card-grid  { grid-template-columns: 1fr !important; gap: 28px !important; }
+  .timeline-step-grid  { grid-template-columns: 1fr !important; gap: 16px !important; }
+  .timeline-card,
+  .timeline-indicator,
+  .timeline-spacer { grid-column: 1 !important; }
+  .timeline-spacer { display: none !important; }
+  .timeline-indicator { justify-content: flex-start !important; }
   .use-case-detail   { position: static !important; top: auto !important; }
 }
 
@@ -293,6 +303,9 @@
     padding: 14px 16px !important;
   }
   .use-case-detail {
+    padding: 24px !important;
+  }
+  .card-base {
     padding: 24px !important;
   }
   section { overflow-x: hidden; }

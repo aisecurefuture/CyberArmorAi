@@ -55,7 +55,7 @@ export default function FinalCTA() {
             marginBottom: 20,
             color: "#ffffff",
           }}>
-            Ready to Secure Your Enterprise AI?
+            Ready to Control and Prove AI Activity?
             <br />
             <span className="gradient-text-blue">Let&apos;s Talk.</span>
           </h2>
@@ -67,9 +67,9 @@ export default function FinalCTA() {
             maxWidth: 560,
             margin: "0 auto 40px",
           }}>
-            See how CyberArmor AI maps to your environment, your risks, and your security program.
-            We talk to CISOs, architects, and security leaders — not to sell you something, but to help you
-            understand what&apos;s actually at stake.
+            See how CyberArmor.AI maps to your AI activity, data leakage risk,
+            agent workflows, provider usage, runtime controls, and evidence needs.
+            The best demos start with the control problem you already have.
           </p>
 
           <div style={{ display: "flex", gap: 14, justifyContent: "center", flexWrap: "wrap" }}>

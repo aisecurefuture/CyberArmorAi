@@ -3,6 +3,7 @@ import Hero from "@/components/sections/Hero";
 import TrustBand from "@/components/sections/TrustBand";
 import ProblemStatement from "@/components/sections/ProblemStatement";
 import PlatformOverview from "@/components/sections/PlatformOverview";
+import ProtectionBackedEvidence from "@/components/sections/ProtectionBackedEvidence";
 import ProductAvailability from "@/components/sections/ProductAvailability";
 import FrameworkAlignment from "@/components/sections/FrameworkAlignment";
 import Capabilities from "@/components/sections/Capabilities";
@@ -17,9 +18,9 @@ import FAQ from "@/components/sections/FAQ";
 import FinalCTA from "@/components/sections/FinalCTA";
 
 export const metadata: Metadata = {
-  title: "CyberArmor AI — Enterprise AI Security & Cyber Trust Platform",
+  title: "CyberArmor.AI — AI Security Runtime for Governed Enterprise AI",
   description:
-    "One control layer for enterprise AI. CyberArmor.AI unifies discovery, policy enforcement, runtime protection, and evidence so teams can stop pre-breach AI risk before it becomes exposure.",
+    "CyberArmor.AI controls and proves enterprise AI activity across users, applications, agents, APIs, providers, and models with runtime enforcement, redaction, routing, identity, and decision-level evidence.",
 };
 
 export default function HomePage() {
@@ -29,6 +30,7 @@ export default function HomePage() {
       <TrustBand />
       <ProblemStatement />
       <PlatformOverview />
+      <ProtectionBackedEvidence />
       <ProductAvailability />
       <FrameworkAlignment />
       <Capabilities />

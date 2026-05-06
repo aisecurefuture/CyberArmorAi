@@ -105,15 +105,15 @@ export default function Hero() {
           <div style={{ marginBottom: 28, display: "flex", justifyContent: "center", padding: "0 8px" }}>
             <div className="label-tag" style={{ gap: 6, textAlign: "center", whiteSpace: "nowrap", overflow: "hidden", maxWidth: "100%", textOverflow: "ellipsis" }}>
               <ShieldCheck size={11} style={{ flexShrink: 0 }} />
-              <span>Patent-pending architecture for AI trust evidence</span>
+              <span>Patent-pending AI security runtime architecture</span>
             </div>
           </div>
 
           {/* Hero headline */}
           <h1 className="hero-headline" style={{ marginBottom: 24, color: "#ffffff", maxWidth: "100%" }}>
-            One <span className="gradient-text-blue">Control Layer</span>
+            AI <span className="gradient-text-blue">Security Runtime</span>
             <br />
-            for Enterprise AI.
+            for Governed Enterprise AI.
           </h1>
 
           {/* Subheadline */}
@@ -126,10 +126,10 @@ export default function Hero() {
             margin: "0 auto 40px",
             overflowWrap: "break-word",
           }}>
-            Govern AI at the pace it&apos;s being adopted. CyberArmor AI unifies
-            discovery, policy enforcement, runtime protection, and auditable
-            evidence so security teams can stop pre-breach AI risk before it
-            turns into enterprise exposure.
+            CyberArmor.AI controls and proves AI activity across users,
+            applications, agents, APIs, providers, and models. Inspect the
+            request, enforce the policy, redact or block sensitive data in
+            supported paths, and preserve decision-level evidence.
           </p>
 
           {/* CTAs */}
@@ -151,9 +151,9 @@ export default function Hero() {
             flexWrap: "wrap",
           }}>
             {[
-              "Built for security-led enterprises",
-              "Runtime enforcement, not policy theater",
-              "Evidence for agents, apps, policies, and data flows",
+              "Runtime control, not governance theater",
+              "Redaction, routing, identity, policy, and audit evidence",
+              "Built for security-led pilots and design partners",
             ].map((t) => (
               <div key={t} style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <div style={{
@@ -203,16 +203,16 @@ export default function Hero() {
                 alignItems: "center",
                 paddingLeft: 12,
               }}>
-                <span style={{ fontSize: 12, color: "#4A5568" }}>cyberarmor.ai / platform / trust-dashboard</span>
+                <span style={{ fontSize: 12, color: "#4A5568" }}>cyberarmor.ai / platform / runtime-control</span>
               </div>
             </div>
 
             {/* Mock dashboard */}
             <div className="hero-preview-grid" style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, marginBottom: 20 }}>
               {[
-                { label: "Discovery", value: "Inventory", delta: "Endpoint, browser, API, and integration signals", color: "#00A3FF" },
-                { label: "Policy", value: "Decide", delta: "Monitor, alert, limit, or block by context", color: "#22C55E" },
-                { label: "Evidence", value: "Prove", delta: "Decision logs for audit and investigation", color: "#A855F7" },
+                { label: "Actor", value: "Identified", delta: "Tenant, user, app, agent, provider, and model context", color: "#00A3FF" },
+                { label: "Policy", value: "Enforced", delta: "Monitor, warn, block, route, limit, or redact by context", color: "#22C55E" },
+                { label: "Evidence", value: "Recorded", delta: "Decision trace for SOC, audit, legal, and leadership", color: "#A855F7" },
               ].map((stat) => (
                 <div key={stat.label} style={{
                   background: "#12151E",
@@ -234,9 +234,9 @@ export default function Hero() {
             {/* Activity feed mock */}
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {[
-                { type: "BLOCKED", msg: "Prompt injection attempt intercepted — Finance chatbot", time: "2s ago", color: "#EF4444" },
-                { type: "ALERT", msg: "Shadow AI tool detected: unapproved LLM API call from Ops team", time: "14s ago", color: "#F59E0B" },
-                { type: "VERIFIED", msg: "AI agent trust attestation confirmed — Claims processing workflow", time: "1m ago", color: "#22C55E" },
+                { type: "REDACTED", msg: "Credential removed before AI submission — browser prompt", time: "2s ago", color: "#22C55E" },
+                { type: "BLOCKED", msg: "Prompt injection attempt stopped — finance assistant", time: "14s ago", color: "#EF4444" },
+                { type: "ROUTED", msg: "Provider policy applied — approved model path selected", time: "1m ago", color: "#00A3FF" },
               ].map((item) => (
                 <div key={item.msg} style={{
                   display: "flex", alignItems: "center", gap: 12,

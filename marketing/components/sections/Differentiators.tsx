@@ -1,31 +1,31 @@
 const diffs = [
   {
     number: "01",
-    title: "Governance That Actually Enforces",
+    title: "Governance That Becomes Runtime Control",
     body:
-      "Most governance products stop at visibility, questionnaires, or policy documentation. CyberArmor AI ties governance to runtime decisioning so controls can be enforced when AI use actually happens.",
-    tag: "Governance → Enforcement",
+      "Most governance products stop at visibility, questionnaires, or policy documentation. CyberArmor.AI ties governance to runtime decisioning so policy can result in monitor, warn, block, route, limit, or redact actions where supported.",
+    tag: "Policy to Action",
   },
   {
     number: "02",
-    title: "Evidence-Driven Trust — Not Assumptions",
+    title: "Protection-Backed Evidence",
     body:
-      "AI actions, policy decisions, and control outcomes are captured as structured evidence so security, legal, and compliance teams can review what happened without relying on memory or screenshots.",
-    tag: "Decision Traceability",
+      "Evidence is valuable because it is bound to control. CyberArmor.AI records who or what acted, which policy applied, what response ran, what data classification was involved, and why the decision happened.",
+    tag: "Control + Proof",
   },
   {
     number: "03",
-    title: "Cross-Layer Coverage by Design",
+    title: "Cross-Layer Causality by Design",
     body:
-      "CyberArmor AI brings together a control plane, policy engine, AI router, endpoint signals, agent identity, audit, compliance, and integration paths so teams can validate coverage layer by layer.",
-    tag: "Layered Architecture",
+      "CyberArmor.AI brings together detection, policy, AI routing, endpoint signals, browser and IDE workflows, agent identity, secrets, response, audit, and compliance evidence so teams can reconstruct the chain.",
+    tag: "Action Graph",
   },
   {
     number: "04",
-    title: "Built for Enterprise Operations, Not Lab Demos",
+    title: "Honest Platform Boundaries",
     body:
-      "Enterprise AI programs inherit hybrid environments, uneven ownership, legacy systems, and limited security capacity. CyberArmor AI is shaped around that operating reality through controlled pilots and design-partner feedback.",
-    tag: "Operational Fit",
+      "Enterprise buyers trust specific claims. CyberArmor.AI separates pilot-ready capabilities from roadmap expansion, because a security runtime has to be credible before it can be trusted.",
+    tag: "Buyer-Safe Roadmap",
   },
 ];
 
@@ -41,16 +41,16 @@ export default function Differentiators() {
 
       <div className="container-wide" style={{ position: "relative" }}>
         <div style={{ textAlign: "center", maxWidth: 680, margin: "0 auto 64px" }}>
-          <div className="label-tag" style={{ justifyContent: "center", marginBottom: 16 }}>Why CyberArmor AI</div>
+          <div className="label-tag" style={{ justifyContent: "center", marginBottom: 16 }}>Why CyberArmor.AI</div>
           <h2 className="section-headline" style={{ marginBottom: 16 }}>
             This Is What{" "}
             <span className="gradient-text-blue">Different Looks Like.</span>
           </h2>
           <p style={{ color: "#8892A4", fontSize: "1.05rem", lineHeight: 1.7 }}>
             The AI security category is getting crowded with point products and
-            retrofitted tooling. CyberArmor AI is aimed at the harder problem:
-            turning AI governance into operating controls that stand up in real
-            enterprise environments.
+            retrofitted tooling. CyberArmor.AI is aimed at the harder problem:
+            making AI activity controllable, attributable, and provable across
+            the places where enterprise AI actually runs.
           </p>
         </div>
 

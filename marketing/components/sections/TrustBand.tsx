@@ -2,10 +2,10 @@ import { ShieldCheck, Lock, Eye, FileCheck, Zap } from "lucide-react";
 
 const signals = [
   { icon: ShieldCheck, text: "Security-Led Design Partner Motion" },
-  { icon: Eye, text: "AI Usage Visibility" },
-  { icon: Lock, text: "Runtime Policy Decisions" },
-  { icon: FileCheck, text: "Decision-Level Evidence" },
-  { icon: Zap, text: "Response Hooks for AI Events" },
+  { icon: Eye, text: "Cross-Layer AI Context" },
+  { icon: Lock, text: "Runtime Policy Control" },
+  { icon: Zap, text: "Credential Redaction in Supported Paths" },
+  { icon: FileCheck, text: "Protection-Backed Evidence" },
 ];
 
 export default function TrustBand() {

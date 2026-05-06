@@ -9,16 +9,16 @@ const useCases = [
     icon: Ghost,
     title: "Shadow AI Discovery & Governance",
     role: "CISO / Head of Security",
-    pain: "Employees and vendors are connecting to AI tools, APIs, and models without security review. You have no inventory, no control, and no audit trail.",
-    solution: "CyberArmor AI continuously discovers AI usage across your organization — unauthorized tools, API connections, model calls, and more — and brings them under governed policy automatically.",
+    pain: "Employees and vendors are connecting to AI tools, APIs, and models without security review. You have limited inventory, uneven controls, and little evidence when usage crosses policy.",
+    solution: "CyberArmor.AI uses supported endpoint, browser, API, and integration signals to surface AI usage, connect it to policy, and preserve evidence as coverage expands with each deployment path.",
     cta: "Explore Shadow AI Control",
   },
   {
     icon: Bot,
     title: "AI Agent Trust & Control",
     role: "Security Architect",
-    pain: "Autonomous AI agents are being deployed to automate workflows, access systems, and make decisions at scale — without identity controls or behavioral bounds.",
-    solution: "CyberArmor AI verifies agent identity, enforces behavioral policy, limits blast radius, and generates trust attestations for every agent action in your environment.",
+    pain: "Autonomous AI agents are being deployed to automate workflows, access systems, and make decisions at scale without consistent identity, delegation, or revocation controls.",
+    solution: "CyberArmor.AI gives agent workflows an identity and evidence model: registration, tenant scope, allowed tools, owner metadata, delegation context, and control outcomes.",
     cta: "Explore Agent Security",
   },
   {
@@ -26,15 +26,15 @@ const useCases = [
     title: "Prompt Injection & Misuse Defense",
     role: "Head of AppSec",
     pain: "AI chatbots and LLM-powered applications are being targeted by prompt injection, jailbreak attempts, and adversarial inputs designed to extract data or subvert controls.",
-    solution: "CyberArmor AI detects adversarial prompt patterns in real time, blocks malicious inputs before they reach the model, and logs every attempt with full forensic context.",
+    solution: "CyberArmor.AI detects adversarial prompt patterns and connects the result to policy outcomes, including monitor, warn, block, or evidence capture depending on the approved control point.",
     cta: "Explore Prompt Defense",
   },
   {
     icon: Database,
     title: "Sensitive Data Protection in AI Workflows",
     role: "Data Protection Officer / CISO",
-    pain: "AI systems are processing PII, financial records, and regulated data without data residency controls, consent boundaries, or visibility into what's being shared with which model.",
-    solution: "CyberArmor AI classifies data entering AI pipelines, enforces data policy at the point of ingestion, and prevents unauthorized processing or exfiltration through AI interfaces.",
+    pain: "AI systems are receiving credentials, keys, PII, financial records, and regulated data before traditional DLP or review workflows can intervene.",
+    solution: "CyberArmor.AI can inspect AI-bound content and apply optional redaction-mode responses for supported secrets, PII, PCI, NACHA, NPI, and non-public indicators while keeping raw secret previews out of evidence.",
     cta: "Explore Data Protection",
   },
   {
@@ -42,7 +42,7 @@ const useCases = [
     title: "Secure Enterprise AI Adoption",
     role: "CIO / CTO",
     pain: "Your organization wants to move fast on AI, but security and legal are blocking every initiative because there's no framework for safe, accountable AI deployment.",
-    solution: "CyberArmor AI provides the technical foundation for governed AI adoption — policy rails, audit trails, and runtime enforcement that let business move fast without security debt.",
+    solution: "CyberArmor.AI provides the technical foundation for governed AI adoption: runtime policy, provider control, redaction, audit evidence, and a staged deployment path that does not require replacing the whole security stack.",
     cta: "Explore AI Enablement",
   },
   {
@@ -50,8 +50,8 @@ const useCases = [
     title: "Evidence-Based Incident Investigation",
     role: "Security Operations / IR Teams",
     pain: "When an AI-related incident occurs — a data leak, a compromised agent, a policy bypass — security teams have no structured evidence to reconstruct what happened.",
-    solution: "CyberArmor AI captures decision-level telemetry for every AI interaction, creating a tamper-resistant record that makes AI-related incident response fast, precise, and defensible.",
-    cta: "Explore Evidence Layer",
+    solution: "CyberArmor.AI captures decision-level telemetry and action context so teams can reconstruct actor, policy, data classification, response action, and evidence lineage for AI-related investigations.",
+    cta: "Explore Runtime Evidence",
   },
 ];
 
@@ -69,7 +69,8 @@ export default function UseCases() {
             <span className="gradient-text-blue">Real Buyers. Real Answers.</span>
           </h2>
           <p style={{ color: "#8892A4", fontSize: "1.05rem", lineHeight: 1.7 }}>
-            CyberArmor AI is built around the security challenges that enterprise teams are already facing — not hypothetical futures.
+            CyberArmor.AI is built around the security challenges enterprise teams are already facing:
+            AI data leakage, prompt misuse, agent identity, provider sprawl, and the lack of proof when AI activity crosses a boundary.
           </p>
         </div>
 

@@ -1,45 +1,45 @@
 const steps = [
   {
     step: "01",
-    phase: "Discover",
-    title: "Map Your Entire AI Attack Surface",
+    phase: "Identify",
+    title: "Attribute the AI Action",
     points: [
-      "Detect all AI tools, models, and APIs in use across every user and workload",
-      "Identify ungoverned connections, shadow AI deployments, and unmanaged agents",
-      "Build a continuous, real-time inventory of your enterprise AI ecosystem",
+      "Connect AI activity to tenant, actor, app, agent, provider, model, and request context where available",
+      "Surface unreviewed AI tools, model calls, browser activity, endpoints, and integration signals",
+      "Create the foundation for policy decisions that are attributable instead of anonymous",
     ],
     color: "#00A3FF",
   },
   {
     step: "02",
-    phase: "Govern",
-    title: "Define and Enforce Policy Across the AI Stack",
+    phase: "Inspect",
+    title: "Score Risk and Resolve Policy",
     points: [
-      "Set identity-aware, context-sensitive policies for AI access and usage",
-      "Apply rules across users, services, workloads, agents, and third-party AI systems",
-      "Integrate with existing IAM, SIEM, and security toolchains",
+      "Evaluate prompt injection, sensitive data, credential leakage, provider posture, and tenant policy",
+      "Use policy logic to decide whether the action should be monitored, warned, blocked, routed, limited, or redacted",
+      "Preserve the reason code and policy context so the decision can be reviewed later",
     ],
     color: "#A855F7",
   },
   {
     step: "03",
-    phase: "Protect",
-    title: "Enforce in Real Time at the Point of Execution",
+    phase: "Control",
+    title: "Enforce the Approved Response",
     points: [
-      "Block prompt injection, data leakage, and unauthorized AI actions at runtime",
-      "Adaptively respond to risk signals — limit, alert, or quarantine automatically",
-      "Protect AI applications, APIs, and orchestrated agent workflows simultaneously",
+      "Block high-risk actions, redact supported sensitive values, route to approved providers, or warn users depending on policy",
+      "Apply controls in supported browser, endpoint, IDE, Office, SDK, RASP, provider, and runtime paths",
+      "Connect response actions to incidents, telemetry, audit events, and downstream SOC workflows",
     ],
     color: "#22C55E",
   },
   {
     step: "04",
     phase: "Prove",
-    title: "Generate Evidence. Demonstrate Trust.",
+    title: "Generate Evidence That Explains the Control",
     points: [
-      "Capture a structured, tamper-resistant record of every AI decision and action",
-      "Provide security teams, auditors, and compliance functions with reviewable evidence",
-      "Build organizational trust in AI adoption with documented, accountable controls",
+      "Capture structured records of actor, request, model/provider context, data classification, policy, decision, and response",
+      "Give SOC, AppSec, legal, compliance, and executive teams reviewable AI activity evidence",
+      "Build organizational trust in AI adoption with controls that can be demonstrated, not merely asserted",
     ],
     color: "#F59E0B",
   },
@@ -54,12 +54,13 @@ export default function HowItWorks() {
         <div style={{ textAlign: "center", maxWidth: 680, margin: "0 auto 64px" }}>
           <div className="label-tag" style={{ justifyContent: "center", marginBottom: 16 }}>How It Works</div>
           <h2 className="section-headline" style={{ marginBottom: 16 }}>
-            From Unknown Risk to{" "}
-            <span className="gradient-text-blue">Operational Trust.</span>
+            From AI Activity to{" "}
+            <span className="gradient-text-blue">Controlled Evidence.</span>
           </h2>
           <p style={{ color: "#8892A4", fontSize: "1.05rem", lineHeight: 1.7 }}>
-            CyberArmor AI follows a clear four-phase operational model that takes you from AI blind spots to
-            a fully governed, evidence-backed security posture — at enterprise pace.
+            CyberArmor.AI follows a practical runtime model: attribute the AI action,
+            inspect risk, enforce the policy, and preserve evidence. That is the loop
+            security teams need to make AI governance operational.
           </p>
         </div>
 
@@ -84,10 +85,10 @@ export default function HowItWorks() {
                   gap: 32,
                   alignItems: "center",
                 }}
-                className="lg:grid-flow-col"
+                className="timeline-step-grid"
               >
                 {/* Left content (even indices) */}
-                <div style={{
+                <div className="timeline-card" style={{
                   gridColumn: i % 2 === 0 ? 1 : 3,
                   background: "#0F1117",
                   border: "1px solid #1E2335",
@@ -124,7 +125,7 @@ export default function HowItWorks() {
                 </div>
 
                 {/* Center step indicator */}
-                <div style={{
+                <div className="timeline-indicator" style={{
                   gridColumn: 2,
                   display: "flex",
                   alignItems: "center",
@@ -143,8 +144,8 @@ export default function HowItWorks() {
                 </div>
 
                 {/* Empty right column for alternating layout */}
-                {i % 2 === 0 && <div style={{ gridColumn: 3 }} />}
-                {i % 2 !== 0 && <div style={{ gridColumn: 1 }} />}
+                {i % 2 === 0 && <div className="timeline-spacer" style={{ gridColumn: 3 }} />}
+                {i % 2 !== 0 && <div className="timeline-spacer" style={{ gridColumn: 1 }} />}
               </div>
             ))}
           </div>

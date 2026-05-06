@@ -3,7 +3,9 @@ import { CheckCircle2, Clock3, FileCheck2, ShieldCheck } from "lucide-react";
 const availableToday = [
   "AI request monitoring and policy decision logging",
   "Prompt-risk, credential leak, and sensitive-data inspection",
-  "Redaction-mode policy decisions for supported SDK and provider paths",
+  "Redaction-mode policy decisions for supported browser, endpoint, SDK, extension, and provider paths",
+  "AI provider routing, provider resolution, credential-handling, and audit event patterns",
+  "Agent identity registration, tenant scoping, delegation metadata, and revocation paths",
   "Endpoint-assisted AI tool and connection discovery",
   "Tenant-scoped policy builder, artifacts, and API-key flows",
   "Bootstrap onboarding for agents, SDKs, and extensions",
@@ -15,14 +17,15 @@ const pilotPhase = [
   "Agent trust verification and delegation-chain workflows",
   "Proof Vault evidence packaging and external audit exports",
   "Production SIEM/SOAR integration workflows",
-  "Advanced runtime enforcement across more enterprise control points",
+  "Advanced fail-closed runtime enforcement across more enterprise control points",
+  "Native PQC deployment validation where customer environments support required cryptographic dependencies",
   "Industry-specific compliance and reporting packs",
 ];
 
 const proofPoints = [
-  { icon: ShieldCheck, label: "Control plane, policy engine, runtime, and AI router services exist in the platform." },
-  { icon: FileCheck2, label: "Audit, compliance, and evidence paths are part of the operating model, not just marketing copy." },
-  { icon: CheckCircle2, label: "Endpoint agents, browser/IDE extensions, SDKs, and RASP surfaces support pilot validation." },
+  { icon: ShieldCheck, label: "Control plane, detection, policy, runtime, AI router, agent identity, and secrets-service components exist in the platform." },
+  { icon: FileCheck2, label: "Audit, action graph, compliance, and evidence paths are tied to enforcement decisions, not just reporting copy." },
+  { icon: CheckCircle2, label: "Endpoint agents, browser/IDE/Office extensions, SDKs, and RASP surfaces support pilot validation." },
 ];
 
 function ListColumn({
@@ -78,9 +81,10 @@ export default function ProductAvailability() {
             <span className="gradient-text-blue">What Is Deployable</span> and What Is Being Expanded.
           </h2>
           <p style={{ color: "#8892A4", fontSize: "1.05rem", lineHeight: 1.75 }}>
-            CyberArmor AI is being built with security-led design partners and controlled pilot deployments.
-            The platform already includes working control, policy, detection, audit, endpoint, and onboarding
-            paths. Some broader enterprise workflows are intentionally marked as pilot-stage while they mature.
+            CyberArmor.AI is being built with security-led design partners and controlled pilot deployments.
+            The platform already includes working control, detection, policy, redaction, routing, identity,
+            audit, endpoint, and onboarding paths. Broader enterprise workflows are intentionally marked
+            as pilot-stage while they mature.
           </p>
         </div>
 

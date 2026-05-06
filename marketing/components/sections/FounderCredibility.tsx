@@ -29,12 +29,12 @@ export default function FounderCredibility({ compact = false }: { compact?: bool
               <BadgeCheck size={12} /> Founder-Led
             </div>
             <h2 style={{ color: "#ffffff", fontSize: "clamp(1.8rem, 3.2vw, 2.6rem)", lineHeight: 1.12, fontWeight: 800, letterSpacing: "-0.04em", marginBottom: 18 }}>
-              Built by a Security Practitioner for Teams That Need Proof.
+              Built by a Security Practitioner for Teams That Need Control and Proof.
             </h2>
             <p style={{ color: "#8892A4", fontSize: 15.5, lineHeight: 1.75, marginBottom: 16 }}>
               CyberArmor.AI is founder-led by Patrick Kelly and built from the operating reality of
-              enterprise security: policy has to become enforcement, incidents need evidence, and AI
-              adoption cannot wait for a perfect governance program.
+              enterprise security: policy has to become enforcement, sensitive data has to be protected
+              before exposure, incidents need evidence, and AI adoption cannot wait for a perfect governance program.
             </p>
             <p style={{ color: "#A0AEC0", fontSize: 14.5, lineHeight: 1.7, marginBottom: 24 }}>
               The company is intentionally transparent about product maturity, design-partner work,

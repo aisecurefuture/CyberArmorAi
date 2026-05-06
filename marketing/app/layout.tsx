@@ -14,11 +14,11 @@ const inter = Inter({
 export const metadata: Metadata = {
   metadataBase: new URL("https://cyberarmor.ai"),
   title: {
-    default: "CyberArmor.AI — The Enterprise AI Security & Cyber Trust Platform",
+    default: "CyberArmor.AI — AI Security Runtime for Governed Enterprise AI",
     template: "%s | CyberArmor.AI",
   },
   description:
-    "CyberArmor.AI is the unified AI security and cyber trust platform that helps enterprises govern, protect, and operationalize trust across AI systems, agents, applications, and data — at scale.",
+    "CyberArmor.AI helps enterprises control and prove AI activity with detection, policy enforcement, redaction, routing, identity, response, audit, and decision-level evidence.",
   keywords: [
     "AI security platform",
     "enterprise AI security",
@@ -38,9 +38,9 @@ export const metadata: Metadata = {
     locale: "en_US",
     url: "https://cyberarmor.ai",
     siteName: "CyberArmor.AI",
-    title: "CyberArmor.AI — Govern, Protect, and Prove Trust Across Enterprise AI",
+    title: "CyberArmor.AI — AI Security Runtime for Governed Enterprise AI",
     description:
-      "The unified AI security and cyber trust platform. Discover shadow AI, enforce policy, protect runtime environments, and generate evidence-based trust — built for enterprise scale.",
+      "The AI security runtime for governed enterprise AI. Detect risk, enforce policy, redact sensitive data in supported paths, route approved provider use, and preserve decision-level evidence.",
     images: [
       {
         url: "/og-image.png",
@@ -52,9 +52,9 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    title: "CyberArmor.AI — Enterprise AI Security & Cyber Trust",
+    title: "CyberArmor.AI — AI Security Runtime",
     description:
-      "Govern, protect, and prove trust across every AI system, agent, and workflow your enterprise runs.",
+      "Control and prove enterprise AI activity across users, applications, agents, APIs, providers, models, and data.",
     images: ["/og-image.png"],
   },
   robots: {

@@ -6,7 +6,7 @@ import FinalCTA from "@/components/sections/FinalCTA";
 export const metadata: Metadata = {
   title: "Solutions — AI Security Use Cases for Enterprise Security Teams",
   description:
-    "Discover how CyberArmor AI addresses the real security challenges of enterprise AI: shadow AI, agent risk, prompt injection, data protection, and more.",
+    "Discover how CyberArmor.AI addresses enterprise AI security challenges: shadow AI, agent risk, prompt injection, credential redaction, provider control, runtime policy, and evidence.",
 };
 
 const solutions = [
@@ -17,13 +17,13 @@ const solutions = [
     tag: "Visibility & Governance",
     title: "Shadow AI Discovery & Governance",
     roles: ["CISO", "Head of Security", "CIO"],
-    pain: "Your employees are using AI tools you don't know exist. Developers are calling external LLM APIs. Vendors are processing your data through third-party AI systems. None of it has been reviewed. None of it is under policy.",
-    solution: "CyberArmor AI gives you continuous, automated discovery of every AI tool, model, and API connection in use across your organization — then brings it under governed policy without blocking legitimate productivity.",
+    pain: "Your employees are using AI tools you don't know exist. Developers are calling external LLM APIs. Vendors are processing your data through third-party AI systems. Much of it has not been reviewed or tied to policy.",
+    solution: "CyberArmor.AI uses supported endpoint, browser, API, and integration signals to surface AI usage, connect it to policy, and preserve evidence as coverage expands with each deployment path.",
     outcomes: [
-      "Complete AI asset inventory, updated continuously",
-      "Unauthorized AI usage surfaced and flagged automatically",
-      "Policy-based governance applied without manual review",
-      "Audit-ready records of all AI usage events",
+      "AI asset inventory built from supported discovery signals",
+      "Unreviewed AI usage surfaced for governance review",
+      "Policy-based responses tied to deployment control points",
+      "Audit-ready records for monitored AI usage events",
     ],
   },
   {
@@ -34,11 +34,11 @@ const solutions = [
     title: "AI Agent Trust & Control",
     roles: ["Security Architect", "Head of AppSec", "Platform Engineering"],
     pain: "Autonomous AI agents are being deployed to automate decisions, access systems, and orchestrate workflows. Without identity controls, behavioral bounds, and trust verification, these agents represent a new and largely unmanaged attack surface.",
-    solution: "CyberArmor AI verifies agent identity, applies behavioral policy, enforces scope limitations, and generates trust attestations — so your security program knows exactly what each agent can do, is doing, and has done.",
+    solution: "CyberArmor.AI gives agent workflows an identity and evidence model: registration, tenant scope, allowed tools, owner metadata, delegation context, revocation paths, and control outcomes.",
     outcomes: [
       "Agent identity verification before runtime execution",
       "Behavioral scope enforcement and anomaly detection",
-      "Trust attestation records for every agent action",
+      "Trust and delegation records for monitored agent actions",
       "Blast radius limitation and automated containment",
     ],
   },
@@ -50,11 +50,11 @@ const solutions = [
     title: "Prompt Injection & Misuse Defense",
     roles: ["Head of AppSec", "Security Engineer", "CISO"],
     pain: "AI chatbots and LLM-powered applications are being actively targeted by adversarial inputs designed to extract data, bypass controls, or manipulate model behavior. Traditional WAFs and input sanitization don't understand the semantics of AI prompts.",
-    solution: "CyberArmor AI provides runtime detection and blocking of adversarial prompts, jailbreak patterns, and indirect injection attempts — before they reach the model, with full forensic logging of every attempt.",
+    solution: "CyberArmor.AI provides runtime detection for adversarial prompts, jailbreak patterns, and indirect injection attempts, then connects the result to monitor, warn, block, or evidence outcomes depending on the approved control point.",
     outcomes: [
       "Real-time prompt classification and threat scoring",
-      "Blocking of adversarial inputs before model exposure",
-      "Full forensic log of all injection attempts",
+      "Blocking or warning of adversarial inputs where enforcement is deployed",
+      "Structured evidence for monitored injection attempts",
       "Coverage for direct and indirect prompt injection vectors",
     ],
   },
@@ -65,13 +65,13 @@ const solutions = [
     tag: "Data Protection",
     title: "Sensitive Data Protection in AI Workflows",
     roles: ["CISO", "Data Protection Officer", "Compliance Lead"],
-    pain: "AI systems are processing PII, financial records, trade secrets, and regulated data without data residency controls, classification enforcement, or visibility into what's being shared with which model or vendor.",
-    solution: "CyberArmor AI classifies data entering AI pipelines, enforces data handling policy at the point of ingestion, prevents unauthorized processing, and generates compliance evidence for regulated data in AI workflows.",
+    pain: "AI systems are receiving credentials, API keys, payment data, bank details, PII, trade secrets, and regulated data before traditional DLP or review workflows can intervene.",
+    solution: "CyberArmor.AI can inspect AI-bound content and apply optional redaction-mode responses for supported secrets, PII, PCI, NACHA, NPI, and non-public indicators while preserving evidence without raw secret previews.",
     outcomes: [
       "Real-time data classification in AI interactions",
       "Credential and secret leak detection with redaction-mode policy outcomes",
       "Policy-based data handling enforcement per AI system",
-      "Prevention of unauthorized PII or regulated data exposure",
+      "Reduction of unauthorized PII or regulated data exposure in supported paths",
       "Compliance-ready evidence for AI data processing activities",
     ],
   },
@@ -83,7 +83,7 @@ const solutions = [
     title: "Governed Enterprise AI Adoption",
     roles: ["CIO", "CTO", "CISO", "Head of Digital Transformation"],
     pain: "Business teams want to move fast on AI. Security and legal are blocking initiatives because there is no technical framework for safe, accountable AI deployment at enterprise scale. The result is either delayed value or ungoverned risk.",
-    solution: "CyberArmor AI provides the technical governance infrastructure that allows enterprises to move fast on AI without accumulating security debt — policy rails, enforcement, and audit trails built into the AI adoption lifecycle.",
+    solution: "CyberArmor.AI provides the technical governance infrastructure for safe AI adoption: runtime policy, provider control, redaction, identity context, audit trails, and evidence built into the AI adoption lifecycle.",
     outcomes: [
       "Security policy framework for AI deployment programs",
       "Automated enforcement that doesn't slow delivery teams",
@@ -99,9 +99,9 @@ const solutions = [
     title: "Evidence-Based AI Incident Investigation",
     roles: ["Security Operations", "IR Teams", "Legal & Compliance"],
     pain: "When an AI-related security incident occurs — a data leak through a chatbot, a compromised agent, a prompt injection that succeeded — security teams have no structured forensic evidence. Reconstructing what happened is expensive, slow, and incomplete.",
-    solution: "CyberArmor AI captures decision-level telemetry for every AI interaction throughout the kill chain, creating a structured, reviewable record that makes AI incident response faster, more precise, and legally defensible.",
+    solution: "CyberArmor.AI captures decision-level telemetry and action context across monitored AI paths, creating a structured, reviewable record that helps teams reconstruct actor, policy, data, provider, response, and evidence lineage.",
     outcomes: [
-      "Full decision-level telemetry across AI interactions",
+      "Decision-level telemetry across monitored AI interactions",
       "Structured incident timeline reconstruction in minutes",
       "Evidence-backed root cause analysis for AI incidents",
       "Legally defensible documentation for regulatory response",
@@ -115,11 +115,11 @@ const solutions = [
     title: "Continuous AI Runtime Monitoring",
     roles: ["Security Operations", "Platform Security", "CISO"],
     pain: "AI systems change behavior over time as models are updated, fine-tuned, or retrained. Without continuous runtime monitoring, drift from expected behavior — or adversarial manipulation — can go undetected for extended periods.",
-    solution: "CyberArmor AI provides continuous behavioral monitoring of AI systems and agents at runtime, detecting anomalies, policy drift, and behavioral changes — and triggering investigation or containment automatically.",
+    solution: "CyberArmor.AI provides runtime monitoring of AI systems and agents in supported paths, detecting anomalies, policy drift, and behavioral changes that can trigger investigation or containment workflows.",
     outcomes: [
-      "Continuous behavioral baseline for every monitored AI system",
+      "Behavioral baselines for monitored AI systems",
       "Anomaly detection for drift, manipulation, and misuse",
-      "Automated alerting with structured investigation context",
+      "Alerting with structured investigation context",
       "Integration with existing SOC workflows and SIEM platforms",
     ],
   },
@@ -131,7 +131,7 @@ const solutions = [
     title: "AI-Aware Identity & Access Control",
     roles: ["IAM Lead", "Security Architect", "CISO"],
     pain: "Traditional IAM was built for human users. Enterprise AI environments include services, workloads, and AI agents that all need access — but don't fit existing identity models. The result is over-provisioned, unmonitored non-human access.",
-    solution: "CyberArmor AI extends identity-aware access control to the full range of AI actors: users, services, workloads, and agents — with dynamic trust decisions that account for context, risk level, and behavioral history.",
+    solution: "CyberArmor.AI extends identity-aware access control to AI actors: users, services, workloads, and agents, with trust decisions that account for context, risk level, and behavioral history where those signals are available.",
     outcomes: [
       "Unified identity policy spanning human and non-human actors",
       "Context-aware trust decisions at time of access",
@@ -165,8 +165,9 @@ export default function SolutionsPage() {
             fontSize: "1.1rem", color: "#8892A4", lineHeight: 1.75,
             maxWidth: 680, margin: "0 auto 40px",
           }}>
-            Every CyberArmor AI solution is built around a specific AI security challenge that enterprise teams
-            are already facing — not theoretical risks, but the threats and exposures happening today.
+            Every CyberArmor.AI solution is built around a specific AI security challenge enterprise teams
+            are already facing: data leakage, prompt misuse, provider sprawl, agent identity, and the lack
+            of proof when AI activity crosses a boundary.
           </p>
         </div>
       </section>
@@ -182,7 +183,7 @@ export default function SolutionsPage() {
                   background: `linear-gradient(180deg, ${color}, ${color}30)`,
                 }} />
 
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 48, alignItems: "start" }}>
+                <div className="solution-card-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 48, alignItems: "start" }}>
                   <div>
                     <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
                       <div style={{
@@ -227,7 +228,7 @@ export default function SolutionsPage() {
 
                     <div>
                       <p style={{ fontSize: 11, fontWeight: 700, color: "#22C55E", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 8 }}>
-                        The CyberArmor AI Answer
+                        The CyberArmor.AI Answer
                       </p>
                       <p style={{ fontSize: 14.5, color: "#8892A4", lineHeight: 1.75 }}>{solution}</p>
                     </div>

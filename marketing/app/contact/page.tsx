@@ -6,12 +6,13 @@ import { Shield, CheckCircle2, ArrowRight, Clock, Users, Lock } from "lucide-rea
 
 // ── Allowed enum values (whitelist) ──────────────────────────────────────────
 const interestOptions = [
-  "AI Security Platform Overview",
+  "AI Security Runtime Overview",
   "Shadow AI Discovery & Governance",
   "AI Agent Trust & Control",
-  "AI Runtime Protection",
+  "Runtime Control and Evidence",
   "Prompt Injection Defense",
-  "Data Protection in AI Workflows",
+  "Credential and Data Redaction",
+  "Provider Routing and Control",
   "Evidence & Compliance",
   "Investor / Partnership Inquiry",
   "General Inquiry",
@@ -214,9 +215,9 @@ export default function ContactPage() {
               </h1>
 
               <p style={{ fontSize: "1.05rem", color: "#8892A4", lineHeight: 1.8, marginBottom: 32 }}>
-                A CyberArmor AI demo is a working session — not a slide deck. We&apos;ll walk through your
-                specific AI environment, threat surface, and security priorities, and show you exactly how
-                the platform addresses them.
+                A CyberArmor.AI demo is a working session — not a slide deck. We&apos;ll walk through your
+                AI activity, data leakage risk, agent workflows, provider usage, runtime controls, and
+                evidence needs, then show the control loop that fits.
               </p>
 
               <p style={{ fontSize: "1.05rem", color: "#8892A4", lineHeight: 1.8, marginBottom: 40 }}>

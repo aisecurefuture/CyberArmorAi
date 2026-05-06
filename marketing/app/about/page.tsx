@@ -8,14 +8,14 @@ import BrandClarification from "@/components/sections/BrandClarification";
 export const metadata: Metadata = {
   title: "About — CyberArmor.AI",
   description:
-    "CyberArmor.AI is the enterprise AI security and cyber trust platform operated by CyberArmor AI, Inc.",
+    "CyberArmor.AI is the AI security runtime operated by CyberArmor AI, Inc., built to make enterprise AI activity controllable, enforceable, and provable.",
 };
 
 const values = [
   {
     icon: Target,
-    title: "Precision Over Coverage Theater",
-    body: "We build controls that actually work — not ones that check a compliance box and leave the real risk untouched. Every capability in the platform is designed to address a specific, demonstrable attack surface in enterprise AI environments.",
+    title: "Control Over Coverage Theater",
+    body: "We build controls that can act, not diagrams that only imply coverage. Every capability should map to a demonstrable AI security workflow: inspect, decide, enforce, respond, or prove.",
   },
   {
     icon: Eye,
@@ -29,8 +29,8 @@ const values = [
   },
   {
     icon: FileCheck,
-    title: "Evidence-Driven Accountability",
-    body: "We apply the same principle internally that we build into our platform: decisions should be observable, attributable, and reviewable. That's how we run the company. It's how we expect enterprise AI to operate too.",
+    title: "Protection-Backed Accountability",
+    body: "Evidence matters most when it is bound to a control decision. We build for records that explain who or what acted, which policy applied, what response ran, and why.",
   },
   {
     icon: Zap,
@@ -62,8 +62,8 @@ export default function AboutPage() {
               fontWeight: 800, letterSpacing: "-0.04em", lineHeight: 1.08,
               marginBottom: 28, color: "#ffffff",
             }}>
-              We&apos;re Building the Security Infrastructure<br />
-              <span className="gradient-text-blue">Enterprise AI Deserves.</span>
+              We&apos;re Building the AI Security Runtime<br />
+              <span className="gradient-text-blue">Enterprise AI Needs.</span>
             </h1>
 
             <p style={{ fontSize: "1.15rem", color: "#8892A4", lineHeight: 1.8, marginBottom: 24, maxWidth: 700 }}>
@@ -75,14 +75,15 @@ export default function AboutPage() {
 
             <p style={{ fontSize: "1.15rem", color: "#8892A4", lineHeight: 1.8, marginBottom: 24, maxWidth: 700 }}>
               The gap between AI adoption speed and AI security capability is real, growing, and creating risk at
-              board-level scale. We built CyberArmor.AI to close that gap — with a platform that is technically serious,
-              operationally deployable, and designed for the actual complexity of enterprise security programs.
+              board-level scale. We built CyberArmor.AI to close that gap with runtime controls that inspect AI
+              activity, enforce policy, redact or block risky content in supported paths, route approved provider
+              traffic, and preserve decision-level evidence.
             </p>
 
             <p style={{ fontSize: "1.15rem", color: "#ffffff", lineHeight: 1.8, maxWidth: 700, fontWeight: 500 }}>
-              This is not a dashboard company. This is not AI governance theater. This is a technical security
-              platform built for CISOs and security architects who need real enforcement, real evidence, and real
-              coverage across the AI environments their organizations are already operating.
+              This is not a dashboard company. This is not AI governance theater. CyberArmor.AI is a technical
+              security runtime built for CISOs, AppSec teams, security architects, and operators who need controls
+              they can enforce and evidence they can defend.
             </p>
           </div>
         </div>
@@ -99,18 +100,17 @@ export default function AboutPage() {
             <div>
               <div className="label-tag" style={{ marginBottom: 20 }}>Our Mission</div>
               <h2 className="section-headline" style={{ marginBottom: 24 }}>
-                Secure Enterprise AI Adoption.<br />
+                Make Enterprise AI Controllable.<br />
                 <span className="gradient-text-blue">Make Trust Provable.</span>
               </h2>
               <p style={{ fontSize: "1.05rem", color: "#8892A4", lineHeight: 1.8, marginBottom: 20 }}>
-                Our mission is to help enterprises adopt AI with confidence — not by slowing AI down, but by
-                building the security infrastructure that makes fast, responsible AI adoption possible.
+                Our mission is to help enterprises adopt AI with confidence by making AI activity controllable,
+                attributable, and provable across users, applications, agents, APIs, providers, models, and data.
               </p>
               <p style={{ fontSize: "1.05rem", color: "#8892A4", lineHeight: 1.8, marginBottom: 32 }}>
-                We believe that AI security is not just a compliance requirement — it is a competitive advantage.
-                The enterprises that can demonstrate governed, auditable, trust-verified AI operations will move
-                faster, face less regulatory friction, and build more durable AI programs than those that treat
-                security as an afterthought.
+                We believe evidence without control is weak, and control without evidence is operationally dangerous.
+                The enterprises that can show how AI requests were inspected, routed, redacted, blocked, allowed,
+                and recorded will move faster with less ambiguity than teams relying on policy documents alone.
               </p>
               <Link href="/contact" className="btn-primary">
                 Talk to Our Team <ArrowRight size={16} />
@@ -119,10 +119,10 @@ export default function AboutPage() {
 
             <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
               {[
-                { label: "AI Security Platform", desc: "Unified discovery, governance, enforcement, and evidence" },
-                { label: "Patent-Pending Architecture", desc: "Novel approaches to AI trust verification and cross-layer enforcement" },
+                { label: "AI Security Runtime", desc: "Detection, policy, routing, identity, enforcement, response, and evidence" },
+                { label: "Patent-Pending Architecture", desc: "Protection-backed evidence, AI trust verification, and cross-layer control" },
                 { label: "Enterprise-Focused", desc: "Built for production complexity, not controlled demos" },
-                { label: "Category Conviction", desc: "AI security is a defining security category of the next decade" },
+                { label: "Honest Product Maturity", desc: "Clear boundaries between pilot-ready capabilities and roadmap expansion" },
               ].map(({ label, desc }) => (
                 <div key={label} style={{
                   background: "#0F1117",
@@ -219,10 +219,10 @@ export default function AboutPage() {
               </h3>
               <p style={{ fontSize: 14.5, color: "#8892A4", lineHeight: 1.7, maxWidth: 760 }}>
                 CyberArmor.AI&apos;s core architectural innovations — including our approach to AI trust verification,
-                cross-layer security operationalization, and decision-level evidence capture — are the subject of
-                patent applications currently in process. These innovations represent the foundational differentiators
-                of the CyberArmor.AI platform and reflect our commitment to building a technically defensible,
-                category-defining security capability.
+                protection-backed evidence, runtime policy enforcement, and cross-layer security operationalization —
+                are the subject of patent applications currently in process. These innovations represent the
+                foundational differentiators of the CyberArmor.AI platform and reflect our commitment to building
+                a technically defensible, category-defining security capability.
               </p>
             </div>
           </div>

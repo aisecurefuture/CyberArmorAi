@@ -3,21 +3,21 @@ import { AlertTriangle, Ghost, Network } from "lucide-react";
 const problems = [
   {
     icon: Ghost,
-    title: "Shadow AI Is Already Inside Your Perimeter",
+    title: "AI Activity Is Spreading Across Uncontrolled Paths",
     body:
-      "Employees, developers, contractors, and vendors are already using AI tools, APIs, and assistants outside formal review paths. You cannot govern what you cannot inventory, and most organizations still do not have a reliable AI asset picture.",
-  },
-  {
-    icon: Network,
-    title: "AI Agents Operate Without Boundaries",
-    body:
-      "Autonomous agents can take actions, access systems, and trigger workflows across multiple trust boundaries. Without identity-aware controls and runtime guardrails, teams struggle to verify, constrain, or reconstruct what those agents actually did.",
+      "Employees, developers, contractors, apps, and vendors are using AI tools, APIs, assistants, and providers outside formal review paths. Security teams need more than a list of tools; they need control points that can act when AI activity happens.",
   },
   {
     icon: AlertTriangle,
+    title: "Sensitive Data Can Leak Before Anyone Sees the Alert",
+    body:
+      "Credentials, API keys, payment data, bank details, PII, and non-public information can be pasted into generative AI before a traditional ticket, alert, or review workflow ever fires. Detection has to connect to redaction, blocking, routing, and evidence.",
+  },
+  {
+    icon: Network,
     title: "Governance Without Enforcement Is Just a Document",
     body:
-      "Most AI governance efforts begin as policy documents, committee decisions, and vendor questionnaires. When those controls are not tied to technical enforcement, violations become exceptions without response, evidence, or accountability.",
+      "Most AI governance efforts begin as policy documents, committee decisions, and vendor questionnaires. When those controls are not tied to runtime enforcement and decision-level evidence, violations become exceptions without response, proof, or accountability.",
   },
 ];
 
@@ -33,9 +33,10 @@ export default function ProblemStatement() {
             <span className="gradient-text-blue">Security Can Follow.</span>
           </h2>
           <p style={{ color: "#8892A4", fontSize: "1.05rem", lineHeight: 1.7 }}>
-            Security teams are being asked to govern AI systems, agents, and
-            workflows that move faster than traditional review cycles and cross
-            the same trust boundaries the enterprise spent years hardening.
+            Security teams are being asked to govern AI systems, agents, providers,
+            and workflows that move faster than traditional review cycles. The
+            hard part is not only seeing AI risk. It is controlling it and proving
+            the control worked.
           </p>
         </div>
 

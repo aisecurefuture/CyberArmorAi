@@ -6,14 +6,14 @@ import { BookOpen, LifeBuoy, Mail } from "lucide-react";
 const footerLinks = {
   Platform: [
     { label: "Overview", href: "/platform" },
-    { label: "AI Runtime Protection", href: "/platform#runtime" },
+    { label: "AI Runtime Control", href: "/platform#runtime" },
     { label: "Policy Enforcement", href: "/platform#policy" },
-    { label: "Evidence & Trust", href: "/platform#evidence" },
+    { label: "Protection-Backed Evidence", href: "/platform#evidence" },
   ],
   Solutions: [
     { label: "Shadow AI Discovery", href: "/solutions#shadow-ai" },
     { label: "AI Agent Security", href: "/solutions#agents" },
-    { label: "Data Protection", href: "/solutions#data" },
+    { label: "Credential & Data Redaction", href: "/solutions#data" },
     { label: "Prompt Injection Defense", href: "/solutions#prompt" },
   ],
   Industries: [
@@ -59,7 +59,7 @@ export default function Footer() {
               </span>
             </Link>
               <p style={{ fontSize: 14, color: "#8892A4", lineHeight: 1.7, marginBottom: 20, maxWidth: 220 }}>
-                CyberArmor.AI is the AI security and cyber trust platform operated by CyberArmor AI, Inc.
+                CyberArmor.AI is the AI security runtime operated by CyberArmor AI, Inc.
               </p>
               <div style={{ display: "flex", gap: 10 }}>
               {[

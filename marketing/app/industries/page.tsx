@@ -6,7 +6,7 @@ import FinalCTA from "@/components/sections/FinalCTA";
 export const metadata: Metadata = {
   title: "Industries — AI Security for Regulated & High-Risk Sectors",
   description:
-    "CyberArmor AI helps financial services, healthcare, insurance, airlines, and technology enterprises secure AI adoption against industry-specific risks.",
+    "CyberArmor.AI helps regulated and high-risk enterprises control AI activity, reduce data leakage, enforce runtime policy, and preserve evidence for AI governance.",
 };
 
 const industries = [
@@ -24,7 +24,7 @@ const industries = [
       "AI chatbots vulnerable to prompt injection and social engineering",
       "Shadow AI adoption by trading and quant teams creating unmanaged model risk",
     ],
-    value: "CyberArmor AI gives financial security and compliance teams continuous discovery of AI usage, policy enforcement at the model and application layer, and decision-level evidence for regulatory examination.",
+    value: "CyberArmor.AI helps financial security and compliance teams connect AI usage signals, runtime policy, sensitive-data redaction, provider control, and decision-level evidence for regulatory examination.",
     regulatory: ["OCC AI Guidance", "SEC Reg SCI", "GDPR Article 22", "FFIEC Cybersecurity Framework"],
   },
   {
@@ -41,7 +41,7 @@ const industries = [
       "Vendor AI tools accessing policyholder data without governance oversight",
       "Agent-driven claims workflows with no trust verification or behavioral bounds",
     ],
-    value: "CyberArmor AI provides the technical enforcement layer that insurance security and compliance teams need to operate AI systems within regulatory and actuarial governance requirements.",
+    value: "CyberArmor.AI provides runtime policy, agent identity context, data protection, and evidence paths that insurance security and compliance teams can use to govern AI-enabled workflows.",
     regulatory: ["NAIC AI Model Bulletin", "GDPR", "State Insurance AI Regulations", "FCRA"],
   },
   {
@@ -58,7 +58,7 @@ const industries = [
       "Shadow AI usage by clinical and administrative staff in non-compliant tools",
       "AI agent workflows in revenue cycle and care management without scope controls",
     ],
-    value: "CyberArmor AI provides HIPAA-aligned AI governance, real-time PHI protection in AI workflows, and the compliance evidence infrastructure required for healthcare AI programs.",
+    value: "CyberArmor.AI helps healthcare teams inspect AI-bound data, apply redaction or blocking policies in supported paths, and preserve evidence needed for PHI-focused AI governance.",
     regulatory: ["HIPAA Security Rule", "21st Century Cures Act", "FDA AI/ML Guidance", "ONC Rules"],
   },
   {
@@ -75,7 +75,7 @@ const industries = [
       "Shadow AI usage by operations and engineering teams with access to critical systems",
       "Autonomous workflow agents in logistics and ground operations without trust controls",
     ],
-    value: "CyberArmor AI provides the operational security infrastructure for transportation AI programs — with particular focus on runtime integrity, behavioral monitoring, and evidence capture for safety-critical AI systems.",
+    value: "CyberArmor.AI helps transportation teams connect runtime monitoring, AI provider control, agent/workflow boundaries, and evidence capture for safety-adjacent AI systems.",
     regulatory: ["TSA Cybersecurity Directives", "FAA AI Safety Guidance", "GDPR", "DOT Data Requirements"],
   },
   {
@@ -92,7 +92,7 @@ const industries = [
       "AI model training pipelines processing sensitive data without governance oversight",
       "Third-party AI APIs embedded in products without security assessment or monitoring",
     ],
-    value: "CyberArmor AI helps technology companies build security into their AI development lifecycle — and supports enterprise customers who require security attestation for AI-enabled products.",
+    value: "CyberArmor.AI helps technology companies add runtime policy, SDK/RASP controls, redaction, provider governance, and evidence to AI-enabled product and developer workflows.",
     regulatory: ["SOC 2 Type II", "ISO 27001", "GDPR / CCPA", "EU AI Act (High-Risk Classification)"],
   },
   {
@@ -109,7 +109,7 @@ const industries = [
       "Lack of documented evidence for AI system behavior during compliance examinations",
       "Autonomous AI agents operating in environments with strict access control requirements",
     ],
-    value: "CyberArmor AI provides the governance rigor, technical enforcement, and evidence architecture that regulated enterprises need to deploy AI within their existing compliance and risk management frameworks.",
+    value: "CyberArmor.AI provides runtime governance, technical enforcement, and protection-backed evidence that regulated enterprises can map into existing compliance and risk management frameworks.",
     regulatory: ["NIST AI RMF", "CMMC", "FISMA", "NERC CIP", "Sector-Specific AI Mandates"],
   },
 ];
@@ -138,8 +138,8 @@ export default function IndustriesPage() {
             fontSize: "1.1rem", color: "#8892A4", lineHeight: 1.75,
             maxWidth: 680, margin: "0 auto 40px",
           }}>
-            CyberArmor AI is designed for regulated, risk-sensitive industries where AI security is not
-            a suggestion — it is a compliance requirement, a board obligation, and a competitive differentiator.
+            CyberArmor.AI is designed for regulated, risk-sensitive industries where AI security is not
+            a suggestion. It is a control requirement, a board obligation, and a competitive differentiator.
           </p>
           {/* Industry quick links */}
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "center" }}>
@@ -196,7 +196,7 @@ export default function IndustriesPage() {
                   </div>
                 </div>
 
-                <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 48, alignItems: "start" }}>
+                <div className="industry-card-grid" style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 48, alignItems: "start" }}>
                   <div>
                     <p style={{ fontSize: 15, color: "#8892A4", lineHeight: 1.75, marginBottom: 28 }}>{context}</p>
 
@@ -225,7 +225,7 @@ export default function IndustriesPage() {
                       padding: "20px 24px",
                     }}>
                       <p style={{ fontSize: 11, fontWeight: 700, color, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 10 }}>
-                        How CyberArmor AI Helps
+                        How CyberArmor.AI Helps
                       </p>
                       <p style={{ fontSize: 14, color: "#8892A4", lineHeight: 1.7 }}>{value}</p>
                     </div>
@@ -259,7 +259,7 @@ export default function IndustriesPage() {
                     </div>
 
                     <Link href="/contact" className="btn-primary" style={{ width: "100%", justifyContent: "center", fontSize: 14 }}>
-                      Talk to an {title} Expert <ArrowRight size={14} />
+                      Talk to Our {title} Team <ArrowRight size={14} />
                     </Link>
                   </div>
                 </div>
