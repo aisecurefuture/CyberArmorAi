@@ -8,6 +8,7 @@ export type FulfillmentEmail = {
   subject: string;
   text: string;
   html: string;
+  replyTo?: string;
   attachments?: Array<{
     filename: string;
     path: string;
@@ -33,6 +34,10 @@ type FulfillmentConfig =
 
 const MAX_ATTACHMENT_BYTES = 7 * 1024 * 1024;
 const SUPPORT_EMAIL = "hello@cyberarmor.ai";
+
+function getIntakeEmail(): string {
+  return process.env.MARKETING_INTAKE_EMAIL?.trim() || SUPPORT_EMAIL;
+}
 
 const FULFILLMENT_MAP: Record<StripeProductKey, FulfillmentConfig> = {
   CHECKLIST: {
@@ -133,6 +138,7 @@ export async function buildCustomerFulfillmentEmail(
   const sessionId = session.id;
   const siteUrl = getSiteUrl();
   const supportLink = `${siteUrl}/support`;
+  const intakeEmail = getIntakeEmail();
 
   if (!config) {
     return {
@@ -185,11 +191,14 @@ export async function buildCustomerFulfillmentEmail(
 
     return {
       subject: `Your ${config.label} is attached`,
+      replyTo: intakeEmail,
       text: [
         `Hi ${customerName},`,
         "",
         "Thank you for your purchase.",
         `Your ${config.label} is attached to this email as a PDF.`,
+        "",
+        `If you have questions, email ${intakeEmail}.`,
         "",
         `Order reference: ${sessionId}`,
         `Support: ${supportLink}`,
@@ -199,6 +208,7 @@ export async function buildCustomerFulfillmentEmail(
         <p>Hi ${escapeHtml(customerName)},</p>
         <p>Thank you for your purchase.</p>
         <p>Your <strong>${escapeHtml(config.label)}</strong> is attached to this email as a PDF.</p>
+        <p>If you have questions, email <a href="mailto:${escapeHtml(intakeEmail)}">${escapeHtml(intakeEmail)}</a>.</p>
         <p><strong>Order reference:</strong> ${escapeHtml(sessionId)}</p>
         <p><a href="${escapeHtml(supportLink)}">Support center</a> or email <a href="mailto:${SUPPORT_EMAIL}">${SUPPORT_EMAIL}</a>.</p>
       `,
@@ -211,15 +221,18 @@ export async function buildCustomerFulfillmentEmail(
 
   return {
     subject: `Next steps for your ${config.label}`,
+    replyTo: intakeEmail,
     text: [
       `Hi ${customerName},`,
       "",
       "Thank you for your purchase.",
-      config.intro,
+      config.intro.replace("Reply to this email", `Send your intake response to ${intakeEmail}`),
       "",
       bulletText,
       "",
       `Turnaround: ${config.turnaround}`,
+      "",
+      `Send your intake to: ${intakeEmail}`,
       "",
       `Order reference: ${sessionId}`,
       `Support: ${supportLink}`,
@@ -228,9 +241,10 @@ export async function buildCustomerFulfillmentEmail(
     html: `
       <p>Hi ${escapeHtml(customerName)},</p>
       <p>Thank you for your purchase.</p>
-      <p>${escapeHtml(config.intro)}</p>
+      <p>${escapeHtml(config.intro.replace("Reply to this email", `Send your intake response to ${intakeEmail}`))}</p>
       <ul>${bulletHtml}</ul>
       <p><strong>Turnaround:</strong> ${escapeHtml(config.turnaround)}</p>
+      <p><strong>Send your intake to:</strong> <a href="mailto:${escapeHtml(intakeEmail)}">${escapeHtml(intakeEmail)}</a></p>
       <p><strong>Order reference:</strong> ${escapeHtml(sessionId)}</p>
       <p><a href="${escapeHtml(supportLink)}">Support center</a> or email <a href="mailto:${SUPPORT_EMAIL}">${SUPPORT_EMAIL}</a>.</p>
     `,
