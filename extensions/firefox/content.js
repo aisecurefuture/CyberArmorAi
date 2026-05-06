@@ -4,13 +4,40 @@
  */
 
 const PII_PATTERNS = [
-  { name: 'SSN', pattern: /\b\d{3}-\d{2}-\d{4}\b/g },
-  { name: 'Credit Card', pattern: /\b4[0-9]{12}(?:[0-9]{3})?\b/g },
-  { name: 'Email', pattern: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z]{2,}\b/gi },
-  { name: 'AWS Key', pattern: /AKIA[0-9A-Z]{16}/g },
-  { name: 'GitHub Token', pattern: /(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,}/g },
-  { name: 'Private Key', pattern: /-----BEGIN\s+(RSA|EC|PRIVATE)\s+KEY-----/g },
+  { name: 'SSN', category: 'pii', placeholder: '[REDACTED-SSN]', pattern: /\b\d{3}-\d{2}-\d{4}\b/g },
+  { name: 'Credit Card', category: 'pci', placeholder: '[REDACTED-CARD]', pattern: /\b4[0-9]{12}(?:[0-9]{3})?\b/g },
+  { name: 'Routing Number', category: 'nacha', placeholder: '[REDACTED-ROUTING]', pattern: /\b\d{9}\b/g },
+  { name: 'Bank Account', category: 'nacha', placeholder: '[REDACTED-BANK-ACCOUNT]', pattern: /\b(?:account|acct)\s*(?:number|#|no\.?)?\s*[:=]?\s*\d{8,17}\b/gi },
+  { name: 'NPI', category: 'npi', placeholder: '[REDACTED-NPI]', pattern: /\b(?:npi\s*[:#]?\s*)?\d{10}\b/gi },
+  { name: 'Email', category: 'pii', placeholder: '[REDACTED-EMAIL]', pattern: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z]{2,}\b/gi },
+  { name: 'Private IP', category: 'nonpublic', placeholder: '[REDACTED-PRIVATE-IP]', pattern: /\b(?:(?:10|192\.168|172\.(?:1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3})\b/g },
+  { name: 'AWS Key', category: 'secrets', placeholder: '[REDACTED-AWS-KEY]', pattern: /AKIA[0-9A-Z]{16}/g },
+  { name: 'OpenAI Key', category: 'secrets', placeholder: '[REDACTED-OPENAI-KEY]', pattern: /sk-[A-Za-z0-9_-]{20,}/g },
+  { name: 'GitHub Token', category: 'secrets', placeholder: '[REDACTED-GITHUB-TOKEN]', pattern: /(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,}/g },
+  { name: 'Private Key', category: 'secrets', placeholder: '[REDACTED-PRIVATE-KEY]', pattern: /-----BEGIN\s+(RSA|EC|PRIVATE)\s+KEY-----/g },
 ];
+
+const REDACTION_CATEGORIES = {
+  redact: ['secrets', 'pii', 'pci', 'nacha', 'npi'],
+  'redact-secrets': ['secrets'],
+  'redact-pii': ['pii'],
+  'redact-pci': ['pci'],
+  'redact-nacha': ['nacha'],
+  'redact-npi': ['npi'],
+  'redact-nonpublic': ['nonpublic'],
+};
+
+let config = { actionMode: 'warn' };
+
+browser.storage.sync.get('cyberarmor_config').then(data => {
+  config = { ...config, ...(data.cyberarmor_config || {}) };
+});
+
+browser.storage.onChanged.addListener((changes, area) => {
+  if (area === 'sync' && changes.cyberarmor_config) {
+    config = { ...config, ...(changes.cyberarmor_config.newValue || {}) };
+  }
+});
 
 const XSS_PATTERNS = [
   /<script[\s>]/i, /javascript:/i, /on(error|load|click|mouseover)\s*=/i,
@@ -35,12 +62,80 @@ function monitorAIChatInputs() {
 
     input.addEventListener('paste', (e) => {
       const text = e.clipboardData?.getData('text') || '';
-      const piiFound = PII_PATTERNS.filter(p => p.pattern.test(text));
+      const piiFound = scanFindings(text);
       if (piiFound.length > 0) {
-        showWarning(`PII detected in paste: ${piiFound.map(p => p.name).join(', ')}`);
+        if (isRedactionMode(config.actionMode)) {
+          e.preventDefault();
+          insertText(input, redactText(text, config.actionMode));
+          showWarning(`Sensitive data redacted in paste: ${piiFound.map(p => p.name).join(', ')}`);
+        } else {
+          showWarning(`PII detected in paste: ${piiFound.map(p => p.name).join(', ')}`);
+        }
       }
     });
+
+    input.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' || e.shiftKey || !isRedactionMode(config.actionMode)) return;
+      const text = getInputText(input);
+      const redacted = redactText(text, config.actionMode);
+      if (redacted !== text) {
+        setInputText(input, redacted);
+        showWarning('Sensitive data redacted before AI submission.');
+      }
+    }, true);
   });
+}
+
+function normalizeMode(mode) {
+  const normalized = String(mode || '').trim().toLowerCase().replace(/_/g, '-');
+  return normalized === 'redact-nachi' ? 'redact-nacha' : normalized;
+}
+
+function isRedactionMode(mode) {
+  return Object.prototype.hasOwnProperty.call(REDACTION_CATEGORIES, normalizeMode(mode));
+}
+
+function redactText(text, mode = 'redact') {
+  const categories = REDACTION_CATEGORIES[normalizeMode(mode)] || REDACTION_CATEGORIES.redact;
+  let redacted = String(text || '');
+  for (const rule of PII_PATTERNS) {
+    if (!categories.includes(rule.category)) continue;
+    redacted = redacted.replace(new RegExp(rule.pattern.source, rule.pattern.flags), rule.placeholder);
+  }
+  return redacted;
+}
+
+function scanFindings(text) {
+  return PII_PATTERNS.filter((rule) => {
+    const pattern = new RegExp(rule.pattern.source, rule.pattern.flags);
+    return pattern.test(text);
+  });
+}
+
+function getInputText(input) {
+  if (input.tagName === 'TEXTAREA' || input.tagName === 'INPUT') return input.value || '';
+  return input.innerText || input.textContent || '';
+}
+
+function setInputText(input, text) {
+  if (input.tagName === 'TEXTAREA' || input.tagName === 'INPUT') {
+    input.value = text;
+  } else {
+    input.textContent = text;
+  }
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+function insertText(input, text) {
+  if (input.tagName === 'TEXTAREA' || input.tagName === 'INPUT') {
+    const start = input.selectionStart ?? input.value.length;
+    const end = input.selectionEnd ?? input.value.length;
+    input.value = `${input.value.slice(0, start)}${text}${input.value.slice(end)}`;
+  } else {
+    document.execCommand('insertText', false, text);
+  }
+  input.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
 function showWarning(message) {

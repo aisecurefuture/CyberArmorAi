@@ -38,6 +38,7 @@
     aiFileUploadMonitoring: true,
     logAIPrompts: false,
     actionMode: "monitor",
+    redactionAction: "redact",
     xssDetectionEnabled: true,
     cmdInjectionEnabled: true,
     autoRedactPII: true,

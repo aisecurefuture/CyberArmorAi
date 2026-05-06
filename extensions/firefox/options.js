@@ -4,6 +4,7 @@ browser.storage.sync.get('cyberarmor_config').then(data => {
   document.getElementById('key').value = cfg.apiKey || '';
   document.getElementById('tenant').value = cfg.tenantId || 'default';
   document.getElementById('bootstrap').value = cfg.bootstrapToken || '';
+  document.getElementById('mode').value = cfg.actionMode || 'monitor';
 });
 document.getElementById('save').addEventListener('click', () => {
   browser.storage.sync.set({
@@ -12,6 +13,7 @@ document.getElementById('save').addEventListener('click', () => {
       apiKey: document.getElementById('key').value,
       tenantId: document.getElementById('tenant').value,
       bootstrapToken: document.getElementById('bootstrap').value,
+      actionMode: document.getElementById('mode').value,
     }
   }).then(() => { document.getElementById('msg').textContent = 'Saved!'; });
 });
@@ -46,6 +48,7 @@ document.getElementById('redeem').addEventListener('click', async () => {
         apiKey: data.service_api_key || '',
         tenantId: data.tenant_id || document.getElementById('tenant').value,
         bootstrapToken: '',
+        actionMode: document.getElementById('mode').value,
       }
     });
     document.getElementById('msg').textContent = 'Bootstrap token redeemed successfully.';

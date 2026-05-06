@@ -23,7 +23,16 @@ const PROMPT_INJECTION_PATTERNS = [
 ];
 
 let policies = [];
-let config = { controlPlaneUrl: 'http://localhost:8000', apiKey: '', bootstrapToken: '', tenantId: 'default', syncInterval: 60000, pqcAuthEnabled: true, pqcAuthStrict: false };
+let config = {
+  controlPlaneUrl: 'http://localhost:8000',
+  apiKey: '',
+  bootstrapToken: '',
+  tenantId: 'default',
+  syncInterval: 60000,
+  actionMode: 'monitor',
+  pqcAuthEnabled: true,
+  pqcAuthStrict: false
+};
 let lastAuthStatus = { mode: "unknown", algorithm: "unknown", updatedAt: 0 };
 
 function recordAuthStatus(authInfo, context) {

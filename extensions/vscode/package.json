@@ -43,6 +43,10 @@
         "title": "CyberArmor: Scan Current File"
       },
       {
+        "command": "cyberarmor.redactFindings",
+        "title": "CyberArmor: Redact Findings in Current File"
+      },
+      {
         "command": "cyberarmor.showStatus",
         "title": "CyberArmor: Show Security Dashboard"
       },
@@ -98,10 +102,17 @@
           "enum": [
             "monitor",
             "warn",
-            "block"
+            "block",
+            "redact",
+            "redact-secrets",
+            "redact-pii",
+            "redact-pci",
+            "redact-nacha",
+            "redact-npi",
+            "redact-nonpublic"
           ],
           "default": "warn",
-          "description": "Policy enforcement mode: monitor (log only), warn (show warnings), block (prevent actions)"
+          "description": "Policy enforcement mode: monitor, warn, block, or redact selected sensitive data classes before save"
         },
         "cyberarmor.policySyncIntervalSeconds": {
           "type": "number",

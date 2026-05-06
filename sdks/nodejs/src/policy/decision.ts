@@ -14,6 +14,8 @@ export interface Decision {
   riskScore: number;
   policyId?: string;
   redactionTargets?: string[];
+  redactedPrompt?: string;
+  redactedResponse?: string;
   rateLimit?: { callsPerMinute?: number; tokensPerDay?: number };
   approvalRequiredFrom?: string;
   explanation?: string;

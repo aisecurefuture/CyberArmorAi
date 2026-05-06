@@ -53,6 +53,8 @@ export class PolicyEnforcer {
           riskScore: data.risk_score ?? 0,
           policyId: data.policy_id,
           redactionTargets: data.redaction_targets ?? [],
+          redactedPrompt: data.redacted_prompt ?? data.redactedPrompt ?? data.modifiers?.redacted_prompt,
+          redactedResponse: data.redacted_response ?? data.redactedResponse ?? data.modifiers?.redacted_response,
           explanation: data.explanation ?? '',
           latencyMs: Date.now() - start,
         };

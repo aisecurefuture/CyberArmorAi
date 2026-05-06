@@ -7,18 +7,47 @@
 import { redeemBootstrapConfig } from "./bootstrap.js";
 
 const DLP_PATTERNS = [
-  { name: "SSN", pattern: /\b\d{3}-\d{2}-\d{4}\b/g, severity: "critical", classification: "RESTRICTED" },
-  { name: "Credit Card", pattern: /\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/g, severity: "critical", classification: "RESTRICTED" },
-  { name: "AWS Access Key", pattern: /AKIA[0-9A-Z]{16}/g, severity: "critical", classification: "RESTRICTED" },
-  { name: "Private Key", pattern: /-----BEGIN\s+(RSA|EC|DSA|OPENSSH|PGP)?\s*PRIVATE KEY-----/g, severity: "critical", classification: "RESTRICTED" },
-  { name: "Email Address", pattern: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g, severity: "low", classification: "INTERNAL" },
-  { name: "API Key Generic", pattern: /(?:api[_-]?key|apikey|api[_-]?secret)\s*[:=]\s*['"]?([A-Za-z0-9_\-]{20,})['"]?/gi, severity: "high", classification: "CONFIDENTIAL" },
-  { name: "Password in Text", pattern: /(?:password|passwd|pwd)\s*[:=]\s*['"]?([^\s'"]{6,})['"]?/gi, severity: "high", classification: "CONFIDENTIAL" },
-  { name: "Bearer Token", pattern: /Bearer\s+[A-Za-z0-9_\-\.]{20,}/g, severity: "high", classification: "CONFIDENTIAL" },
-  { name: "JWT Token", pattern: /eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, severity: "high", classification: "CONFIDENTIAL" },
-  { name: "Azure Connection String", pattern: /DefaultEndpointsProtocol=https?;AccountName=[^;]+;AccountKey=[^;]+/g, severity: "critical", classification: "RESTRICTED" },
-  { name: "AWS Secret Key", pattern: /(?:aws_secret_access_key|secret_key)\s*[:=]\s*['"]?([A-Za-z0-9/+=]{40})['"]?/gi, severity: "critical", classification: "RESTRICTED" },
+  { name: "SSN", category: "pii", placeholder: "[REDACTED-SSN]", pattern: /\b\d{3}-\d{2}-\d{4}\b/g, severity: "critical", classification: "RESTRICTED" },
+  { name: "Credit Card", category: "pci", placeholder: "[REDACTED-CARD]", pattern: /\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/g, severity: "critical", classification: "RESTRICTED" },
+  { name: "Routing Number", category: "nacha", placeholder: "[REDACTED-ROUTING]", pattern: /\b\d{9}\b/g, severity: "high", classification: "RESTRICTED" },
+  { name: "Bank Account", category: "nacha", placeholder: "[REDACTED-BANK-ACCOUNT]", pattern: /\b(?:account|acct)\s*(?:number|#|no\.?)?\s*[:=]?\s*\d{8,17}\b/gi, severity: "high", classification: "RESTRICTED" },
+  { name: "NPI", category: "npi", placeholder: "[REDACTED-NPI]", pattern: /\b(?:npi\s*[:#]?\s*)?\d{10}\b/gi, severity: "high", classification: "RESTRICTED" },
+  { name: "AWS Access Key", category: "secrets", placeholder: "[REDACTED-AWS-KEY]", pattern: /AKIA[0-9A-Z]{16}/g, severity: "critical", classification: "RESTRICTED" },
+  { name: "Private Key", category: "secrets", placeholder: "[REDACTED-PRIVATE-KEY]", pattern: /-----BEGIN\s+(RSA|EC|DSA|OPENSSH|PGP)?\s*PRIVATE KEY-----/g, severity: "critical", classification: "RESTRICTED" },
+  { name: "Email Address", category: "pii", placeholder: "[REDACTED-EMAIL]", pattern: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g, severity: "low", classification: "INTERNAL" },
+  { name: "API Key Generic", category: "secrets", placeholder: "[REDACTED-API-KEY]", pattern: /(?:api[_-]?key|apikey|api[_-]?secret)\s*[:=]\s*['"]?([A-Za-z0-9_\-]{20,})['"]?/gi, severity: "high", classification: "CONFIDENTIAL" },
+  { name: "Password in Text", category: "secrets", placeholder: "[REDACTED-PASSWORD]", pattern: /(?:password|passwd|pwd)\s*[:=]\s*['"]?([^\s'"]{6,})['"]?/gi, severity: "high", classification: "CONFIDENTIAL" },
+  { name: "Bearer Token", category: "secrets", placeholder: "[REDACTED-BEARER]", pattern: /Bearer\s+[A-Za-z0-9_\-\.]{20,}/g, severity: "high", classification: "CONFIDENTIAL" },
+  { name: "JWT Token", category: "secrets", placeholder: "[REDACTED-JWT]", pattern: /eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, severity: "high", classification: "CONFIDENTIAL" },
+  { name: "Azure Connection String", category: "secrets", placeholder: "[REDACTED-AZURE-CONNECTION]", pattern: /DefaultEndpointsProtocol=https?;AccountName=[^;]+;AccountKey=[^;]+/g, severity: "critical", classification: "RESTRICTED" },
+  { name: "AWS Secret Key", category: "secrets", placeholder: "[REDACTED-AWS-SECRET]", pattern: /(?:aws_secret_access_key|secret_key)\s*[:=]\s*['"]?([A-Za-z0-9/+=]{40})['"]?/gi, severity: "critical", classification: "RESTRICTED" },
 ];
+
+const REDACTION_CATEGORIES = {
+  redact: ["secrets", "pii", "pci", "nacha", "npi", "nonpublic"],
+  "redact-secrets": ["secrets"],
+  "redact-pii": ["pii"],
+  "redact-pci": ["pci"],
+  "redact-nacha": ["nacha"],
+  "redact-npi": ["npi"],
+};
+
+function redactText(text, mode = "redact") {
+  const categories = REDACTION_CATEGORIES[mode] || REDACTION_CATEGORIES.redact;
+  let redacted = String(text || "");
+  let count = 0;
+  const labels = new Set();
+  for (const rule of DLP_PATTERNS) {
+    if (!categories.includes(rule.category)) continue;
+    const pattern = new RegExp(rule.pattern.source, rule.pattern.flags);
+    redacted = redacted.replace(pattern, () => {
+      count += 1;
+      labels.add(rule.name);
+      return rule.placeholder;
+    });
+  }
+  return { text: redacted, count, labels: [...labels] };
+}
 
 const AI_CONTENT_PATTERNS = [
   { name: "AI Disclosure", pattern: /\b(as an ai|as a language model|i don't have personal|i cannot browse the internet)\b/gi },
@@ -551,4 +580,32 @@ async function onSendValidation() {
   return { allowed: true, findings };
 }
 
-export { init, scan, onSendValidation };
+async function redactComposeBody(mode = "redact") {
+  const item = Office.context.mailbox.item;
+  if (!item?.body?.setAsync) {
+    return { count: 0, labels: [], error: "Compose body is not available for redaction" };
+  }
+
+  return new Promise((resolve) => {
+    item.body.getAsync(Office.CoercionType.Text, (result) => {
+      if (result.status !== Office.AsyncResultStatus.Succeeded) {
+        resolve({ count: 0, labels: [], error: result.error?.message || "Could not read body" });
+        return;
+      }
+      const redaction = redactText(result.value || "", mode);
+      if (redaction.text === result.value) {
+        resolve({ count: 0, labels: [] });
+        return;
+      }
+      item.body.setAsync(redaction.text, { coercionType: Office.CoercionType.Text }, (writeResult) => {
+        if (writeResult.status !== Office.AsyncResultStatus.Succeeded) {
+          resolve({ count: 0, labels: [], error: writeResult.error?.message || "Could not redact body" });
+          return;
+        }
+        resolve({ count: redaction.count, labels: redaction.labels });
+      });
+    });
+  });
+}
+
+export { init, scan, onSendValidation, redactComposeBody, redactText };

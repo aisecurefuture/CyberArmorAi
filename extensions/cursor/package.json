@@ -10,6 +10,7 @@
   "contributes": {
     "commands": [
       { "command": "cyberarmor-cursor.scanFile", "title": "CyberArmor: Scan Current File" },
+      { "command": "cyberarmor-cursor.redactFindings", "title": "CyberArmor: Redact Findings in Current File" },
       { "command": "cyberarmor-cursor.toggleMonitoring", "title": "CyberArmor: Toggle Monitoring" },
       { "command": "cyberarmor-cursor.redeemBootstrapToken", "title": "CyberArmor: Redeem Bootstrap Token" }
     ],
@@ -19,7 +20,13 @@
         "cyberarmor.controlPlaneUrl": { "type": "string", "default": "http://localhost:8000" },
         "cyberarmor.apiKey": { "type": "string", "default": "", "description": "Plaintext API key or precomputed PQC credential value" },
         "cyberarmor.bootstrapToken": { "type": "string", "default": "", "description": "One-time bootstrap token for enrollment" },
-        "cyberarmor.tenantId": { "type": "string", "default": "default" }
+        "cyberarmor.tenantId": { "type": "string", "default": "default" },
+        "cyberarmor.enforcementMode": {
+          "type": "string",
+          "enum": ["monitor", "warn", "block", "redact", "redact-secrets", "redact-pii", "redact-pci", "redact-nacha", "redact-npi", "redact-nonpublic"],
+          "default": "warn",
+          "description": "Policy mode for sensitive data findings"
+        }
       }
     }
   },

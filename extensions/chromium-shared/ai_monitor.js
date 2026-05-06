@@ -26,6 +26,7 @@
     logAIPrompts: false,
     autoRedactPII: true,
     actionMode: "warn",
+    redactionAction: "redact",
     disabledAIServices: [],
   };
 
@@ -165,7 +166,12 @@
           if (e.key === "Enter" && !e.shiftKey) {
             const text = getInputText(input);
             if (text.length >= 3) {
-              handlePromptSubmission(text);
+              let submissionText = text;
+              if (maybeRedactInput(input, text)) {
+                submissionText = getInputText(input);
+                showInlineWarning(input, "Sensitive data redacted before AI submission.");
+              }
+              handlePromptSubmission(submissionText);
             }
           }
         }, true);
@@ -182,7 +188,12 @@
           if (input) {
             const text = getInputText(input);
             if (text.length >= 3) {
-              handlePromptSubmission(text);
+              let submissionText = text;
+              if (maybeRedactInput(input, text)) {
+                submissionText = getInputText(input);
+                showInlineWarning(input, "Sensitive data redacted before AI submission.");
+              }
+              handlePromptSubmission(submissionText);
             }
           }
         }, true);
@@ -200,6 +211,42 @@
     }
     // contenteditable div
     return element.innerText || element.textContent || "";
+  }
+
+  function setInputText(element, text) {
+    if (element.tagName === "TEXTAREA" || element.tagName === "INPUT") {
+      element.value = text;
+      element.dispatchEvent(new Event("input", { bubbles: true }));
+      element.dispatchEvent(new Event("change", { bubbles: true }));
+      return;
+    }
+    element.textContent = text;
+    element.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
+  }
+
+  function effectiveRedactionAction() {
+    if (!PolicyEngine) return "";
+    if (PolicyEngine.isRedactionAction(config.actionMode)) return config.actionMode;
+    if (PolicyEngine.isRedactionAction(config.redactionAction)) return config.redactionAction;
+    return "redact";
+  }
+
+  function maybeRedactInput(inputElement, text) {
+    if (!PolicyEngine || !PolicyEngine.isRedactionAction(config.actionMode)) return false;
+    const action = effectiveRedactionAction();
+    const redacted = PolicyEngine.redactText(text, action);
+    if (redacted === text) return false;
+    const findings = PolicyEngine.redactionFindings(text, action);
+    setInputText(inputElement, redacted);
+    sendTelemetry("ai_prompt_redacted", {
+      service: currentService?.name,
+      action,
+      labels: findings.map((f) => f.label),
+      categories: [...new Set(findings.map((f) => f.category))],
+      originalLength: text.length,
+      redactedLength: redacted.length,
+    });
+    return true;
   }
 
   function analyzePromptContent(text, inputElement) {
@@ -242,6 +289,11 @@
 
         if (config.actionMode === "block") {
           showInlineWarning(inputElement, `Sensitive data detected (${sensitive.map((s) => s.label).join(", ")}). Remove before sending.`);
+        } else if (PolicyEngine.isRedactionAction(config.actionMode)) {
+          const redacted = maybeRedactInput(inputElement, text);
+          if (redacted) {
+            showInlineWarning(inputElement, `Sensitive data redacted (${sensitive.map((s) => s.label).join(", ")})`);
+          }
         } else if (config.actionMode === "warn") {
           showInlineWarning(inputElement, `Warning: Sensitive data detected (${sensitive.map((s) => s.label).join(", ")})`);
         }
@@ -286,7 +338,7 @@
 
     if (config.logAIPrompts) {
       payload.promptText = config.autoRedactPII && PolicyEngine
-        ? PolicyEngine.redactPII(text)
+        ? PolicyEngine.redactText(text, effectiveRedactionAction())
         : text.substring(0, 500);
     }
 

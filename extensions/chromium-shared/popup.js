@@ -60,7 +60,8 @@
         // Set active mode
         const mode = cfg.actionMode || "monitor";
         document.querySelectorAll(".mode-option").forEach((btn) => {
-          btn.classList.toggle("active", btn.dataset.mode === mode);
+          const isActive = btn.dataset.mode === mode || (btn.dataset.mode === "redact" && mode.startsWith("redact"));
+          btn.classList.toggle("active", isActive);
         });
 
         updateProtectionBadge(cfg);

@@ -7,12 +7,29 @@
 import * as vscode from 'vscode';
 
 const DLP_PATTERNS = [
-  { name: 'AWS Key', pattern: /AKIA[0-9A-Z]{16}/g, severity: 'critical' as const },
-  { name: 'GitHub Token', pattern: /(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,}/g, severity: 'critical' as const },
-  { name: 'Private Key', pattern: /-----BEGIN\s+(RSA|EC|PRIVATE)\s+KEY-----/g, severity: 'critical' as const },
-  { name: 'Password', pattern: /(?:password|passwd|pwd)\s*[=:]\s*["'][^"']{4,}["']/gi, severity: 'high' as const },
-  { name: 'SSN', pattern: /\b\d{3}-\d{2}-\d{4}\b/g, severity: 'critical' as const },
+  { name: 'AWS Key', pattern: /AKIA[0-9A-Z]{16}/g, severity: 'critical' as const, category: 'secrets', placeholder: '[REDACTED-AWS-KEY]' },
+  { name: 'GitHub Token', pattern: /(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,}/g, severity: 'critical' as const, category: 'secrets', placeholder: '[REDACTED-GITHUB-TOKEN]' },
+  { name: 'OpenAI API Key', pattern: /\b(?:sk-(?:proj|svcacct)-[A-Za-z0-9_\-]{20,}|sk-[A-Za-z0-9_\-]{20,})\b/g, severity: 'critical' as const, category: 'secrets', placeholder: '[REDACTED-OPENAI-KEY]' },
+  { name: 'Private Key', pattern: /-----BEGIN\s+(RSA|EC|PRIVATE)\s+KEY-----/g, severity: 'critical' as const, category: 'secrets', placeholder: '[REDACTED-PRIVATE-KEY]' },
+  { name: 'Password', pattern: /(?:password|passwd|pwd)\s*[=:]\s*["'][^"']{4,}["']/gi, severity: 'high' as const, category: 'secrets', placeholder: '[REDACTED-PASSWORD]' },
+  { name: 'SSN', pattern: /\b\d{3}-\d{2}-\d{4}\b/g, severity: 'critical' as const, category: 'pii', placeholder: '[REDACTED-SSN]' },
+  { name: 'Credit Card', pattern: /\b(?:\d{4}[-\s]?){3}\d{4}\b/g, severity: 'critical' as const, category: 'pci', placeholder: '[REDACTED-CARD]' },
+  { name: 'Bank Account', pattern: /\b(?:account\s*(?:number|no|#)?\s*[:=]?\s*)\d{8,17}\b/gi, severity: 'critical' as const, category: 'nacha', placeholder: '[REDACTED-BANK-ACCOUNT]' },
+  { name: 'NPI', pattern: /\bNPI\s*[:=]?\s*\d{10}\b/gi, severity: 'critical' as const, category: 'npi', placeholder: '[REDACTED-NPI]' },
+  { name: 'Private IP', pattern: /\b(?:(?:10|192\.168|172\.(?:1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3})\b/g, severity: 'low' as const, category: 'nonpublic', placeholder: '[REDACTED-PRIVATE-IP]' },
 ];
+
+const REDACTION_CATEGORIES: Record<string, string[]> = {
+  redact: ['secrets', 'pii', 'pci', 'nacha', 'npi'],
+  'redact-secrets': ['secrets'],
+  'redact-credentials': ['secrets'],
+  'redact-pii': ['pii'],
+  'redact-pci': ['pci'],
+  'redact-nacha': ['nacha'],
+  'redact-bank': ['nacha'],
+  'redact-npi': ['npi'],
+  'redact-nonpublic': ['nonpublic'],
+};
 
 let statusBar: vscode.StatusBarItem;
 let diagnostics: vscode.DiagnosticCollection;
@@ -66,6 +83,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand('cyberarmor-cursor.scanFile', scanCurrentFile),
+    vscode.commands.registerCommand('cyberarmor-cursor.redactFindings', redactCurrentFile),
     vscode.commands.registerCommand('cyberarmor-cursor.toggleMonitoring', toggleMonitoring),
     vscode.commands.registerCommand('cyberarmor-cursor.redeemBootstrapToken', async () => {
       try {
@@ -100,8 +118,11 @@ export async function activate(context: vscode.ExtensionContext) {
       const findings = scanDocument(event.document);
       if (findings > 0) {
         vscode.window.showWarningMessage(
-          `CyberArmor: ${findings} sensitive data finding(s) detected before save`
-        );
+          `CyberArmor: ${findings} sensitive data finding(s) detected before save`,
+          'Redact Findings'
+        ).then(choice => {
+          if (choice === 'Redact Findings') redactDocument(event.document);
+        });
       }
     })
   );
@@ -110,6 +131,17 @@ export async function activate(context: vscode.ExtensionContext) {
 }
 
 export function deactivate() {}
+
+function redactText(text: string, mode = 'redact'): string {
+  const categories = new Set(REDACTION_CATEGORIES[mode] || REDACTION_CATEGORIES.redact);
+  let redacted = text;
+  for (const pat of DLP_PATTERNS) {
+    if (!categories.has(pat.category)) continue;
+    pat.pattern.lastIndex = 0;
+    redacted = redacted.replace(pat.pattern, pat.placeholder);
+  }
+  return redacted;
+}
 
 function scanDocument(document: vscode.TextDocument): number {
   const text = document.getText();
@@ -136,6 +168,24 @@ function scanCurrentFile() {
   if (!editor) return;
   const count = scanDocument(editor.document);
   vscode.window.showInformationMessage(`CyberArmor: ${count} finding(s)`);
+}
+
+async function redactDocument(document: vscode.TextDocument): Promise<number> {
+  const mode = vscode.workspace.getConfiguration('cyberarmor').get<string>('enforcementMode', 'redact');
+  const original = document.getText();
+  const redacted = redactText(original, mode.startsWith('redact') ? mode : 'redact');
+  if (redacted === original) return 0;
+  const edit = new vscode.WorkspaceEdit();
+  edit.replace(document.uri, new vscode.Range(document.positionAt(0), document.positionAt(original.length)), redacted);
+  await vscode.workspace.applyEdit(edit);
+  return scanDocument(document);
+}
+
+async function redactCurrentFile() {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) return;
+  const remaining = await redactDocument(editor.document);
+  vscode.window.showInformationMessage(`CyberArmor: redacted sensitive findings in current file (${remaining} remaining)`);
 }
 
 function toggleMonitoring() {

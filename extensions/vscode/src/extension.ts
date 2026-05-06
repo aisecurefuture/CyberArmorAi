@@ -84,6 +84,7 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('cyberarmor.showStatus', () => showStatusPanel()),
     vscode.commands.registerCommand('cyberarmor.scanFile', () => scanCurrentFile()),
     vscode.commands.registerCommand('cyberarmor.scanWorkspace', () => scanWorkspace()),
+    vscode.commands.registerCommand('cyberarmor.redactFindings', () => redactCurrentFile()),
     vscode.commands.registerCommand('cyberarmor.toggleMonitoring', () => toggleMonitoring()),
     vscode.commands.registerCommand('cyberarmor.redeemBootstrapToken', async () => {
       try {
@@ -104,6 +105,18 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.workspace.onWillSaveTextDocument(event => {
       if (config.get('dlpOnSave', true)) {
+        const mode = config.get<string>('enforcementMode', 'warn');
+        if (mode.startsWith('redact')) {
+          event.waitUntil(
+            dlpScanner.redactDocument(event.document, mode).then((count) => {
+              if (count > 0) {
+                vscode.window.showInformationMessage(`CyberArmor: redacted ${count} sensitive finding(s) before save`);
+              }
+              return [];
+            })
+          );
+          return;
+        }
         const findings = dlpScanner.scanDocument(event.document);
         if (findings.length > 0) {
           vscode.window.showWarningMessage(
@@ -174,6 +187,15 @@ async function scanCurrentFile() {
   vscode.window.showInformationMessage(`CyberArmor: ${findings.length} finding(s) in current file`);
 }
 
+async function redactCurrentFile() {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) { vscode.window.showWarningMessage('No active file'); return; }
+  const config = getCyberArmorConfig();
+  const mode = config.get<string>('enforcementMode', 'redact');
+  const count = await dlpScanner.redactDocument(editor.document, mode.startsWith('redact') ? mode : 'redact');
+  vscode.window.showInformationMessage(`CyberArmor: redacted ${count} sensitive finding(s)`);
+}
+
 async function scanWorkspace() {
   const files = await vscode.workspace.findFiles('**/*.{ts,js,py,java,cs,go,rs,rb,php,json,yaml,yml,env,cfg,ini}', '**/node_modules/**', 500);
   let totalFindings = 0;
@@ -192,8 +214,8 @@ function toggleMonitoring() {
   vscode.window.showInformationMessage(`CyberArmor monitoring ${!current ? 'enabled' : 'disabled'}`);
 }
 
-function showFindings(findings: Array<{name: string, line: number, match: string}>) {
+function showFindings(findings: Array<{name: string, line: number, match: string, category?: string}>) {
   const channel = vscode.window.createOutputChannel('CyberArmor DLP');
   channel.show();
-  findings.forEach(f => channel.appendLine(`[${f.name}] Line ${f.line}: ${f.match}`));
+  findings.forEach(f => channel.appendLine(`[${f.name}] Line ${f.line}: ${f.match} (${f.category || 'sensitive'})`));
 }

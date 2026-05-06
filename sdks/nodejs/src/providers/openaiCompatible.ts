@@ -1,5 +1,17 @@
 import type { CyberArmorClient } from '../client';
-import { PolicyViolationError, isAllowed } from '../policy/decision';
+import { PolicyViolationError, isAllowed, requiresRedaction } from '../policy/decision';
+
+function applyRedactedPrompt(
+  messages: Array<{ role: string; content: string }>,
+  redactedPrompt?: string
+): Array<{ role: string; content: string }> {
+  if (!redactedPrompt || messages.length === 0) return messages;
+  const next = messages.map((message) => ({ ...message }));
+  const lastUserIndex = next.map((message) => message.role).lastIndexOf('user');
+  const targetIndex = lastUserIndex >= 0 ? lastUserIndex : next.length - 1;
+  next[targetIndex] = { ...next[targetIndex], content: redactedPrompt };
+  return next;
+}
 
 export class CyberArmorOpenAICompatible {
   private inner: any;
@@ -48,9 +60,12 @@ export class CyberArmorOpenAICompatible {
             throw new PolicyViolationError(decision);
           }
 
+          const outboundMessages = requiresRedaction(decision)
+            ? applyRedactedPrompt(messages, decision.redactedPrompt)
+            : messages;
           const response = await (this.inner.chat.completions as unknown as {
             create: (opts: Record<string, unknown>) => Promise<unknown>
-          }).create({ model, messages, ...rest });
+          }).create({ model, messages: outboundMessages, ...rest });
 
           this.ca.emitEvent('llm_call', {
             provider: this.provider,
@@ -58,7 +73,12 @@ export class CyberArmorOpenAICompatible {
             framework: `${this.provider}-sdk`,
             promptHash: this.ca.hashPrompt(promptText),
             latencyMs: Date.now() - start,
-            outcome: 'success',
+            outcome: requiresRedaction(decision) ? 'success_redacted' : 'success',
+            policyDecision: {
+              decision: decision.decision,
+              reasonCode: decision.reasonCode,
+              redactionTargets: decision.redactionTargets ?? [],
+            },
           });
           return response;
         },
@@ -71,4 +91,3 @@ export class CyberArmorOpenAICompatible {
     };
   }
 }
-

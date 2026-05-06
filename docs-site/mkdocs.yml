@@ -81,6 +81,7 @@ nav:
       - Architecture: platform/architecture.md
       - Services: platform/services.md
       - Endpoint Agent: platform/endpoint-agent.md
+      - Redaction Action Modes: platform/redaction-action-modes.md
   - Operations:
       - Deployment: operations/deployment.md
       - Troubleshooting: operations/troubleshooting.md

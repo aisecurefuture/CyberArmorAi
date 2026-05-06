@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import glob
+import hashlib
 import logging
 import os
 import platform
@@ -28,6 +29,11 @@ from watchdog.events import (
     FileSystemEventHandler,
 )
 from watchdog.observers import Observer
+
+try:
+    from dlp.redactor import is_redaction_action, redact_text
+except ImportError:  # pragma: no cover - package-relative fallback for tests
+    from ..dlp.redactor import is_redaction_action, redact_text
 
 if TYPE_CHECKING:
     from agent import EndpointAgent
@@ -388,20 +394,53 @@ class FileMonitor:
                 content = pyperclip.paste()
                 if content and content != last_content:
                     last_content = content
-                    # Quick heuristic checks
-                    if self._clipboard_has_sensitive_data(content):
+                    redaction_action = self._clipboard_action()
+                    redaction = redact_text(content, redaction_action)
+                    if redaction.changed and is_redaction_action(redaction_action):
+                        pyperclip.copy(redaction.text)
+                        last_content = redaction.text
+                        logger.warning("Sensitive clipboard data redacted")
+                        await self._emit_event(
+                            "clipboard_sensitive_data_redacted",
+                            {
+                                "length": len(content),
+                                "redacted_length": len(redaction.text),
+                                "finding_count": redaction.count,
+                                "labels": [finding.label for finding in redaction.findings],
+                                "categories": sorted({finding.category for finding in redaction.findings}),
+                                "original_sha256": hashlib.sha256(content.encode("utf-8", errors="ignore")).hexdigest(),
+                                "redacted_sha256": hashlib.sha256(redaction.text.encode("utf-8", errors="ignore")).hexdigest(),
+                                "action": redaction.action,
+                                "severity": "high",
+                            },
+                        )
+                    elif redaction.changed or self._clipboard_has_sensitive_data(content):
                         logger.warning("Sensitive data detected in clipboard")
                         await self._emit_event(
                             "clipboard_sensitive_data",
                             {
-                                "preview": content[:100],
                                 "length": len(content),
+                                "finding_count": redaction.count,
+                                "labels": [finding.label for finding in redaction.findings],
+                                "categories": sorted({finding.category for finding in redaction.findings}),
+                                "content_sha256": hashlib.sha256(content.encode("utf-8", errors="ignore")).hexdigest(),
+                                "action": redaction_action,
                                 "severity": "high",
                             },
                         )
             except Exception:
                 # Clipboard access can fail in headless environments
                 await asyncio.sleep(10)
+
+    def _clipboard_action(self) -> str:
+        """Return clipboard response action, defaulting to monitor-safe telemetry."""
+        env_action = os.getenv("CYBERARMOR_CLIPBOARD_ACTION") or os.getenv("CYBERARMOR_MODE")
+        if env_action:
+            return env_action.strip().lower()
+        try:
+            return self._agent.config.get("dlp", "clipboard_action", fallback="monitor").strip().lower()
+        except Exception:
+            return "monitor"
 
     @staticmethod
     def _clipboard_has_sensitive_data(text: str) -> bool:

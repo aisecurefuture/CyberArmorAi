@@ -10,6 +10,7 @@
   "contributes": {
     "commands": [
       { "command": "cyberarmor-kiro.scanFile", "title": "CyberArmor: Scan Current File" },
+      { "command": "cyberarmor-kiro.redactFindings", "title": "CyberArmor: Redact Findings" },
       { "command": "cyberarmor-kiro.redeemBootstrapToken", "title": "CyberArmor: Redeem Bootstrap Token" }
     ],
     "configuration": {
@@ -18,7 +19,13 @@
         "cyberarmor.controlPlaneUrl": { "type": "string", "default": "http://localhost:8000" },
         "cyberarmor.apiKey": { "type": "string", "default": "", "description": "Plaintext API key or precomputed PQC credential value" },
         "cyberarmor.bootstrapToken": { "type": "string", "default": "", "description": "One-time bootstrap token for enrollment" },
-        "cyberarmor.tenantId": { "type": "string", "default": "default" }
+        "cyberarmor.tenantId": { "type": "string", "default": "default" },
+        "cyberarmor.enforcementMode": {
+          "type": "string",
+          "default": "monitor",
+          "enum": ["monitor", "warn", "block", "redact", "redact-secrets", "redact-pii", "redact-pci", "redact-nacha", "redact-npi", "redact-nonpublic"],
+          "description": "How CyberArmor responds to sensitive findings. Redaction modes rewrite matching content before it leaves the editor."
+        }
       }
     }
   },

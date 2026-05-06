@@ -27,7 +27,8 @@ const DEFAULT_CONFIG = {
   policySyncIntervalMs: 60000,
   aiMonitoringEnabled: true,
   promptInjectionDetection: true,
-  actionMode: "monitor", // monitor, warn, block
+  actionMode: "monitor", // monitor, warn, block, redact*
+  redactionAction: "redact",
   pqcAuthEnabled: true,
   pqcAuthStrict: false,
 };

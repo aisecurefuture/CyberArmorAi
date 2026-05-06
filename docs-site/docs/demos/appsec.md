@@ -30,9 +30,13 @@ bash scripts/demo/run_appsec_demo.sh
    credentials, and redacted prompt/response text.
 
 4. Open DLP & Data Class. to show credential and secret leak prevention.
-5. Open Telemetry to show AI service detection.
-6. Open Incidents to review policy decisions.
-7. Export an evidence pack from Reports.
+5. In a browser or IDE extension, switch enforcement to `redact-secrets` and
+   paste a simulated credential into an AI prompt or source file. Verify the
+   user sees placeholders such as `[REDACTED-AWS-KEY]` instead of the raw value.
+6. Open Telemetry to show AI service detection and redaction evidence without
+   raw secret previews.
+7. Open Incidents to review policy decisions.
+8. Export an evidence pack from Reports.
 
 ## Close
 

@@ -87,6 +87,13 @@
             <select class="form-select" id="action-mode">
               <option value="monitor">Monitor - Log threats, no user interruption</option>
               <option value="warn">Warn - Show warnings for detected threats</option>
+              <option value="redact">Redact - Remove supported sensitive data before AI submission</option>
+              <option value="redact-secrets">Redact Secrets - Remove credentials, keys, and tokens</option>
+              <option value="redact-pii">Redact PII - Remove personal identifiers</option>
+              <option value="redact-pci">Redact PCI - Remove payment card data</option>
+              <option value="redact-nacha">Redact NACHA - Remove bank account and routing data</option>
+              <option value="redact-npi">Redact NPI - Remove healthcare provider identifiers</option>
+              <option value="redact-nonpublic">Redact Non-Public - Remove internal network and non-public indicators</option>
               <option value="block">Block - Prevent dangerous actions</option>
             </select>
           </div>

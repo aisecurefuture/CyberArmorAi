@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 from .classifier import DataClassifier, ClassificationResult
+from .redactor import RedactionResult, redact_text
 
 logger = logging.getLogger("dlp_scanner")
 
@@ -112,6 +113,10 @@ class ContentScanner:
     def scan_text(self, text: str, source: str = "clipboard") -> ClassificationResult:
         """Scan arbitrary text content (clipboard, form data, etc.)."""
         return self.classifier.classify_text(text)
+
+    def redact_text(self, text: str, action: str = "redact") -> RedactionResult:
+        """Redact sensitive text with category-aware policy action semantics."""
+        return redact_text(text, action)
 
     def scan_clipboard(self) -> Optional[ClassificationResult]:
         """Scan current clipboard contents for sensitive data."""

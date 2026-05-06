@@ -63,7 +63,7 @@ class RASPConfig:
     api_key: str = _env("CYBERARMOR_API_KEY", default="")
     tenant_id: str = _env("CYBERARMOR_TENANT", default="default")
     bootstrap_token: str = _env("CYBERARMOR_BOOTSTRAP_TOKEN", default="")
-    mode: str = _env("CYBERARMOR_MODE", default="monitor")  # monitor | block
+    mode: str = _env("CYBERARMOR_MODE", default="monitor")  # monitor | warn | block | redact*
     dlp_enabled: bool = True
     prompt_injection_enabled: bool = True
 
@@ -115,18 +115,78 @@ def detect_prompt_injection(text: str) -> Optional[str]:
             return p.pattern
     return None
 
-# ── DLP Patterns ──────────────────────────────────────────
+# ── DLP Patterns and Redaction ────────────────────────────
 DLP_PATTERNS = [
-    ("ssn", re.compile(r"\b\d{3}-\d{2}-\d{4}\b")),
-    ("credit_card", re.compile(r"\b4[0-9]{12}(?:[0-9]{3})?\b")),
-    ("aws_key", re.compile(r"AKIA[0-9A-Z]{16}")),
-    ("github_token", re.compile(r"(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,}")),
-    ("private_key", re.compile(r"-----BEGIN\s+(RSA|EC|PRIVATE)\s+KEY-----")),
-    ("jwt", re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+")),
+    {"name": "ssn", "category": "pii", "placeholder": "[REDACTED-SSN]", "pattern": re.compile(r"\b\d{3}-\d{2}-\d{4}\b")},
+    {"name": "email", "category": "pii", "placeholder": "[REDACTED-EMAIL]", "pattern": re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")},
+    {"name": "phone", "category": "pii", "placeholder": "[REDACTED-PHONE]", "pattern": re.compile(r"\b(?:\+1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)\d{3}[-.\s]?\d{4}\b")},
+    {"name": "credit_card", "category": "pci", "placeholder": "[REDACTED-CARD]", "pattern": re.compile(r"\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12})\b")},
+    {"name": "routing_number", "category": "nacha", "placeholder": "[REDACTED-ROUTING]", "pattern": re.compile(r"\b\d{9}\b")},
+    {"name": "bank_account", "category": "nacha", "placeholder": "[REDACTED-BANK-ACCOUNT]", "pattern": re.compile(r"\b(?:account|acct)\s*(?:number|#|no\.?)?\s*[:=]?\s*\d{8,17}\b", re.I)},
+    {"name": "npi", "category": "npi", "placeholder": "[REDACTED-NPI]", "pattern": re.compile(r"\b(?:npi\s*[:#]?\s*)?\d{10}\b", re.I)},
+    {"name": "private_ip", "category": "nonpublic", "placeholder": "[REDACTED-PRIVATE-IP]", "pattern": re.compile(r"\b(?:10|172\.(?:1[6-9]|2\d|3[01])|192\.168)\.\d{1,3}\.\d{1,3}\b")},
+    {"name": "aws_key", "category": "secrets", "placeholder": "[REDACTED-AWS-KEY]", "pattern": re.compile(r"\bAKIA[0-9A-Z]{16}\b")},
+    {"name": "openai_key", "category": "secrets", "placeholder": "[REDACTED-OPENAI-KEY]", "pattern": re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b")},
+    {"name": "github_token", "category": "secrets", "placeholder": "[REDACTED-GITHUB-TOKEN]", "pattern": re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,}\b")},
+    {"name": "bearer_token", "category": "secrets", "placeholder": "[REDACTED-BEARER]", "pattern": re.compile(r"\bBearer\s+[A-Za-z0-9_.-]{20,}\b")},
+    {"name": "password", "category": "secrets", "placeholder": "[REDACTED-PASSWORD]", "pattern": re.compile(r"\b(?:password|passwd|pwd)\s*[:=]\s*['\"]?[^'\"\s]{6,}", re.I)},
+    {"name": "private_key", "category": "secrets", "placeholder": "[REDACTED-PRIVATE-KEY]", "pattern": re.compile(r"-----BEGIN\s+(?:RSA|EC|DSA|OPENSSH|PGP)?\s*PRIVATE KEY-----[\s\S]*?-----END\s+(?:RSA|EC|DSA|OPENSSH|PGP)?\s*PRIVATE KEY-----")},
+    {"name": "jwt", "category": "secrets", "placeholder": "[REDACTED-JWT]", "pattern": re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+\b")},
+    {"name": "api_key", "category": "secrets", "placeholder": "[REDACTED-API-KEY]", "pattern": re.compile(r"\b(?:api[_-]?key|apikey|secret|token|password)\s*[:=]\s*['\"]?[A-Za-z0-9_./+=-]{12,}", re.I)},
 ]
 
+REDACTION_CATEGORIES = {
+    "redact": {"secrets", "pii", "pci", "nacha", "npi", "nonpublic"},
+    "redact-secrets": {"secrets"},
+    "redact-pii": {"pii"},
+    "redact-pci": {"pci"},
+    "redact-nacha": {"nacha"},
+    "redact-npi": {"npi"},
+    "redact-nonpublic": {"nonpublic"},
+}
+
+def normalize_mode(mode: str) -> str:
+    normalized = (mode or "").strip().lower().replace("_", "-")
+    if normalized == "redact-nachi":
+        return "redact-nacha"
+    return normalized
+
+def is_redaction_mode(mode: str) -> bool:
+    return normalize_mode(mode) in REDACTION_CATEGORIES
+
 def scan_dlp(text: str) -> List[str]:
-    return [name for name, pat in DLP_PATTERNS if pat.search(text)]
+    return [rule["name"] for rule in DLP_PATTERNS if rule["pattern"].search(text)]
+
+def redact_text(text: str, mode: str = "redact") -> tuple[str, List[str]]:
+    categories = REDACTION_CATEGORIES.get(normalize_mode(mode), REDACTION_CATEGORIES["redact"])
+    redacted = text
+    findings: List[str] = []
+    for rule in DLP_PATTERNS:
+        if rule["category"] not in categories:
+            continue
+        redacted, count = rule["pattern"].subn(rule["placeholder"], redacted)
+        if count:
+            findings.append(rule["name"])
+    return redacted, findings
+
+def _redact_json_value(value: Any, mode: str) -> Any:
+    if isinstance(value, str):
+        redacted, _ = redact_text(value, mode)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_json_value(item, mode) for item in value]
+    if isinstance(value, dict):
+        return {key: _redact_json_value(item, mode) for key, item in value.items()}
+    return value
+
+def redact_provider_payload(body: str, mode: str) -> str:
+    try:
+        parsed = json.loads(body)
+    except Exception:
+        redacted, _ = redact_text(body, mode)
+        return redacted
+    redacted = _redact_json_value(parsed, mode)
+    return json.dumps(redacted, separators=(",", ":"))
 
 # ── Telemetry ─────────────────────────────────────────────
 _event_buffer: List[Dict] = []
@@ -151,10 +211,11 @@ def _flush(batch):
 
 # ── Core Inspection ───────────────────────────────────────
 class InspectionResult:
-    def __init__(self, allowed=True, reason="", event_type=""):
+    def __init__(self, allowed=True, reason="", event_type="", redacted_body: str = ""):
         self.allowed = allowed
         self.reason = reason
         self.event_type = event_type
+        self.redacted_body = redacted_body
 
 def inspect_request(url: str, body: str = "") -> InspectionResult:
     """Inspect an outbound request to an AI service."""
@@ -176,7 +237,25 @@ def inspect_request(url: str, body: str = "") -> InspectionResult:
             _record_event("sensitive_data", url, ",".join(findings))
             if config.mode == "block":
                 return InspectionResult(False, f"Sensitive data: {','.join(findings)}", "dlp")
+            if is_redaction_mode(config.mode):
+                redacted_body = redact_provider_payload(body, config.mode)
+                if redacted_body != body:
+                    _record_event("sensitive_data_redacted", url, ",".join(findings))
+                    return InspectionResult(True, "Sensitive data redacted", "dlp_redacted", redacted_body)
 
+    return InspectionResult()
+
+def inspect_response(url: str, body: str = "") -> InspectionResult:
+    """Inspect and optionally redact response text from an AI service."""
+    if not body or not is_ai_endpoint(url) or not is_redaction_mode(config.mode):
+        return InspectionResult()
+    findings = scan_dlp(body)
+    if not findings:
+        return InspectionResult()
+    redacted_body = redact_provider_payload(body, config.mode)
+    if redacted_body != body:
+        _record_event("sensitive_response_redacted", url, ",".join(findings))
+        return InspectionResult(True, "Sensitive response data redacted", "dlp_response_redacted", redacted_body)
     return InspectionResult()
 
 # ── WSGI Middleware ────────────────────────────────────────
@@ -198,6 +277,10 @@ class CyberArmorWSGI:
             if not result.allowed:
                 start_response("403 Forbidden", [("Content-Type", "application/json")])
                 return [json.dumps({"error": result.reason, "policy": "cyberarmor-rasp"}).encode()]
+            if result.redacted_body:
+                redacted = result.redacted_body.encode("utf-8")
+                environ["wsgi.input"] = __import__("io").BytesIO(redacted)
+                environ["CONTENT_LENGTH"] = str(len(redacted))
 
         return self.app(environ, start_response)
 
@@ -233,6 +316,8 @@ class CyberArmorASGI:
                 await send({"type": "http.response.start", "status": 403, "headers": [[b"content-type", b"application/json"]]})
                 await send({"type": "http.response.body", "body": json.dumps({"error": result.reason}).encode()})
                 return
+            if result.redacted_body:
+                msg = {**msg, "body": result.redacted_body.encode("utf-8")}
 
             # Replay body
             async def replayed_receive():
@@ -257,8 +342,9 @@ def patch():
         _orig_request = requests.Session.request
         @functools.wraps(_orig_request)
         def patched_request(self, method, url, **kwargs):
+            original_body_value = kwargs.get("json") if "json" in kwargs else kwargs.get("data")
             if method.upper() == "POST":
-                body = kwargs.get("json") or kwargs.get("data") or ""
+                body = original_body_value or ""
                 if isinstance(body, dict):
                     body = json.dumps(body)
                 elif isinstance(body, bytes):
@@ -266,7 +352,28 @@ def patch():
                 result = inspect_request(str(url), str(body))
                 if not result.allowed:
                     raise PermissionError(f"CyberArmor RASP blocked: {result.reason}")
-            return _orig_request(self, method, url, **kwargs)
+                if result.redacted_body:
+                    if "json" in kwargs:
+                        try:
+                            kwargs["json"] = json.loads(result.redacted_body)
+                        except Exception:
+                            kwargs["data"] = result.redacted_body
+                            kwargs.pop("json", None)
+                    elif isinstance(original_body_value, bytes):
+                        kwargs["data"] = result.redacted_body.encode("utf-8")
+                    else:
+                        kwargs["data"] = result.redacted_body
+            response = _orig_request(self, method, url, **kwargs)
+            try:
+                content_type = response.headers.get("content-type", "")
+                if "json" in content_type or "text" in content_type:
+                    response_body = response.content.decode(response.encoding or "utf-8", errors="ignore")
+                    response_result = inspect_response(str(url), response_body)
+                    if response_result.redacted_body:
+                        response._content = response_result.redacted_body.encode(response.encoding or "utf-8")  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            return response
         requests.Session.request = patched_request
         logger.info("CyberArmor RASP: patched requests.Session")
     except ImportError:
@@ -283,7 +390,19 @@ def patch():
                 result = inspect_request(str(request.url), body)
                 if not result.allowed:
                     raise PermissionError(f"CyberArmor RASP blocked: {result.reason}")
-            return _orig_send(self, request, **kwargs)
+                if result.redacted_body:
+                    request.stream = httpx.ByteStream(result.redacted_body.encode("utf-8"))
+                    request.headers["Content-Length"] = str(len(result.redacted_body.encode("utf-8")))
+            response = _orig_send(self, request, **kwargs)
+            try:
+                response_body = response.content.decode(response.encoding or "utf-8", errors="ignore")
+                response_result = inspect_response(str(request.url), response_body)
+                if response_result.redacted_body:
+                    response._content = response_result.redacted_body.encode(response.encoding or "utf-8")  # type: ignore[attr-defined]
+                    response.headers["Content-Length"] = str(len(response._content))  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            return response
         httpx.Client.send = patched_send
         logger.info("CyberArmor RASP: patched httpx.Client")
     except ImportError:

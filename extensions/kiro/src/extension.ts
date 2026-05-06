@@ -7,12 +7,30 @@
 import * as vscode from 'vscode';
 
 const DLP_PATTERNS = [
-  { name: 'AWS Key', pattern: /AKIA[0-9A-Z]{16}/g },
-  { name: 'GitHub Token', pattern: /(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,}/g },
-  { name: 'Private Key', pattern: /-----BEGIN\s+(RSA|EC|PRIVATE)\s+KEY-----/g },
-  { name: 'Password', pattern: /(?:password|passwd|pwd)\s*[=:]\s*["'][^"']{4,}["']/gi },
-  { name: 'Connection String', pattern: /(?:mongodb|postgres|mysql|redis):\/\/[^\s"']+/gi },
+  { name: 'AWS Key', pattern: /AKIA[0-9A-Z]{16}/g, category: 'secrets', placeholder: '[REDACTED-AWS-KEY]' },
+  { name: 'GitHub Token', pattern: /(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,}/g, category: 'secrets', placeholder: '[REDACTED-GITHUB-TOKEN]' },
+  { name: 'OpenAI API Key', pattern: /\b(?:sk-(?:proj|svcacct)-[A-Za-z0-9_\-]{20,}|sk-[A-Za-z0-9_\-]{20,})\b/g, category: 'secrets', placeholder: '[REDACTED-OPENAI-KEY]' },
+  { name: 'Private Key', pattern: /-----BEGIN\s+(RSA|EC|PRIVATE)\s+KEY-----/g, category: 'secrets', placeholder: '[REDACTED-PRIVATE-KEY]' },
+  { name: 'Password', pattern: /(?:password|passwd|pwd)\s*[=:]\s*["'][^"']{4,}["']/gi, category: 'secrets', placeholder: '[REDACTED-PASSWORD]' },
+  { name: 'Connection String', pattern: /(?:mongodb|postgres|mysql|redis):\/\/[^\s"']+/gi, category: 'secrets', placeholder: '[REDACTED-CONNECTION-STRING]' },
+  { name: 'SSN', pattern: /\b\d{3}-\d{2}-\d{4}\b/g, category: 'pii', placeholder: '[REDACTED-SSN]' },
+  { name: 'Credit Card', pattern: /\b(?:\d{4}[-\s]?){3}\d{4}\b/g, category: 'pci', placeholder: '[REDACTED-CARD]' },
+  { name: 'Bank Account', pattern: /\b(?:account\s*(?:number|no|#)?\s*[:=]?\s*)\d{8,17}\b/gi, category: 'nacha', placeholder: '[REDACTED-BANK-ACCOUNT]' },
+  { name: 'NPI', pattern: /\bNPI\s*[:=]?\s*\d{10}\b/gi, category: 'npi', placeholder: '[REDACTED-NPI]' },
+  { name: 'Private IP', pattern: /\b(?:(?:10|192\.168|172\.(?:1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3})\b/g, category: 'nonpublic', placeholder: '[REDACTED-PRIVATE-IP]' },
 ];
+
+const REDACTION_CATEGORIES: Record<string, string[]> = {
+  redact: ['secrets', 'pii', 'pci', 'nacha', 'npi'],
+  'redact-secrets': ['secrets'],
+  'redact-credentials': ['secrets'],
+  'redact-pii': ['pii'],
+  'redact-pci': ['pci'],
+  'redact-nacha': ['nacha'],
+  'redact-bank': ['nacha'],
+  'redact-npi': ['npi'],
+  'redact-nonpublic': ['nonpublic'],
+};
 
 const SUSPICIOUS_CODE = [
   { name: 'eval', pattern: /\beval\s*\(/g },
@@ -76,6 +94,7 @@ export async function activate(context: vscode.ExtensionContext) {
         vscode.window.showInformationMessage(`CyberArmor: ${count} finding(s)`);
       }
     }),
+    vscode.commands.registerCommand('cyberarmor-kiro.redactFindings', redactCurrentFile),
     vscode.commands.registerCommand('cyberarmor-kiro.redeemBootstrapToken', async () => {
       try {
         const redeemed = await redeemBootstrapToken(vscode.workspace.getConfiguration('cyberarmor'));
@@ -109,6 +128,17 @@ export async function activate(context: vscode.ExtensionContext) {
 
 export function deactivate() {}
 
+function redactText(text: string, mode = 'redact'): string {
+  const categories = new Set(REDACTION_CATEGORIES[mode] || REDACTION_CATEGORIES.redact);
+  let redacted = text;
+  for (const pat of DLP_PATTERNS) {
+    if (!categories.has(pat.category)) continue;
+    pat.pattern.lastIndex = 0;
+    redacted = redacted.replace(pat.pattern, pat.placeholder);
+  }
+  return redacted;
+}
+
 function scanDocument(doc: vscode.TextDocument): number {
   const text = doc.getText();
   const diagList: vscode.Diagnostic[] = [];
@@ -125,4 +155,21 @@ function scanDocument(doc: vscode.TextDocument): number {
 
   diagnostics.set(doc.uri, diagList);
   return diagList.length;
+}
+
+async function redactCurrentFile() {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) return;
+  const mode = vscode.workspace.getConfiguration('cyberarmor').get<string>('enforcementMode', 'redact');
+  const original = editor.document.getText();
+  const redacted = redactText(original, mode.startsWith('redact') ? mode : 'redact');
+  if (redacted === original) {
+    vscode.window.showInformationMessage('CyberArmor: no redactable findings in current file');
+    return;
+  }
+  const edit = new vscode.WorkspaceEdit();
+  edit.replace(editor.document.uri, new vscode.Range(editor.document.positionAt(0), editor.document.positionAt(original.length)), redacted);
+  await vscode.workspace.applyEdit(edit);
+  const remaining = scanDocument(editor.document);
+  vscode.window.showInformationMessage(`CyberArmor: redacted sensitive findings in current file (${remaining} remaining)`);
 }

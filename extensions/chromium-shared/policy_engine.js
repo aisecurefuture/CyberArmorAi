@@ -16,7 +16,7 @@ const CyberArmorPolicyEngine = (() => {
    *   id:          string
    *   name:        string
    *   enabled:     boolean
-   *   action:      "monitor" | "warn" | "block"
+   *   action:      "monitor" | "warn" | "block" | "redact" | "redact-secrets" | "redact-pii" | "redact-pci" | "redact-nacha" | "redact-npi" | "redact-nonpublic"
    *   conditions:  ConditionGroup  (top-level AND/OR tree)
    *   metadata:    object (labels, description, severity, etc.)
    */
@@ -142,14 +142,28 @@ const CyberArmorPolicyEngine = (() => {
 
   /**
    * Get the most restrictive action from a set of evaluation results.
-   * block > warn > monitor
+   * block > redact* > warn > monitor
    */
   function getMostRestrictiveAction(results) {
     if (!results || results.length === 0) return "monitor";
-    const order = { block: 0, warn: 1, monitor: 2 };
+    const order = {
+      block: 0,
+      redact: 1,
+      "redact-sensitive": 1,
+      "redact-nonpublic": 1,
+      "redact-secrets": 1,
+      "redact-credentials": 1,
+      "redact-pii": 1,
+      "redact-pci": 1,
+      "redact-nacha": 1,
+      "redact-bank": 1,
+      "redact-npi": 1,
+      warn: 2,
+      monitor: 3,
+    };
     let most = "monitor";
     for (const r of results) {
-      if ((order[r.action] ?? 2) < (order[most] ?? 2)) {
+      if ((order[r.action] ?? 3) < (order[most] ?? 3)) {
         most = r.action;
       }
     }
@@ -161,19 +175,29 @@ const CyberArmorPolicyEngine = (() => {
   /* ------------------------------------------------------------------ */
 
   const DATA_CLASSIFIERS = [
-    { label: "SSN",              pattern: /\b\d{3}-\d{2}-\d{4}\b/g,                            severity: "critical" },
-    { label: "Credit-Card",      pattern: /\b(?:\d{4}[-\s]?){3}\d{4}\b/g,                      severity: "critical" },
-    { label: "IBAN",             pattern: /\b[A-Z]{2}\d{2}[A-Za-z0-9]{4}\d{7,}\b/g,            severity: "critical" },
-    { label: "Email",            pattern: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z]{2,}\b/gi, severity: "high"     },
-    { label: "Phone",            pattern: /\b(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}\b/g, severity: "high" },
-    { label: "IP-Address",       pattern: /\b(?:\d{1,3}\.){3}\d{1,3}\b/g,                      severity: "medium"   },
-    { label: "AWS-Key",          pattern: /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g,                     severity: "critical" },
-    { label: "Private-Key",      pattern: /-----BEGIN\s(?:RSA\s)?PRIVATE\sKEY-----/g,           severity: "critical" },
-    { label: "JWT",              pattern: /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+\b/g, severity: "high" },
-    { label: "API-Key-Generic",  pattern: /\b(?:api[_-]?key|apikey|secret[_-]?key)\s*[:=]\s*["']?[A-Za-z0-9_\-]{16,}["']?\b/gi, severity: "high" },
-    { label: "Drivers-License",  pattern: /\b[A-Z]{1,2}\d{4,8}\b/g,                            severity: "high"     },
-    { label: "Bank-Account",     pattern: /\b\d{9,18}\b/g,                                     severity: "medium"   },
-    { label: "ZIP-Code",         pattern: /\b\d{5}(?:-\d{4})?\b/g,                             severity: "low"      },
+    { label: "SSN",              pattern: /\b\d{3}-\d{2}-\d{4}\b/g,                            severity: "critical", category: "pii" },
+    { label: "Credit-Card",      pattern: /\b(?:\d{4}[-\s]?){3}\d{4}\b/g,                      severity: "critical", category: "pci" },
+    { label: "Routing-Number",   pattern: /\b(?:routing\s*(?:number|no|#)?\s*[:=]?\s*)\d{9}\b/gi, severity: "critical", category: "nacha" },
+    { label: "Bank-Account",     pattern: /\b(?:account\s*(?:number|no|#)?\s*[:=]?\s*)\d{8,17}\b/gi, severity: "critical", category: "nacha" },
+    { label: "IBAN",             pattern: /\b[A-Z]{2}\d{2}[A-Za-z0-9]{4}\d{7,}\b/g,            severity: "critical", category: "nacha" },
+    { label: "NPI",              pattern: /\bNPI\s*[:=]?\s*\d{10}\b/gi,                        severity: "critical", category: "npi" },
+    { label: "DOB",              pattern: /\b(?:dob|date\s+of\s+birth|born)\s*[:=]?\s*\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b/gi, severity: "high", category: "pii" },
+    { label: "Email",            pattern: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z]{2,}\b/gi, severity: "high", category: "pii" },
+    { label: "Phone",            pattern: /\b(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}\b/g, severity: "high", category: "pii" },
+    { label: "Drivers-License",  pattern: /\b(?:dl|driver'?s?\s+license|license\s+#?)\s*[:=]?\s*[A-Z0-9]{6,12}\b/gi, severity: "high", category: "pii" },
+    { label: "IP-Address",       pattern: /\b(?:10(?:\.\d{1,3}){3}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}|192\.168(?:\.\d{1,3}){2})\b/g, severity: "medium", category: "nonpublic" },
+    { label: "AWS-Key",          pattern: /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g,                     severity: "critical", category: "secrets" },
+    { label: "OpenAI-Key",       pattern: /\b(?:sk-(?:proj|svcacct)-[A-Za-z0-9_\-]{20,}|sk-[A-Za-z0-9_\-]{20,})\b/g, severity: "critical", category: "secrets" },
+    { label: "Anthropic-Key",    pattern: /\bsk-ant-[A-Za-z0-9_\-]{60,}\b/g,                    severity: "critical", category: "secrets" },
+    { label: "GitHub-Token",     pattern: /\bgh[pousr]_[A-Za-z0-9_]{36,255}\b/g,                severity: "critical", category: "secrets" },
+    { label: "Slack-Token",      pattern: /\bxox[bpoa]-[0-9A-Za-z\-]{10,}\b/g,                 severity: "critical", category: "secrets" },
+    { label: "Stripe-Key",       pattern: /\b(?:sk|pk)_(?:live|test)_[A-Za-z0-9]{20,}\b/g,      severity: "critical", category: "secrets" },
+    { label: "Private-Key",      pattern: /-----BEGIN\s(?:RSA\s|EC\s|OPENSSH\s)?PRIVATE\sKEY-----/g, severity: "critical", category: "secrets" },
+    { label: "JWT",              pattern: /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+\b/g, severity: "high", category: "secrets" },
+    { label: "Bearer-Token",     pattern: /\bBearer\s+[A-Za-z0-9\-._~+/]+=*\b/gi,               severity: "high", category: "secrets" },
+    { label: "Password",         pattern: /\b(?:password|passwd|pwd)\s*[:=]\s*["']?[^\s"']{6,}["']?/gi, severity: "high", category: "secrets" },
+    { label: "API-Key-Generic",  pattern: /\b(?:[A-Za-z0-9]+_)*(?:api[_-]?key|apikey|secret[_-]?key|access[_-]?token)\s*[:=]\s*["']?[A-Za-z0-9_\-]{16,}["']?\b/gi, severity: "high", category: "secrets" },
+    { label: "ZIP-Code",         pattern: /\b\d{5}(?:-\d{4})?\b/g,                             severity: "low", category: "pii" },
   ];
 
   /**
@@ -184,11 +208,11 @@ const CyberArmorPolicyEngine = (() => {
     const str = typeof text === "string" ? text : String(text);
     const results = [];
 
-    for (const { label, pattern, severity } of DATA_CLASSIFIERS) {
+    for (const { label, pattern, severity, category } of DATA_CLASSIFIERS) {
       pattern.lastIndex = 0;
       const matches = str.match(pattern);
       if (matches && matches.length > 0) {
-        results.push({ label, severity, count: matches.length, matches });
+        results.push({ label, severity, category, count: matches.length, matches });
       }
     }
     return results;
@@ -287,43 +311,67 @@ const CyberArmorPolicyEngine = (() => {
   }
 
   /* ------------------------------------------------------------------ */
-  /*  PII Redaction                                                     */
+  /*  Redaction                                                         */
   /* ------------------------------------------------------------------ */
 
-  const PII_PATTERNS = [
-    { label: "SSN",               pattern: /\b\d{3}-\d{2}-\d{4}\b/g },
-    { label: "Credit-Card",       pattern: /\b(?:\d{4}[-\s]?){3}\d{4}\b/g },
-    { label: "Email",             pattern: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z]{2,}\b/gi },
-    { label: "Phone",             pattern: /\b(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}\b/g },
-    { label: "IBAN",              pattern: /\b[A-Z]{2}\d{2}[A-Za-z0-9]{4}\d{7,}\b/g },
-    { label: "AWS-Key",           pattern: /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g },
-    { label: "Private-Key",       pattern: /-----BEGIN\s(?:RSA\s)?PRIVATE\sKEY-----/g },
-    { label: "Drivers-License",   pattern: /\b[A-Z]{1,2}\d{4,8}\b/g },
-    { label: "ZIP-Code",          pattern: /\b\d{5}(?:-\d{4})?\b/g },
-  ];
+  const REDACTION_ACTIONS = new Set([
+    "redact",
+    "redact-sensitive",
+    "redact-nonpublic",
+    "redact-secrets",
+    "redact-credentials",
+    "redact-pii",
+    "redact-pci",
+    "redact-nacha",
+    "redact-bank",
+    "redact-npi",
+  ]);
 
-  function redactPII(text) {
+  const REDACTION_CATEGORY_SETS = {
+    redact: ["secrets", "pii", "pci", "nacha", "npi", "nonpublic"],
+    "redact-sensitive": ["secrets", "pii", "pci", "nacha", "npi", "nonpublic"],
+    "redact-nonpublic": ["nonpublic"],
+    "redact-secrets": ["secrets"],
+    "redact-credentials": ["secrets"],
+    "redact-pii": ["pii"],
+    "redact-pci": ["pci"],
+    "redact-nacha": ["nacha"],
+    "redact-bank": ["nacha"],
+    "redact-npi": ["npi"],
+  };
+
+  function isRedactionAction(action) {
+    return REDACTION_ACTIONS.has(String(action || "").toLowerCase());
+  }
+
+  function redactionCategoriesForAction(action) {
+    return REDACTION_CATEGORY_SETS[String(action || "redact").toLowerCase()] || [];
+  }
+
+  function redactText(text, action = "redact") {
     if (!text) return text;
+    const categories = new Set(Array.isArray(action) ? action : redactionCategoriesForAction(action));
+    if (categories.size === 0) return text;
     let result = typeof text === "string" ? text : String(text);
-    for (const { label, pattern } of PII_PATTERNS) {
+    for (const { label, pattern, category } of DATA_CLASSIFIERS) {
+      if (!categories.has(category)) continue;
       pattern.lastIndex = 0;
       result = result.replace(pattern, `[REDACTED-${label}]`);
     }
     return result;
   }
 
+  function redactionFindings(text, action = "redact") {
+    const categories = new Set(Array.isArray(action) ? action : redactionCategoriesForAction(action));
+    return classifyData(text).filter((finding) => categories.has(finding.category));
+  }
+
+  function redactPII(text) {
+    return redactText(text, "redact-pii");
+  }
+
   function detectPII(text) {
-    if (!text) return [];
-    const str = typeof text === "string" ? text : String(text);
-    const findings = [];
-    for (const { label, pattern } of PII_PATTERNS) {
-      pattern.lastIndex = 0;
-      const matches = str.match(pattern);
-      if (matches && matches.length > 0) {
-        findings.push({ label, count: matches.length });
-      }
-    }
-    return findings;
+    return redactionFindings(text, "redact-pii").map(({ label, count }) => ({ label, count }));
   }
 
   /* ------------------------------------------------------------------ */
@@ -380,6 +428,10 @@ const CyberArmorPolicyEngine = (() => {
     detectThreats,
 
     redactPII,
+    redactText,
+    redactionFindings,
+    redactionCategoriesForAction,
+    isRedactionAction,
     detectPII,
 
     identifyAIService,
