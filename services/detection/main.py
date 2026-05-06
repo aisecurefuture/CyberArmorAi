@@ -361,6 +361,24 @@ _SENSITIVE_REGEX_PATTERNS = [
         ),
     ),
     ("aws_key", re.compile(r"AKIA[0-9A-Z]{16}")),
+    ("gcp_api_key", re.compile(r"\bAIza[0-9A-Za-z\-_]{35}\b")),
+    ("github_token", re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{36,255}\b")),
+    ("openai_api_key", re.compile(r"\b(?:sk-(?:proj|svcacct)-[A-Za-z0-9_\-]{20,}|sk-[A-Za-z0-9]{32,})\b")),
+    ("anthropic_api_key", re.compile(r"\bsk-ant-[A-Za-z0-9\-_]{60,}\b")),
+    ("slack_token", re.compile(r"\bxox[bpoa]-[0-9A-Za-z\-]{10,}\b")),
+    ("stripe_key", re.compile(r"\b(?:sk|pk)_(?:live|test)_[A-Za-z0-9]{20,}\b")),
+    (
+        "generic_api_key",
+        re.compile(
+            r"\b(?:[A-Za-z0-9]+_)*(?:api[_\-]?key|apikey|secret[_\-]?key|access[_\-]?token)"
+            r"\s*[:=]\s*['\"]?([A-Za-z0-9_\-]{16,})['\"]?",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "password_field",
+        re.compile(r"(?:password|passwd|pwd)\s*[:=]\s*['\"]?([^\s'\"]{6,})['\"]?", re.IGNORECASE),
+    ),
     (
         "private_key",
         re.compile(r"-----BEGIN (?:RSA |EC |DSA )?PRIVATE KEY-----"),
@@ -397,7 +415,7 @@ _ENTITY_REGEX_PATTERNS = [
     ),
     (
         "generic_api_key",
-        re.compile(r"\b(?:sk|api|token)_[A-Za-z0-9]{12,}\b", re.IGNORECASE),
+        re.compile(r"\b(?:sk|api|token)[_\-][A-Za-z0-9]{12,}\b", re.IGNORECASE),
     ),
 ]
 

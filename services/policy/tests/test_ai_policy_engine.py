@@ -29,6 +29,36 @@ class PolicyEngineTests(unittest.TestCase):
         self.assertNotEqual(decision.decision, DecisionType.ALLOW)
         self.assertGreaterEqual(decision.risk_score, 0.2)
 
+    def test_redact_mode_removes_credentials_from_prompt_and_response(self):
+        engine = AIAwarePolicyEngine()
+        openai_key = "sk-" + ("A" * 48)
+        github_token = "ghp_" + ("B" * 36)
+        ctx = AIRequestContext(
+            tenant_id="tenant-a",
+            agent_id="agt_1",
+            prompt=(
+                "Debug this request. AWS key AKIA1234567890ABCDEF, "
+                f"GitHub token {github_token}, and api_key=abcd1234efgh5678ijkl "
+                "should be protected."
+            ),
+            response_text=(
+                f"Set OPENAI_API_KEY={openai_key} and password=hunter22 "
+                "before retrying."
+            ),
+            provider="openai",
+        )
+        decision = engine.evaluate(ctx)
+
+        self.assertEqual(decision.decision, DecisionType.ALLOW_WITH_REDACTION)
+        self.assertIn("[REDACTED-AWS-KEY]", decision.redacted_prompt or "")
+        self.assertIn("[REDACTED-GITHUB-TOKEN]", decision.redacted_prompt or "")
+        self.assertIn("[REDACTED-APIKEY]", decision.redacted_prompt or "")
+        self.assertIn("[REDACTED-OPENAI-KEY]", decision.redacted_response or "")
+        self.assertIn("[REDACTED-PASSWORD]", decision.redacted_response or "")
+        self.assertNotIn("AKIA1234567890ABCDEF", decision.redacted_prompt or "")
+        self.assertNotIn(github_token, decision.redacted_prompt or "")
+        self.assertNotIn(openai_key, decision.redacted_response or "")
+
 
 if __name__ == "__main__":
     unittest.main()
