@@ -84,7 +84,7 @@ export default function FinalCTA() {
           </div>
 
           <p style={{ fontSize: 13, color: "#4A5568", marginTop: 24 }}>
-            No spam. No hard sell. We respond within one business day.
+            No spam. No hard sell. Every request is reviewed personally.
           </p>
         </div>
       </div>

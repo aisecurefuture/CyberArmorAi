@@ -72,7 +72,7 @@ type FormData = z.input<typeof ContactSchema>;
 type FormErrors = Partial<Record<keyof FormData, string>>;
 
 const reasons = [
-  { icon: Clock, text: "We respond within one business day" },
+  { icon: Clock, text: "We review every request personally" },
   { icon: Users, text: "You'll speak with a security professional, not an SDR" },
   { icon: Lock, text: "No spam, no pressure, no hard sell" },
 ];
@@ -282,8 +282,8 @@ export default function ContactPage() {
                     Request Received.
                   </h2>
                   <p style={{ fontSize: "1rem", color: "#8892A4", lineHeight: 1.7, maxWidth: 420, margin: "0 auto" }}>
-                    Thank you, {submitterName || "there"}. We&apos;ll review your request and reach out
-                    within one business day to schedule your session.
+                    Thank you, {submitterName || "there"}. We&apos;ll review your request personally
+                    and follow up as soon as we can.
                   </p>
                 </div>
               ) : (
