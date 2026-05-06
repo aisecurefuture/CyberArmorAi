@@ -426,6 +426,8 @@ services:
       PORT: "3003"
       HOSTNAME: 0.0.0.0
     ports: ["${HOST_BIND:-0.0.0.0}:${MARKETING_HOST_PORT:-3002}:3003"]
+    volumes:
+      - /opt/cyberarmor/fulfillment:/opt/cyberarmor/fulfillment:ro
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://localhost:3003/', r => process.exit(r.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))"]
       interval: 10s

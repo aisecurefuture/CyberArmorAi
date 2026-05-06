@@ -61,7 +61,7 @@ export async function POST(req: NextRequest) {
       case "checkout.session.completed": {
         const session = event.data.object as Stripe.Checkout.Session;
         const product = session.metadata?.product ?? "UNKNOWN";
-        const customerEmail = session.customer_details?.email ?? "unknown";
+        const customerEmail = session.customer_details?.email ?? session.customer_email ?? "unknown";
         const customerName  = session.customer_details?.name  ?? "Unknown";
         const amount = session.amount_total ? `$${(session.amount_total / 100).toFixed(2)}` : "N/A";
 
@@ -106,6 +106,8 @@ export async function POST(req: NextRequest) {
           } catch (fulfillmentErr) {
             console.error("Customer fulfillment email failed:", fulfillmentErr);
           }
+        } else {
+          console.warn(`Customer fulfillment skipped for session ${session.id}: no customer email found on Stripe session`);
         }
 
         break;
