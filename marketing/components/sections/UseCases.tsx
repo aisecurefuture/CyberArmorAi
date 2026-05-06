@@ -81,6 +81,7 @@ export default function UseCases() {
               <button
                 key={title}
                 onClick={() => setActive(i)}
+                className="use-case-tab"
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -109,7 +110,7 @@ export default function UseCases() {
           </div>
 
           {/* Active use case detail */}
-          <div style={{
+          <div className="use-case-detail" style={{
             background: "#0F1117",
             border: "1px solid #1E2335",
             borderRadius: 16,

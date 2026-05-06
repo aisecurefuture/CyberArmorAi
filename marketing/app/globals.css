@@ -257,6 +257,7 @@
   .whynow-grid       { grid-template-columns: 1fr !important; }
   .about-mission-grid{ grid-template-columns: 1fr !important; }
   .contact-grid      { grid-template-columns: 1fr !important; }
+  .use-case-detail   { position: static !important; top: auto !important; }
 }
 
 /* ── Mobile line break helpers ── */
@@ -274,6 +275,25 @@
     font-size: 9px !important;
     padding: 4px 10px !important;
     letter-spacing: 0.06em !important;
+  }
+  .hero-preview-shell {
+    padding: 20px !important;
+    border-radius: 14px !important;
+  }
+  .hero-preview-grid {
+    grid-template-columns: 1fr !important;
+  }
+  .hero-preview-url {
+    min-width: 0 !important;
+    overflow: hidden !important;
+    white-space: nowrap !important;
+    text-overflow: ellipsis !important;
+  }
+  .use-case-tab {
+    padding: 14px 16px !important;
+  }
+  .use-case-detail {
+    padding: 24px !important;
   }
   section { overflow-x: hidden; }
   p { max-width: 100% !important; overflow-wrap: break-word !important; }

@@ -112,12 +112,9 @@ export default function Hero() {
 
           {/* Hero headline */}
           <h1 className="hero-headline" style={{ marginBottom: 24, color: "#ffffff", maxWidth: "100%" }}>
-            Govern, Protect,{" "}
-            <span className="mobile-br" />
-            and{" "}
-            <span className="gradient-text-blue">Prove Trust</span>
+            One <span className="gradient-text-blue">Control Layer</span>
             <br />
-            Across Enterprise AI.
+            for Enterprise AI.
           </h1>
 
           {/* Subheadline */}
@@ -130,10 +127,10 @@ export default function Hero() {
             margin: "0 auto 40px",
             overflowWrap: "break-word",
           }}>
-            CyberArmor AI gives security teams one operating layer for AI
+            Govern AI at the pace it&apos;s being adopted. CyberArmor AI unifies
             discovery, policy enforcement, runtime protection, and auditable
-            evidence, so enterprise AI adoption can move forward with real
-            control instead of blind spots.
+            evidence so security teams can stop pre-breach AI risk before it
+            turns into enterprise exposure.
           </p>
 
           {/* CTAs */}
@@ -172,11 +169,11 @@ export default function Hero() {
         </div>
 
         {/* Platform preview card */}
-        <div style={{
-          marginTop: 80,
-          maxWidth: 960,
-          margin: "80px auto 0",
-          position: "relative",
+          <div style={{
+            marginTop: 80,
+            maxWidth: 960,
+            margin: "80px auto 0",
+            position: "relative",
         }}>
           <div style={{
             position: "absolute",
@@ -184,7 +181,7 @@ export default function Hero() {
             width: "70%", height: 1,
             background: "linear-gradient(90deg, transparent, rgba(0,163,255,0.5), transparent)",
           }} />
-          <div style={{
+          <div className="hero-preview-shell" style={{
             background: "#0F1117",
             border: "1px solid #1E2335",
             borderRadius: 16,
@@ -197,7 +194,7 @@ export default function Hero() {
               {["#FF5F57", "#FEBC2E", "#28C840"].map((c) => (
                 <div key={c} style={{ width: 12, height: 12, borderRadius: "50%", backgroundColor: c }} />
               ))}
-              <div style={{
+              <div className="hero-preview-url" style={{
                 flex: 1,
                 height: 28,
                 background: "#12151E",
@@ -212,7 +209,7 @@ export default function Hero() {
             </div>
 
             {/* Mock dashboard */}
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, marginBottom: 20 }}>
+            <div className="hero-preview-grid" style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, marginBottom: 20 }}>
               {[
                 { label: "AI Assets Discovered", value: "1,284", delta: "+48 today", color: "#00A3FF" },
                 { label: "Policy Violations Blocked", value: "37", delta: "Last 24h", color: "#22C55E" },

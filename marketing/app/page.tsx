@@ -15,7 +15,7 @@ import FinalCTA from "@/components/sections/FinalCTA";
 export const metadata: Metadata = {
   title: "CyberArmor AI — Enterprise AI Security & Cyber Trust Platform",
   description:
-    "Govern, protect, and prove trust across every AI system, agent, and workflow your enterprise runs. CyberArmor AI is the unified platform for enterprise AI security.",
+    "One control layer for enterprise AI. CyberArmor AI unifies discovery, policy enforcement, runtime protection, and evidence so teams can stop pre-breach AI risk before it becomes exposure.",
 };
 
 export default function HomePage() {
