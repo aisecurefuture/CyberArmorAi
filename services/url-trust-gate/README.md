@@ -80,4 +80,10 @@ The traps from the architecture design are real:
 | `URL_TRUST_GATE_CRAWLER_MAX_BYTES` | `1048576` | Hard cap on fetched body size. |
 | `URL_TRUST_GATE_CRAWLER_MAX_REDIRECTS` | `5` | Each hop re-validated against SSRF rules. |
 | `URL_TRUST_GATE_DETONATION_DEFAULT` | `off` | Set to `on` to run detonation by default for `depth=deep`. |
+
+### Build args
+
+| Build arg | Default | Purpose |
+| --- | --- | --- |
+| `INSTALL_PLAYWRIGHT` | `0` | Set to `1` to install Playwright + Chromium for the detonation sandbox. Default builds skip it (the gate degrades cleanly with `playwright_not_installed`). Production deep-mode workers should opt in here AND install the matching OS libs for their base image; per the architecture doc, detonation should run in an isolated egress container regardless. |
 | `URL_TRUST_GATE_CACHE_TTL_S` | `900` | Reputation cache TTL. |

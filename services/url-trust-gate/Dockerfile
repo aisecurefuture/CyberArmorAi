@@ -10,12 +10,29 @@ RUN pip install --no-cache-dir \
     httpx \
     cryptography
 
-# Playwright is optional at runtime — the gate degrades cleanly when it's
-# missing. Install it here so deep-mode is available out of the box.
-# To trim the image, remove this RUN and skip browser install; deep-mode
-# requests will fall through with playwright_not_installed.
-RUN pip install --no-cache-dir playwright==1.49.0 && \
-    playwright install --with-deps chromium
+# Playwright is OPTIONAL at runtime. The gate's detonation.py degrades
+# cleanly when it's missing (deep-mode requests fall through with
+# playwright_not_installed and the policy engine still gets the heuristic
+# scores from the safe crawl).
+#
+# Default build skips Playwright so the image stays small and portable.
+# To enable deep-mode rendering set:
+#     docker build --build-arg INSTALL_PLAYWRIGHT=1 ...
+# (or `INSTALL_PLAYWRIGHT=1` in your compose env / CI).
+#
+# We deliberately do NOT pass `--with-deps` to `playwright install`.
+# `--with-deps` shells out to apt with an Ubuntu-fallback package list
+# that doesn't translate to Debian (it asks for `ttf-unifont` /
+# `ttf-ubuntu-font-family` which only exist on Ubuntu). For production
+# deep-mode workers, install the OS libs in a separate RUN with the
+# correct Debian package names, OR run detonation in a dedicated
+# Playwright-published image. Per the architecture doc, detonation
+# SHOULD run in an isolated egress container anyway.
+ARG INSTALL_PLAYWRIGHT=0
+RUN if [ "$INSTALL_PLAYWRIGHT" = "1" ]; then \
+        pip install --no-cache-dir playwright==1.49.0 && \
+        playwright install chromium; \
+    fi
 
 COPY libs/cyberarmor-core /app/libs/cyberarmor-core
 ENV PYTHONPATH="/app/libs/cyberarmor-core:${PYTHONPATH:-}"
