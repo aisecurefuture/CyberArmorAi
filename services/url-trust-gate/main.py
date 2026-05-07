@@ -654,9 +654,23 @@ async def _decide_with_policy(
             )
             if resp.status_code == 200:
                 data = resp.json()
+                action = _normalise_action(data.get("decision", "monitor"))
+                reason = data.get("reason", "policy decision")
+                # If the policy service has no rule for url-trust-gate
+                # (legacy /evaluate returns ALLOW + reason="no_policy_match"
+                # in that case), don't blindly downgrade — defer to the
+                # gate's own score-based fallback so a deployment without
+                # any url-trust-gate policies still enforces the heuristic
+                # + ML defaults rather than failing open.
+                if action == "allow" and reason in {
+                    "no_policy_match", "policy_allow", "no policy match"
+                }:
+                    fb = _fallback_decision(scores)
+                    if fb.action != "allow":
+                        return fb
                 return TrustGateDecision(
-                    action=_normalise_action(data.get("decision", "monitor")),
-                    reason=data.get("reason", "policy decision"),
+                    action=action,
+                    reason=reason,
                     matched_policy=data.get("matched_policy"),
                     redact_segments=data.get("redact_segments", []) or [],
                     isolation_url=data.get("isolation_url"),

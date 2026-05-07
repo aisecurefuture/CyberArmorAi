@@ -21,9 +21,10 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import logging
+import os
 import socket
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Set
 
 import httpx
 
@@ -32,6 +33,16 @@ logger = logging.getLogger("url_trust_gate.crawler")
 DEFAULT_USER_AGENT = (
     "CyberArmor-URLTrustGate/0.1 (+https://cyberarmor.ai/bots/url-trust-gate)"
 )
+
+# Hostnames that bypass SSRF private-address rejection. Intended for the
+# 15-minute PoC and integration tests that need to drive the crawler
+# against a same-network test server. Empty by default — production
+# deployments must NOT set this.
+_SSRF_ALLOWLIST_HOSTS: Set[str] = {
+    h.strip().lower()
+    for h in os.getenv("URL_TRUST_GATE_CRAWLER_SSRF_ALLOWLIST", "").split(",")
+    if h.strip()
+}
 
 
 @dataclass
@@ -175,6 +186,9 @@ def _ssrf_safe_destination(url: str) -> bool:
     host = parsed.host
     if not host:
         return False
+
+    if host.lower() in _SSRF_ALLOWLIST_HOSTS:
+        return True
 
     # Resolve all A/AAAA records and reject if ANY are internal. Attackers
     # can return both a public and a private record (DNS rebinding).

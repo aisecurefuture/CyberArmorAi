@@ -110,6 +110,25 @@ See [docs/architecture/url-trust-gate.md](docs/architecture/url-trust-gate.md) f
 
 ## Quick Start
 
+### 15-minute URL Trust Gate PoC
+
+For evaluators who want to see the URL Trust Gate block live attack pages without standing up the full stack:
+
+```bash
+git clone https://github.com/aisecurefuture/CyberArmorAi.git
+cd CyberArmorAi
+bash scripts/poc/install.sh
+```
+
+The script generates secrets, brings up only the services the gate needs (`policy`, `detection`, `audit`, `response`, `postgres`, `redis`, `opa`, `url-trust-gate`, plus a `poc-test-server` serving four crafted pages), waits for health, and runs `scripts/poc/run_url_trust_gate_demo.py` to demonstrate live verdicts on:
+
+- a benign tea-blends article (expected: `allow`)
+- a `display:none` promptware payload (expected: `warn` / `redact` / `block`)
+- an instruction interleaved with zero-width characters (expected: `warn` / `redact` / `block`)
+- a fake Microsoft sign-in credential-harvest page (expected: `warn` / `redact` / `block`)
+
+See [scripts/poc/README.md](scripts/poc/README.md) for prerequisites, hardening steps before production, and troubleshooting.
+
 ### Docker Compose (Development)
 
 ```bash

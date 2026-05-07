@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>CyberArmor URL Trust Gate — PoC Test Pages</title>
+</head>
+<body>
+<h1>CyberArmor URL Trust Gate — PoC Test Pages</h1>
+<p>This server hosts crafted pages that the PoC runner submits to the URL Trust Gate.</p>
+<ul>
+  <li><a href="benign.html">benign.html</a> — normal article content (expected: <code>allow</code>)</li>
+  <li><a href="hidden-instruction.html">hidden-instruction.html</a> — promptware hidden in <code>display:none</code> block</li>
+  <li><a href="zero-width-injection.html">zero-width-injection.html</a> — instruction interleaved with zero-width characters</li>
+  <li><a href="credential-harvest.html">credential-harvest.html</a> — fake Microsoft sign-in page with password form</li>
+</ul>
+</body>
+</html>

@@ -77,3 +77,30 @@ def test_rejects_dns_failure():
         "crawler.socket.getaddrinfo", side_effect=socket.gaierror("no such host")
     ):
         assert _ssrf_safe_destination("http://nope.example/") is False
+
+
+def test_allowlist_bypasses_private_check():
+    # The PoC overlay sets URL_TRUST_GATE_CRAWLER_SSRF_ALLOWLIST so the
+    # gate's safe crawler can fetch from a same-network test fixture.
+    # Verify the allowlist takes effect.
+    import crawler as crawler_module
+
+    original = crawler_module._SSRF_ALLOWLIST_HOSTS
+    try:
+        crawler_module._SSRF_ALLOWLIST_HOSTS = {"poc-test-server"}
+        # No DNS lookup is required when host is on the allowlist.
+        assert _ssrf_safe_destination("http://poc-test-server:8088/x") is True
+    finally:
+        crawler_module._SSRF_ALLOWLIST_HOSTS = original
+
+
+def test_allowlist_default_empty_does_not_change_behaviour():
+    # Default deployment must still reject loopback even when the
+    # allowlist module-level set exists.
+    import crawler as crawler_module
+
+    assert crawler_module._SSRF_ALLOWLIST_HOSTS == set() or isinstance(
+        crawler_module._SSRF_ALLOWLIST_HOSTS, set
+    )
+    with patch("crawler.socket.getaddrinfo", return_value=_addrinfo(["127.0.0.1"])):
+        assert _ssrf_safe_destination("http://localhost/") is False

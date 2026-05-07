@@ -7,6 +7,7 @@ CyberArmor.AI includes three polished demo paths for different buyers.
 - [CISO Demo](ciso.md)
 - [Security Architect Demo](security-architect.md)
 - [AppSec Demo](appsec.md)
+- [15-minute URL Trust Gate PoC](url-trust-gate-poc.md)
 
 ## Credential redaction check
 

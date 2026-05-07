@@ -1,0 +1,39 @@
+# 15-minute PoC overlay for the URL Trust Gate.
+#
+# Apply with:
+#   docker compose -f docker-compose.yml -f docker-compose.poc.yml \
+#     --profile poc up -d --build url-trust-gate detection policy audit \
+#     response postgres redis opa poc-test-server
+#
+# What this overlay does:
+#   1. Adds a small static webserver (poc-test-server) that serves the
+#      crafted test pages from scripts/poc/test-pages/.
+#   2. Allowlists that hostname through the URL Trust Gate's SSRF guard
+#      so the gate's safe crawler can reach it.
+#   3. Skips HuggingFace model downloads in the detection service so the
+#      stack starts in heuristic-only mode (the gate still produces real
+#      verdicts; the heuristic ensemble catches the test fixtures).
+
+services:
+  poc-test-server:
+    profiles: ["poc"]
+    image: python:3.12-alpine
+    working_dir: /srv
+    command: ["python", "-m", "http.server", "8088", "--directory", "/srv"]
+    volumes:
+      - ../../scripts/poc/test-pages:/srv:ro
+    networks:
+      - default
+
+  url-trust-gate:
+    environment:
+      URL_TRUST_GATE_CRAWLER_SSRF_ALLOWLIST: "poc-test-server"
+
+  detection:
+    environment:
+      # Don't try to pull HF models on first start — fall back to the
+      # heuristic ensemble. This is what makes the PoC fit in 15 minutes
+      # on a fresh server.
+      TRANSFORMERS_OFFLINE: "1"
+      HF_HUB_OFFLINE: "1"
+      OLLAMA_ENABLED: "false"

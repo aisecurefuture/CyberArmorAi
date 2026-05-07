@@ -67,6 +67,7 @@ nav:
   - Home: index.md
   - Evaluation:
       - Demo Runbooks: demos/index.md
+      - 15-minute URL Trust Gate PoC: demos/url-trust-gate-poc.md
       - CISO Demo: demos/ciso.md
       - Security Architect Demo: demos/security-architect.md
       - AppSec Demo: demos/appsec.md
