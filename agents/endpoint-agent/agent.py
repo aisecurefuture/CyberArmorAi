@@ -149,6 +149,7 @@ def _load_config(path: Optional[Path] = None) -> configparser.ConfigParser:
         "file_enabled": "true",
         "network_enabled": "true",
         "ai_tool_enabled": "true",
+        "url_trust_gate_enabled": "true",
     }
     cfg["dlp"] = {
         "enabled": "true",
@@ -631,6 +632,17 @@ class EndpointAgent:
                 logger.info("Started AI tool detector")
             except Exception as exc:
                 logger.error("Failed to start AI tool detector: %s", exc)
+
+        if monitors_cfg.getboolean("url_trust_gate_enabled", fallback=True):
+            try:
+                from monitors.url_trust_gate import URLTrustGateMonitor
+
+                monitor = URLTrustGateMonitor(self)
+                task = asyncio.create_task(monitor.run(), name="url_trust_gate")
+                self._monitor_tasks.append(task)
+                logger.info("Started URL Trust Gate monitor + local daemon")
+            except Exception as exc:
+                logger.error("Failed to start URL Trust Gate monitor: %s", exc)
 
     async def _stop_monitors(self) -> None:
         """Cancel all running monitor tasks and wait for them to finish."""

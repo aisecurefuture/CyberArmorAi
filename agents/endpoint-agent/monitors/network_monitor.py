@@ -281,6 +281,23 @@ class NetworkMonitor:
                 },
             )
 
+        # URL Trust Gate advisory: ask the central gate whether this
+        # destination is safe for AI ingestion. The advisor is attached
+        # by URLTrustGateMonitor at agent startup; if it isn't present
+        # (monitor disabled), we silently skip.
+        advisor = getattr(self._agent, "url_trust_gate_advisor", None)
+        if advisor is not None and (domain or remote_ip):
+            try:
+                await advisor.advise(
+                    remote_ip=remote_ip,
+                    remote_port=remote_port,
+                    domain=domain,
+                    pid=conn.get("pid"),
+                    process_name=conn.get("process_name"),
+                )
+            except Exception as exc:
+                logger.debug("url_trust_gate advise error err=%s", exc)
+
         # MCP connection detection (local ports commonly used by MCP servers)
         if remote_port in MCP_DEFAULT_PORTS or conn.get("local_port", 0) in MCP_DEFAULT_PORTS:
             if key not in self._state.alerted_connections:

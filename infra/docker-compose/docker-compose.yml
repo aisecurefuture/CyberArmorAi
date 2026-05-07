@@ -171,6 +171,37 @@ services:
       interval: 10s
       retries: 3
 
+  url-trust-gate:
+    build:
+      context: ../../
+      dockerfile: services/url-trust-gate/Dockerfile
+    env_file: ["${CYBERARMOR_ENV_FILE:-.env}"]
+    environment:
+      DETECTION_SERVICE_URL: "http://detection:8002"
+      POLICY_SERVICE_URL: "http://policy:8001"
+      RESPONSE_SERVICE_URL: "http://response:8003"
+      AUDIT_SERVICE_URL: "http://audit:8004"
+      # Feed adapter credentials. Leave empty to disable a feed; the
+      # gate will skip it cleanly.
+      SAFE_BROWSING_API_KEY: "${SAFE_BROWSING_API_KEY:-}"
+      # Detonation defaults to off in compose because the Chromium image
+      # adds ~400MB. Flip to "on" in production deployments where the
+      # worker pool is sized appropriately.
+      URL_TRUST_GATE_DETONATION_DEFAULT: "${URL_TRUST_GATE_DETONATION_DEFAULT:-off}"
+    depends_on:
+      detection: { condition: service_healthy }
+      policy: { condition: service_healthy }
+    ports: ["${HOST_BIND:-0.0.0.0}:8005:8005"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8005/health')"]
+      interval: 10s
+      retries: 3
+    # PRODUCTION NOTE: this service initiates outbound HTTP to
+    # attacker-controlled URLs. Run it in a dedicated network namespace
+    # / egress-only VPC subnet with no route to internal services or
+    # cloud metadata endpoints. The Python-level SSRF guards are
+    # belt-and-braces; the namespace is the real boundary.
+
   identity:
     build:
       context: ../../
