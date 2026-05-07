@@ -534,16 +534,19 @@ services:
       - caddy_config:/config
 
 networks:
-  default:
-    # All backend services join this network by default.
-    driver: bridge
+  # We don't declare `default:` explicitly — compose's implicit default
+  # network is auto-created and `services.<svc>.networks: [default, ...]`
+  # still works against it. Declaring it here with the same `driver:
+  # bridge` causes compose to treat the config as changed on subsequent
+  # `up` runs and force-recreate the network, which fails when any
+  # container (e.g. caddy) is still attached.
   detonation:
     # Dedicated network for the URL Trust Gate's detonation worker.
     # The worker is the only service that fetches attacker-controlled
     # URLs; isolating it here means a hostile page that escapes
     # Chromium cannot reach `policy`, `detection`, `audit`, or any
     # other internal service. The gate itself joins this network in
-    # addition to `default` so it can call the worker.
+    # addition to the implicit default so it can call the worker.
     driver: bridge
 
 volumes:
