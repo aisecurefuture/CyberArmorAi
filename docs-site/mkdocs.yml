@@ -97,7 +97,7 @@ extra:
     - icon: fontawesome/solid/shield-halved
       link: https://app.cyberarmor.ai
     - icon: fontawesome/brands/github
-      link: https://github.com/cyberarmor-ai
+      link: https://github.com/aisecurefuture/CyberArmorAi
   generator: false
 
 copyright: Copyright &copy; CyberArmor AI
