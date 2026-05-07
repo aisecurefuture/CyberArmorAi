@@ -1,4 +1,4 @@
-import { Eye, Bot, ShieldAlert, Database, UserCheck, Activity, FileText, Route } from "lucide-react";
+import { Eye, Bot, ShieldAlert, Database, UserCheck, Activity, FileText, Route, Link2 } from "lucide-react";
 
 const capabilities = [
   {
@@ -40,6 +40,11 @@ const capabilities = [
     icon: Activity,
     title: "Runtime Response",
     body: "Connect detection and policy decisions to response actions such as block, redact, route, notify, limit, revoke, or hand off into SOC workflows.",
+  },
+  {
+    icon: Link2,
+    title: "URL & Context Trust Gate",
+    body: "Pre-ingestion safety check for URLs and external content destined for humans, browsers, endpoint agents, RASP-instrumented apps, and AI agents. Detects phishing, hidden prompt injection, promptware, and IOCs in CSS-hidden and Unicode-encoded text before content ever reaches AI context.",
   },
 ];
 

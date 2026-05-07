@@ -13,6 +13,7 @@ operator-facing service map for the current repo.
 | `response` | 8003 | response orchestration and response actions |
 | `identity` | 8004 | workforce identity and SSO integrations |
 | `siem-connector` | 8005 | external SIEM export |
+| `url-trust-gate` | 8014 | pre-ingestion URL safety check for humans, browsers, endpoint agents, RASP, and AI agents — phishing, prompt injection, promptware, IOC scoring with evidence |
 | `compliance` | 8006 | evidence-backed compliance scoring and reporting |
 | `agent-identity` | 8008 | AI agent identity and delegation material |
 | `ai-router` | 8009 | governed AI provider routing, credential handling, cost/usage control |

@@ -191,9 +191,9 @@ services:
     depends_on:
       detection: { condition: service_healthy }
       policy: { condition: service_healthy }
-    ports: ["${HOST_BIND:-0.0.0.0}:8005:8005"]
+    ports: ["${HOST_BIND:-0.0.0.0}:8014:8014"]
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8005/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8014/health')"]
       interval: 10s
       retries: 3
     # PRODUCTION NOTE: this service initiates outbound HTTP to

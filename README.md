@@ -60,6 +60,7 @@ CyberArmor is a zero-trust, multi-layered security platform that provides real-t
 | Audit Service | 8011 | Immutable PQC-signed audit log and AI action graph |
 | Integration Control | 8012 | SaaS integration discovery, OAuth scope visibility, and control actions |
 | Secrets Service | 8013 | Thin CyberArmor control layer over OpenBao: tenant/provider credential storage, transit encrypt/decrypt/sign, key rotation |
+| URL / Context Trust Gate | 8014 | Pre-ingestion safety check for URLs and external content destined for humans, browsers, endpoint agents, RASP-instrumented apps, and AI agents. Detects phishing, hidden prompt injection, promptware, and IOCs before content reaches AI context. |
 | Transparent Proxy | 8080 / 8443 | AI traffic interception, inspection, and policy enforcement |
 | OpenBao Vault | — | Underlying secret and cryptographic engine (KV, transit, key management) |
 
@@ -90,6 +91,21 @@ CyberArmor is a zero-trust, multi-layered security platform that provides real-t
 | SOC 2 | 19 | Trust Services Criteria |
 | GDPR | 16 | EU General Data Protection |
 | CCPA/CPRA | 14 | California Consumer Privacy |
+
+## URL / Context Trust Gate
+
+A pre-ingestion control point that sits between consumers (humans, browsers, endpoint agents, RASP-instrumented apps, AI agents) and the open web. Before any consumer follows a URL or ingests external content, the gate canonicalizes the destination, fetches it safely, scores for phishing / hidden prompt injection / promptware / data-exfil / IOCs, and applies a policy decision (`allow` / `warn` / `redact` / `sandbox` / `block` / `isolate`) — preserving evidence as it goes.
+
+This addresses the gap between traditional URL filters (*"is this site malicious for a human?"*) and AI security (*"is this site safe for a browser AND an AI agent to consume?"*). Existing Safe Browsing / SmartScreen / VirusTotal feeds do not detect AI-context attacks like indirect prompt injection or hidden promptware payloads in CSS-hidden / Unicode-tag-encoded text.
+
+**Consumer hooks ship in this repo:**
+
+- Browser extension: `extensions/chromium-shared/url_trust_gate.js` — `webNavigation.onBeforeNavigate` listener with fast-path race + async standard-depth backfill.
+- Endpoint agent: `agents/endpoint-agent/monitors/url_trust_gate.py` — gate client + loopback IPC daemon (`127.0.0.1:48515`) that other endpoint software (IDE addins, custom agents, MCP clients) can call before connecting; integrated into the agent's network monitor.
+- RASP (Python): `rasp/python/cyberarmor_rasp_url_trust_gate.py` — monkeypatches `requests` / `httpx` / `urllib3` so server-side AI tools consult the gate before any outbound URL fetch.
+- LangChain SDK: `sdks/python/cyberarmor/frameworks/langchain_url_trust_gate.py` — `wrap_tool` / `wrap_agent_tools` / `make_guarded_browser_tool` for AI agents.
+
+See [docs/architecture/url-trust-gate.md](docs/architecture/url-trust-gate.md) for the full pipeline, latency budgets, decision actions, evidence schema, and production traps with code-level guards mapped to each.
 
 ## Quick Start
 
@@ -205,7 +221,8 @@ ai-protect-system-claude-4.6/
     ├── response/             # Incident management and automated response actions
     ├── runtime/              # Unified AISR runtime decision API (orchestrates detection, policy, response)
     ├── secrets-service/      # CyberArmor control layer over OpenBao (KV, transit, key rotation)
-    └── siem-connector/       # SIEM output integrations
+    ├── siem-connector/       # SIEM output integrations
+    └── url-trust-gate/       # Pre-ingestion control point: canonicalizes URLs, runs SSRF-guarded safe crawl + Playwright detonation, fans out to detection for prompt-injection / promptware scoring, decides allow/warn/redact/sandbox/block, writes evidence
 ```
 
 ## Configuration
@@ -237,6 +254,11 @@ ai-protect-system-claude-4.6/
 | `OPENBAO_TRANSIT_MOUNT` | OpenBao transit engine mount path | (optional) |
 | `CYBERARMOR_ENFORCE_SECURE_SECRETS` | Reject insecure default secrets at startup | `false` |
 | `CYBERARMOR_ENFORCE_MTLS` | Require mTLS for inter-service calls | `false` |
+| `URL_TRUST_GATE_API_SECRET` | URL Trust Gate service API key | (required) |
+| `SAFE_BROWSING_API_KEY` | Google Safe Browsing v4 Lookup API key (optional second-opinion feed; gate works without it) | (optional) |
+| `URL_TRUST_GATE_DETONATION_DEFAULT` | Run Playwright detonation by default for `depth=deep` requests (`on` / `off`) | `off` |
+| `URL_TRUST_GATE_CRAWLER_TIMEOUT_S` | Per-request crawler timeout for the gate's safe fetcher | `4.0` |
+| `URL_TRUST_GATE_CACHE_TTL_S` | Reputation-cache TTL on the gate | `900` |
 
 ### Identity Provider Setup
 

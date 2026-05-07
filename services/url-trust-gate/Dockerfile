@@ -42,5 +42,5 @@ USER appuser
 # route to internal services or metadata endpoints. The Python-level SSRF
 # checks in crawler.py are belt-and-braces; the network namespace is the
 # real boundary.
-EXPOSE 8005
-CMD ["python", "run_uvicorn_tls.py", "main:app", "8005"]
+EXPOSE 8014
+CMD ["python", "run_uvicorn_tls.py", "main:app", "8014"]

@@ -50,7 +50,7 @@ logger = logging.getLogger("cyberarmor.monitors.url_trust_gate")
 
 DAEMON_HOST = os.getenv("CYBERARMOR_URL_TRUST_GATE_DAEMON_HOST", "127.0.0.1")
 DAEMON_PORT = int(os.getenv("CYBERARMOR_URL_TRUST_GATE_DAEMON_PORT", "48515"))
-GATE_URL = os.getenv("CYBERARMOR_URL_TRUST_GATE_URL", "http://localhost:8005/evaluate")
+GATE_URL = os.getenv("CYBERARMOR_URL_TRUST_GATE_URL", "http://localhost:8014/evaluate")
 GATE_API_KEY_ENV = "CYBERARMOR_URL_TRUST_GATE_API_KEY"
 GATE_REQUEST_TIMEOUT_S = float(os.getenv("CYBERARMOR_URL_TRUST_GATE_TIMEOUT_S", "1.5"))
 LOCAL_CACHE_TTL_S = int(os.getenv("CYBERARMOR_URL_TRUST_GATE_CACHE_TTL_S", "300"))

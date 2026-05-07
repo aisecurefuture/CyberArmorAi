@@ -93,6 +93,9 @@ CyberArmor currently includes:
 - `policy` for runtime policy evaluation and enforcement decisions
 - `detection` for prompt injection, sensitive data, toxicity, and output-safety
 - `response` for incident response actions
+- `url-trust-gate` for pre-ingestion URL safety — phishing, hidden prompt
+  injection, and promptware checks before content reaches a human, browser, or
+  AI agent
 - `secrets-service` plus `openbao` for secrets and PQC key material
 - `ai-router`, `agent-identity`, `integration-control`, `siem-connector`, and
   `compliance` for the broader enterprise operating model

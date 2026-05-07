@@ -37,7 +37,7 @@ from urllib.parse import urlsplit
 logger = logging.getLogger("cyberarmor_rasp.url_trust_gate")
 
 DEFAULT_GATE_URL = os.getenv(
-    "CYBERARMOR_URL_TRUST_GATE_URL", "http://url-trust-gate:8005/evaluate"
+    "CYBERARMOR_URL_TRUST_GATE_URL", "http://url-trust-gate:8014/evaluate"
 )
 DEFAULT_TIMEOUT_S = float(os.getenv("CYBERARMOR_URL_TRUST_GATE_TIMEOUT_S", "1.5"))
 

@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { ArrowRight, Eye, Shield, Lock, FileSearch, Cpu, Network, UserCheck, Activity } from "lucide-react";
+import { ArrowRight, Eye, Shield, Lock, FileSearch, Cpu, Network, UserCheck, Activity, Link2 } from "lucide-react";
 import FinalCTA from "@/components/sections/FinalCTA";
 
 export const metadata: Metadata = {
@@ -92,6 +92,20 @@ const layers = [
       "SIEM/SOAR integration workflows moving from pilot into production hardening",
       "Structured alert context: policy violated, actor identity, action taken, evidence ID",
       "Containment capabilities: redaction-mode response, agent suspension, scope reduction, access revocation, and routing changes",
+    ],
+  },
+  {
+    id: "url-trust-gate",
+    icon: Link2,
+    title: "URL & Context Trust Gate",
+    color: "#0EA5E9",
+    description:
+      "A pre-ingestion control point that evaluates URLs and external content before a human, browser, endpoint agent, RASP-instrumented app, or AI agent fetches them. Existing URL filters answer 'is this site malicious for a human?'; CyberArmor.AI also answers 'is this site safe for an AI agent to consume?'",
+    capabilities: [
+      "Canonicalisation, querystring redaction, and homoglyph / punycode checks before any network call",
+      "SSRF-guarded safe crawl plus optional Playwright detonation to surface CSS-hidden, off-screen, and Unicode-tag-encoded promptware",
+      "Detection-service fan-out for phishing, hidden prompt injection, promptware, data-exfil, and IOC scoring with optional Safe Browsing v4 second opinion",
+      "Policy decisions across allow, warn, redact, sandbox, block, and isolate — with evidence written to audit and false-positive feedback piped into the ML training flywheel",
     ],
   },
 ];
