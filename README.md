@@ -61,6 +61,7 @@ CyberArmor is a zero-trust, multi-layered security platform that provides real-t
 | Integration Control | 8012 | SaaS integration discovery, OAuth scope visibility, and control actions |
 | Secrets Service | 8013 | Thin CyberArmor control layer over OpenBao: tenant/provider credential storage, transit encrypt/decrypt/sign, key rotation |
 | URL / Context Trust Gate | 8014 | Pre-ingestion safety check for URLs and external content destined for humans, browsers, endpoint agents, RASP-instrumented apps, and AI agents. Detects phishing, hidden prompt injection, promptware, and IOCs before content reaches AI context. |
+| Detonation Worker | 8015 (internal) | Isolated Playwright sandbox for the URL Trust Gate. Renders attacker-controlled URLs in one-shot Chromium contexts on a dedicated `detonation` network with no route to internal services. Built on Microsoft's published Playwright image. |
 | Transparent Proxy | 8080 / 8443 | AI traffic interception, inspection, and policy enforcement |
 | OpenBao Vault | — | Underlying secret and cryptographic engine (KV, transit, key management) |
 
@@ -222,7 +223,8 @@ ai-protect-system-claude-4.6/
     ├── runtime/              # Unified AISR runtime decision API (orchestrates detection, policy, response)
     ├── secrets-service/      # CyberArmor control layer over OpenBao (KV, transit, key rotation)
     ├── siem-connector/       # SIEM output integrations
-    └── url-trust-gate/       # Pre-ingestion control point: canonicalizes URLs, runs SSRF-guarded safe crawl + Playwright detonation, fans out to detection for prompt-injection / promptware scoring, decides allow/warn/redact/sandbox/block, writes evidence
+    ├── url-trust-gate/       # Pre-ingestion control point: canonicalizes URLs, runs SSRF-guarded safe crawl, fans out to detection for prompt-injection / promptware scoring, decides allow/warn/redact/sandbox/block, writes evidence
+    └── detonation-worker/    # Isolated Playwright sandbox the gate calls for deep-mode renders. Lives on a dedicated `detonation` Docker network with no route to internal services
 ```
 
 ## Configuration
@@ -255,8 +257,10 @@ ai-protect-system-claude-4.6/
 | `CYBERARMOR_ENFORCE_SECURE_SECRETS` | Reject insecure default secrets at startup | `false` |
 | `CYBERARMOR_ENFORCE_MTLS` | Require mTLS for inter-service calls | `false` |
 | `URL_TRUST_GATE_API_SECRET` | URL Trust Gate service API key | (required) |
+| `DETONATION_WORKER_URL` | Base URL of the detonation worker (e.g. `http://detonation-worker:8015`); unset disables deep-mode | (optional) |
+| `DETONATION_WORKER_API_SECRET` | Shared secret between the gate and the detonation worker | (required if worker enabled) |
 | `SAFE_BROWSING_API_KEY` | Google Safe Browsing v4 Lookup API key (optional second-opinion feed; gate works without it) | (optional) |
-| `URL_TRUST_GATE_DETONATION_DEFAULT` | Run Playwright detonation by default for `depth=deep` requests (`on` / `off`) | `off` |
+| `URL_TRUST_GATE_DETONATION_DEFAULT` | Run detonation by default for `depth=deep` requests (`on` / `off`) | `off` |
 | `URL_TRUST_GATE_CRAWLER_TIMEOUT_S` | Per-request crawler timeout for the gate's safe fetcher | `4.0` |
 | `URL_TRUST_GATE_CACHE_TTL_S` | Reputation-cache TTL on the gate | `900` |
 

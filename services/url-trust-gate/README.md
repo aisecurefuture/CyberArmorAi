@@ -81,9 +81,13 @@ The traps from the architecture design are real:
 | `URL_TRUST_GATE_CRAWLER_MAX_REDIRECTS` | `5` | Each hop re-validated against SSRF rules. |
 | `URL_TRUST_GATE_DETONATION_DEFAULT` | `off` | Set to `on` to run detonation by default for `depth=deep`. |
 
-### Build args
+### Detonation worker
 
-| Build arg | Default | Purpose |
+Detonation runs in a separate service, [`services/detonation-worker/`](../detonation-worker/), built on Microsoft's official Playwright Python image. The gate is a thin HTTP client (see [`detonation.py`](detonation.py)). The compose stack puts the worker on a dedicated `detonation` network with no route to internal services. Configure with:
+
+| Variable | Default | Purpose |
 | --- | --- | --- |
-| `INSTALL_PLAYWRIGHT` | `0` | Set to `1` to install Playwright + Chromium for the detonation sandbox. Default builds skip it (the gate degrades cleanly with `playwright_not_installed`). Production deep-mode workers should opt in here AND install the matching OS libs for their base image; per the architecture doc, detonation should run in an isolated egress container regardless. |
+| `DETONATION_WORKER_URL` | (empty) | Base URL of the worker (e.g. `http://detonation-worker:8015`). If unset, deep-mode requests downgrade cleanly to standard. |
+| `DETONATION_WORKER_API_SECRET` | `change-me-detonation-worker` | Shared secret with the worker. |
+| `DETONATION_WORKER_TIMEOUT_S` | `15.0` | Per-render timeout the gate enforces on its HTTP call. |
 | `URL_TRUST_GATE_CACHE_TTL_S` | `900` | Reputation cache TTL. |

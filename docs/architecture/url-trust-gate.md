@@ -101,10 +101,40 @@ The gate is also the pivot for after-the-click defence. When a consumer reaches 
 
 This bridges phishing defence, browser security, AI agent security, and evidence-backed incident response in one decision lineage.
 
+## Detonation worker
+
+Detonation does NOT run in the gate process. It lives in a separate service
+(`services/detonation-worker/`) built on Microsoft's official Playwright
+image (`mcr.microsoft.com/playwright/python:v1.49.0-jammy`). Two reasons:
+
+1. **Network isolation.** Mixing fetches of attacker-controlled URLs with
+   calls into internal services (detection, policy, audit) is the wrong
+   shape. The compose stack puts the worker on a dedicated `detonation`
+   network. The gate joins both `default` and `detonation`; the worker
+   joins only `detonation`. A hostile page that escapes Chromium cannot
+   reach internal services because the routes don't exist.
+2. **Image hygiene.** Microsoft's published image tracks Chromium and the
+   font/GTK/NSS stack it needs. Trying to install
+   `playwright install --with-deps chromium` onto a generic Debian PQC
+   base hits Ubuntu/Debian package-name mismatches.
+
+The gate's [`detonation.py`](../../services/url-trust-gate/detonation.py)
+is a thin HTTP client. It POSTs `{url, tenant_id, request_id}` to the
+worker's `/render` endpoint and maps the response into the same
+`DetonationResult` dataclass the extractors and evidence layer already
+understand. If the worker is unreachable or unset, deep-mode requests
+return `DetonationResult(error=...)` and the gate downgrades to
+standard-depth behaviour.
+
+Production hardening expected on top of compose isolation: container
+CPU/memory/pids limits (already declared in compose), Kubernetes
+`NetworkPolicy` allowing ingress only from the gate's pod and no
+egress to internal CIDR ranges or the cloud-metadata IP, dedicated
+node pool for browser workloads.
+
 ## Open work
 
-- Detonation sandbox worker pool (Playwright in one-shot containers).
-- External reputation feed adapters: Safe Browsing v4, SmartScreen, VirusTotal.
+- External reputation feed adapters: SmartScreen, VirusTotal.
 - Tenant allow/block list endpoint on the policy service (lighter than full `/evaluate`).
 - Prometheus metrics exposition.
 - Training-shard exporter from the audit store.

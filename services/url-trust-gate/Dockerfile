@@ -10,29 +10,21 @@ RUN pip install --no-cache-dir \
     httpx \
     cryptography
 
-# Playwright is OPTIONAL at runtime. The gate's detonation.py degrades
-# cleanly when it's missing (deep-mode requests fall through with
-# playwright_not_installed and the policy engine still gets the heuristic
-# scores from the safe crawl).
+# Detonation runs in a SEPARATE service (services/detonation-worker/)
+# built on Microsoft's official Playwright Python image. The gate is
+# only an HTTP client — see services/url-trust-gate/detonation.py.
 #
-# Default build skips Playwright so the image stays small and portable.
-# To enable deep-mode rendering set:
-#     docker build --build-arg INSTALL_PLAYWRIGHT=1 ...
-# (or `INSTALL_PLAYWRIGHT=1` in your compose env / CI).
+# This split exists for two reasons:
+#   1. Mixing fetches of attacker-controlled URLs with calls to
+#      internal services (detection, policy, audit) is the wrong shape.
+#      The compose stack puts the worker on its own egress-only network.
+#   2. Microsoft's published image tracks Chromium + OS libs;
+#      installing Playwright onto the gate's Debian PQC base hit
+#      Ubuntu/Debian package-name mismatches in `playwright install
+#      --with-deps`.
 #
-# We deliberately do NOT pass `--with-deps` to `playwright install`.
-# `--with-deps` shells out to apt with an Ubuntu-fallback package list
-# that doesn't translate to Debian (it asks for `ttf-unifont` /
-# `ttf-ubuntu-font-family` which only exist on Ubuntu). For production
-# deep-mode workers, install the OS libs in a separate RUN with the
-# correct Debian package names, OR run detonation in a dedicated
-# Playwright-published image. Per the architecture doc, detonation
-# SHOULD run in an isolated egress container anyway.
-ARG INSTALL_PLAYWRIGHT=0
-RUN if [ "$INSTALL_PLAYWRIGHT" = "1" ]; then \
-        pip install --no-cache-dir playwright==1.49.0 && \
-        playwright install chromium; \
-    fi
+# Configure with DETONATION_WORKER_URL (e.g. http://detonation-worker:8015).
+# If unset, the gate cleanly downgrades deep-mode requests to standard.
 
 COPY libs/cyberarmor-core /app/libs/cyberarmor-core
 ENV PYTHONPATH="/app/libs/cyberarmor-core:${PYTHONPATH:-}"

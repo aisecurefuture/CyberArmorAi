@@ -83,17 +83,25 @@ are redacted *before* logging or evidence write.
 
 ## Production hardening
 
-The gate makes outbound requests to attacker-controlled URLs. The
-service has Python-level guards (SSRF address checks, redirect-hop
-re-validation, no-cookie / no-Authorization fetches, hard size /
-time / redirect caps), but the **real boundary is the network
-namespace**. Production deployments must run the gate (and especially
-the detonation worker pool) in a dedicated container with no route to
-internal services, internal DNS, or cloud metadata endpoints.
+The gate makes outbound requests to attacker-controlled URLs **only via
+the detonation worker**. The worker is a separate service built on
+Microsoft's official Playwright image and runs on a dedicated
+`detonation` Docker network. The gate joins both the default backend
+network and `detonation`; the worker joins only `detonation`. A hostile
+page that escapes Chromium cannot reach `policy`, `detection`, `audit`,
+or any other internal service — those routes don't exist on its
+network namespace.
 
-Detonation defaults to off in compose (Chromium adds ~400 MB to the
-image). Set `URL_TRUST_GATE_DETONATION_DEFAULT=on` in production
-deployments where the worker pool is sized appropriately.
+The gate also has Python-level guards on its own safe crawl path: SSRF
+address checks, redirect-hop re-validation, no-cookie /
+no-Authorization fetches, hard size / time / redirect caps. The network
+namespace is still the real boundary — the Python checks are
+belt-and-braces.
+
+For Kubernetes deployments, a `NetworkPolicy` should allow ingress to
+the worker pod only from the gate, and forbid egress to internal CIDR
+ranges and the cloud-metadata IP. A dedicated node pool for browser
+workloads is recommended.
 
 ## Evidence + training-data flywheel
 

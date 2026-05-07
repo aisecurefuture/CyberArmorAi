@@ -181,12 +181,14 @@ services:
       POLICY_SERVICE_URL: "http://policy:8001"
       RESPONSE_SERVICE_URL: "http://response:8003"
       AUDIT_SERVICE_URL: "http://audit:8004"
+      # Detonation worker — separate service on its own egress-only
+      # network. If unset, the gate cleanly downgrades deep-mode
+      # requests to standard.
+      DETONATION_WORKER_URL: "http://detonation-worker:8015"
+      DETONATION_WORKER_API_SECRET: "${DETONATION_WORKER_API_SECRET:-change-me-detonation-worker}"
       # Feed adapter credentials. Leave empty to disable a feed; the
       # gate will skip it cleanly.
       SAFE_BROWSING_API_KEY: "${SAFE_BROWSING_API_KEY:-}"
-      # Detonation defaults to off in compose because the Chromium image
-      # adds ~400MB. Flip to "on" in production deployments where the
-      # worker pool is sized appropriately.
       URL_TRUST_GATE_DETONATION_DEFAULT: "${URL_TRUST_GATE_DETONATION_DEFAULT:-off}"
     depends_on:
       detection: { condition: service_healthy }
@@ -196,11 +198,47 @@ services:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8014/health')"]
       interval: 10s
       retries: 3
+    networks:
+      - default
+      - detonation
     # PRODUCTION NOTE: this service initiates outbound HTTP to
-    # attacker-controlled URLs. Run it in a dedicated network namespace
-    # / egress-only VPC subnet with no route to internal services or
-    # cloud metadata endpoints. The Python-level SSRF guards are
-    # belt-and-braces; the namespace is the real boundary.
+    # attacker-controlled URLs only via the detonation worker. The
+    # gate itself only talks to the worker and to backend services on
+    # the default network. The worker has the egress-out role.
+
+  detonation-worker:
+    build:
+      context: ../../
+      dockerfile: services/detonation-worker/Dockerfile
+    env_file: ["${CYBERARMOR_ENV_FILE:-.env}"]
+    environment:
+      DETONATION_WORKER_API_SECRET: "${DETONATION_WORKER_API_SECRET:-change-me-detonation-worker}"
+      DETONATION_NAV_TIMEOUT_MS: "${DETONATION_NAV_TIMEOUT_MS:-8000}"
+      DETONATION_TOTAL_TIMEOUT_S: "${DETONATION_TOTAL_TIMEOUT_S:-12.0}"
+      DETONATION_MAX_REQUESTS: "${DETONATION_MAX_REQUESTS:-100}"
+      DETONATION_MAX_BYTES: "${DETONATION_MAX_BYTES:-8388608}"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8015/health')"]
+      interval: 10s
+      retries: 3
+    # PRODUCTION-CRITICAL: this service renders attacker-controlled
+    # web pages. It MUST NOT be on the default backend network. The
+    # only permitted ingress is from the gate; the only permitted
+    # egress is the open internet for crawl targets.
+    networks:
+      - detonation
+    # No ports: section by design — the worker is reached only via
+    # the internal `detonation` network from the gate. Operators who
+    # need to debug should `docker compose exec` into the container,
+    # not expose the port to the host.
+    #
+    # Conservative resource limits. Headless Chromium has memory
+    # spikes; keep them within the cgroup.
+    deploy:
+      resources:
+        limits:
+          memory: 1024M
+          cpus: "1.5"
 
   identity:
     build:
@@ -494,6 +532,19 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+
+networks:
+  default:
+    # All backend services join this network by default.
+    driver: bridge
+  detonation:
+    # Dedicated network for the URL Trust Gate's detonation worker.
+    # The worker is the only service that fetches attacker-controlled
+    # URLs; isolating it here means a hostile page that escapes
+    # Chromium cannot reach `policy`, `detection`, `audit`, or any
+    # other internal service. The gate itself joins this network in
+    # addition to `default` so it can call the worker.
+    driver: bridge
 
 volumes:
   pgdata:
