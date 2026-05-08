@@ -30,7 +30,12 @@ export const metadata: Metadata = {
       "Pre-ingestion AI trust control for URLs, prompts, pages, agents, browsers, apps, and enterprise AI workflows.",
     url: "https://cyberarmor.ai/",
     siteName: "CyberArmorAI",
-    images: ["/CyberArmorLinkImage.png?v=20260508"],
+    images: [{
+        url: "https://cyberarmor.ai/CyberArmorLinkImage.png?v=20260508",
+        width: 1200,
+        height: 784,
+        alt: "CyberArmorAI — Stop hostile web content before it becomes AI context",
+      },],
     locale: "en_US",
     type: "website",
   },
@@ -39,7 +44,7 @@ export const metadata: Metadata = {
     title: "CyberArmorAI — Stop hostile web content before it becomes AI context",
     description:
       "Pre-ingestion AI trust control for URLs, prompts, pages, agents, browsers, apps, and enterprise AI workflows.",
-    images: ["CyberArmorLinkImage.png?v=20260508"],
+    images: ["https://cyberarmor.ai/CyberArmorLinkImage.png?v=20260508"],
   },
   };
 
