@@ -16,7 +16,7 @@ const layers = [
     title: "URL & Context Trust Gate",
     color: "#0EA5E9",
     description:
-      "A pre-ingestion control point that evaluates URLs and external content before a human, browser, endpoint agent, RASP-instrumented app, or AI agent fetches them. Existing URL filters answer 'is this site malicious for a human?'; CyberArmor.AI also answers 'is this content safe for an AI agent to ingest?' A 15-minute pilot PoC is available.",
+      "A pre-ingestion control point that evaluates URLs and external content before a human, browser, endpoint agent, RASP-instrumented app, or AI agent fetches them. Existing URL filters answer 'is this site malicious for a human?'; CyberArmor.AI also answers 'is this content safe for an AI agent to ingest?' A 15-minute local PoC is available.",
     capabilities: [
       "Canonicalisation, querystring redaction, and homoglyph / punycode checks before any network call",
       "SSRF-guarded safe crawl plus optional Playwright detonation to surface CSS-hidden, off-screen, and Unicode-tag-encoded promptware",

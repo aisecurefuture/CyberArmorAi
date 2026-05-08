@@ -29,7 +29,7 @@ const diffs = [
   },
   {
     number: "05",
-    title: "Pre-Ingestion AI Safe Browsing",
+    title: "Pre-Ingestion Web Content Trust for AI Agents",
     body:
       "Existing URL filters answer 'is this site safe for a human?' CyberArmor.AI also answers 'is this content safe for an AI agent to ingest?' The URL Trust Gate evaluates external destinations for promptware, hidden prompt injection, phishing, IOCs, and credential harvesting before content ever reaches AI context — with policy-based enforcement and evidence written to audit.",
     tag: "URL Trust Gate",

@@ -111,9 +111,8 @@ export default function Hero() {
 
           {/* Hero headline */}
           <h1 className="hero-headline" style={{ marginBottom: 24, color: "#ffffff", maxWidth: "100%" }}>
-            AI <span className="gradient-text-blue">Security Runtime</span>
-            <br />
-            for Governed Enterprise AI.
+            Stop hostile web content<br />
+            <span className="gradient-text-blue">before it becomes AI context.</span>
           </h1>
 
           {/* Subheadline */}
@@ -121,26 +120,25 @@ export default function Hero() {
             fontSize: "clamp(1rem, 3.5vw, 1.2rem)",
             color: "#8892A4",
             lineHeight: 1.7,
-            maxWidth: 680,
+            maxWidth: 720,
             width: "100%",
             margin: "0 auto 40px",
             overflowWrap: "break-word",
           }}>
-            CyberArmor.AI evaluates external URLs and web content before they
-            reach any human, browser, or AI agent — then controls and proves
-            AI activity across applications, agents, APIs, providers, and
-            models. Pre-ingestion trust gate. Runtime enforcement.
-            Decision-level evidence.
+            CyberArmor evaluates URLs, web pages, prompts, and agent-bound content
+            before humans, browsers, apps, or AI agents trust them — then enforces
+            policy and records decision-level evidence. The runtime connects that
+            decision to redaction, routing, agent identity, response, and audit.
           </p>
 
           {/* CTAs */}
           <div style={{ display: "flex", gap: 14, justifyContent: "center", flexWrap: "wrap", marginBottom: 56 }}>
-            <Link href="/contact" className="btn-primary" style={{ padding: "14px 32px", fontSize: 16 }}>
-              Request a Demo <ArrowRight size={16} />
+            <Link href="/url-trust-gate" className="btn-primary" style={{ padding: "14px 32px", fontSize: 16 }}>
+              Run the 15-minute local PoC <ArrowRight size={16} />
             </Link>
-            <Link href="/platform" className="btn-ghost" style={{ padding: "13px 32px", fontSize: 16 }}>
+            <Link href="/contact" className="btn-ghost" style={{ padding: "13px 32px", fontSize: 16 }}>
               <Play size={15} style={{ color: "#00A3FF" }} />
-              See the Platform
+              Request a Design Partner Pilot
             </Link>
           </div>
 
@@ -152,7 +150,7 @@ export default function Hero() {
             flexWrap: "wrap",
           }}>
             {[
-              "Pre-ingestion URL trust gate — 15-minute pilot PoC",
+              "Pre-ingestion URL trust gate — 15-minute local PoC",
               "Runtime control: redaction, routing, identity, and audit evidence",
               "Built for security-led pilots and design partners",
             ].map((t) => (

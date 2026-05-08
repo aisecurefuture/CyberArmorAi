@@ -4,7 +4,7 @@ const capabilities = [
   {
     icon: Link2,
     title: "URL & Context Trust Gate",
-    body: "Pre-ingestion safety check for URLs and external content before it reaches any human, browser, endpoint agent, or AI agent. Detects phishing, hidden prompt injection, promptware, and IOCs — including CSS-hidden and zero-width-encoded payloads. Backed by Safe Browsing v4, Microsoft SmartScreen, and VirusTotal reputation feeds. 15-minute pilot PoC available.",
+    body: "Pre-ingestion safety check for URLs and external content before it reaches any human, browser, endpoint agent, or AI agent. Detects phishing, hidden prompt injection, promptware, and IOCs — including CSS-hidden and zero-width-encoded payloads. Backed by Safe Browsing v4, Microsoft SmartScreen, and VirusTotal reputation feeds. 15-minute local PoC available.",
   },
   {
     icon: ShieldAlert,

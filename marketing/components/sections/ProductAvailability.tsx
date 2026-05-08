@@ -1,7 +1,7 @@
 import { CheckCircle2, Clock3, FileCheck2, ShieldCheck } from "lucide-react";
 
 const availableToday = [
-  "URL & Context Trust Gate — 15-minute pilot PoC with four live attack-page demos (display:none promptware, zero-width injection, credential harvest, benign)",
+  "URL & Context Trust Gate — 15-minute local PoC with four live attack-page demos (display:none promptware, zero-width injection, credential harvest, benign)",
   "SSRF-guarded safe crawler and optional Playwright detonation sandbox for JavaScript-heavy content",
   "External reputation feeds: Safe Browsing v4, Microsoft SmartScreen, and VirusTotal v3 with in-process caching",
   "Tenant URL allow/block lists with scope-based policy integration",

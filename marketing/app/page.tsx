@@ -2,7 +2,9 @@ import type { Metadata } from "next";
 import Hero from "@/components/sections/Hero";
 import TrustBand from "@/components/sections/TrustBand";
 import ProblemStatement from "@/components/sections/ProblemStatement";
+import WhyExistingToolsMissThis from "@/components/sections/WhyExistingToolsMissThis";
 import PlatformOverview from "@/components/sections/PlatformOverview";
+import ProofOfReality from "@/components/sections/ProofOfReality";
 import ProtectionBackedEvidence from "@/components/sections/ProtectionBackedEvidence";
 import ProductAvailability from "@/components/sections/ProductAvailability";
 import FrameworkAlignment from "@/components/sections/FrameworkAlignment";
@@ -14,6 +16,7 @@ import EvidenceLayer from "@/components/sections/EvidenceLayer";
 import WhyNow from "@/components/sections/WhyNow";
 import FounderCredibility from "@/components/sections/FounderCredibility";
 import BrandClarification from "@/components/sections/BrandClarification";
+import BuyerBoundary from "@/components/sections/BuyerBoundary";
 import FAQ from "@/components/sections/FAQ";
 import FinalCTA from "@/components/sections/FinalCTA";
 
@@ -29,7 +32,9 @@ export default function HomePage() {
       <Hero />
       <TrustBand />
       <ProblemStatement />
+      <WhyExistingToolsMissThis />
       <PlatformOverview />
+      <ProofOfReality />
       <ProtectionBackedEvidence />
       <ProductAvailability />
       <FrameworkAlignment />
@@ -41,6 +46,7 @@ export default function HomePage() {
       <WhyNow />
       <FounderCredibility />
       <BrandClarification />
+      <BuyerBoundary />
       <FAQ />
       <FinalCTA />
     </>

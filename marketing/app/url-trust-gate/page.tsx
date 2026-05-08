@@ -17,7 +17,7 @@ import FinalCTA from "@/components/sections/FinalCTA";
 export const metadata: Metadata = {
   title: "URL & Context Trust Gate — CyberArmor.AI",
   description:
-    "CyberArmor.AI's URL Trust Gate evaluates external URLs and web content before they reach AI agents, browsers, or users. Detects promptware, hidden prompt injection, phishing, IOCs, and credential harvesting. 15-minute pilot PoC available.",
+    "CyberArmor.AI's URL Trust Gate evaluates external URLs and web content before they reach AI agents, browsers, or users. Detects promptware, hidden prompt injection, phishing, IOCs, and credential harvesting. 15-minute local PoC available.",
 };
 
 const attackPages = [
@@ -109,7 +109,7 @@ export default function URLTrustGatePage() {
             <div style={{ marginBottom: 24, display: "flex", justifyContent: "center" }}>
               <div className="label-tag">
                 <Zap size={11} style={{ flexShrink: 0 }} />
-                <span>15-minute pilot PoC · pilot-ready today</span>
+                <span>15-minute local PoC · pilot-ready today</span>
               </div>
             </div>
 
