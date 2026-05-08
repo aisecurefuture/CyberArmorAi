@@ -22,7 +22,10 @@ CyberArmor is a zero-trust, multi-layered security platform that provides real-t
 │ Agent  │AI Router│ Audit │Integ-  │Runtime │Secrets │ OpenBao  │
 │Identity│        │       │ration  │  API   │Service │  Vault   │
 │ :8008  │ :8009  │ :8011 │ :8012  │ :8010  │ :8013  │          │
-├────────┴────────┴────────┴────────┴────────┴────────┴──────────┤
+├────────────────────────────┬────────────────────────────────────┤
+│  URL / Context Trust Gate  │  Detonation Worker (isolated net)  │
+│          :8014             │          :8015 (internal only)     │
+├────────────────────────────┴────────────────────────────────────┤
 │                   Transparent AI Proxy (:8080)                  │
 │             (mitmproxy dev; HTTPS on :8443 in dev)              │
 ├─────────────────────────────────────────────────────────────────┤
@@ -105,6 +108,13 @@ This addresses the gap between traditional URL filters (*"is this site malicious
 - Endpoint agent: `agents/endpoint-agent/monitors/url_trust_gate.py` — gate client + loopback IPC daemon (`127.0.0.1:48515`) that other endpoint software (IDE addins, custom agents, MCP clients) can call before connecting; integrated into the agent's network monitor.
 - RASP (Python): `rasp/python/cyberarmor_rasp_url_trust_gate.py` — monkeypatches `requests` / `httpx` / `urllib3` so server-side AI tools consult the gate before any outbound URL fetch.
 - LangChain SDK: `sdks/python/cyberarmor/frameworks/langchain_url_trust_gate.py` — `wrap_tool` / `wrap_agent_tools` / `make_guarded_browser_tool` for AI agents.
+- LlamaIndex SDK: `sdks/python/cyberarmor/frameworks/llamaindex.py` — reader and node-parser hooks that gate URLs before LlamaIndex fetches or indexes external content.
+
+**Optional reputation feeds (configurable, gate works without them):**
+
+- Google Safe Browsing v4 — set `SAFE_BROWSING_API_KEY`
+- Microsoft SmartScreen (Defender Threat Intelligence) — set `SMARTSCREEN_TENANT_ID` / `SMARTSCREEN_CLIENT_ID` / `SMARTSCREEN_CLIENT_SECRET`
+- VirusTotal v3 — set `VIRUSTOTAL_API_KEY`; results cached in-process for `VIRUSTOTAL_CACHE_TTL_S` seconds
 
 See [docs/architecture/url-trust-gate.md](docs/architecture/url-trust-gate.md) for the full pipeline, latency budgets, decision actions, evidence schema, and production traps with code-level guards mapped to each.
 
@@ -163,7 +173,7 @@ Access the admin dashboard at `http://localhost:3000`
 
 ## Current Product Boundary
 
-The current repository is deployable for internal testing, staging, demos, and controlled pilot validation. It is not yet a customer-ready SaaS control plane. The largest remaining gaps are tenant-facing authentication, self-service onboarding, MFA, and stronger separation between the future tenant app at `app.cyberarmor.ai` and the global CyberArmor operator/admin dashboard.
+The URL Trust Gate runs end-to-end and is pilot-ready: the 15-minute PoC installer brings up the full gate stack on any developer laptop, and the three reputation feeds (Google Safe Browsing, SmartScreen, VirusTotal) are configurable via environment variables. The broader platform is deployable for internal testing, staging, and controlled design-partner validation. Remaining work before general availability includes tenant-facing self-service onboarding, MFA enforcement, and the OpenAI/Anthropic tool-use URL field wrappers (next on the build queue). See `docs/architecture/capability-status.md` for the full status table.
 
 ### Kubernetes / Helm (Production)
 
@@ -205,6 +215,10 @@ ai-protect-system-claude-4.6/
 │   ├── cursor/               # Cursor IDE extension
 │   ├── kiro/                 # Kiro IDE extension
 │   └── office365/            # Office 365 add-in (Word, Excel, PPT, OneNote, Outlook)
+├── scripts/
+│   ├── poc/                  # 15-minute URL Trust Gate PoC: install.sh, uninstall.sh, demo script, four attack pages, README
+│   ├── hardening/            # Ubuntu server hardening helper
+│   └── smoke-test.sh         # Full-stack smoke test
 ├── infra/
 │   ├── docker-compose/       # Docker Compose for local development
 │   ├── envoy/                # Envoy proxy config + Lua filter
@@ -279,6 +293,11 @@ ai-protect-system-claude-4.6/
 | `DETONATION_WORKER_URL` | Base URL of the detonation worker (e.g. `http://detonation-worker:8015`); unset disables deep-mode | (optional) |
 | `DETONATION_WORKER_API_SECRET` | Shared secret between the gate and the detonation worker | (required if worker enabled) |
 | `SAFE_BROWSING_API_KEY` | Google Safe Browsing v4 Lookup API key (optional second-opinion feed; gate works without it) | (optional) |
+| `SMARTSCREEN_TENANT_ID` | Azure AD tenant ID for Microsoft SmartScreen / Defender Threat Intelligence feed | (optional) |
+| `SMARTSCREEN_CLIENT_ID` | App registration client ID for SmartScreen feed | (optional) |
+| `SMARTSCREEN_CLIENT_SECRET` | App registration client secret for SmartScreen feed | (optional) |
+| `VIRUSTOTAL_API_KEY` | VirusTotal v3 API key for URL reputation feed | (optional) |
+| `VIRUSTOTAL_CACHE_TTL_S` | In-process TTL for VirusTotal results (seconds) | `3600` |
 | `URL_TRUST_GATE_DETONATION_DEFAULT` | Run detonation by default for `depth=deep` requests (`on` / `off`) | `off` |
 | `URL_TRUST_GATE_CRAWLER_TIMEOUT_S` | Per-request crawler timeout for the gate's safe fetcher | `4.0` |
 | `URL_TRUST_GATE_CACHE_TTL_S` | Reputation-cache TTL on the gate | `900` |
