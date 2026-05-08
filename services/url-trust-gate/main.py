@@ -243,9 +243,15 @@ def ready() -> Dict[str, Any]:
     return {"status": "ready"}
 
 
-@app.get("/metrics", response_class=PlainTextResponse)
-def metrics() -> str:
-    return _metrics.render()
+@app.get("/metrics")
+def metrics() -> PlainTextResponse:
+    # Prometheus expects the canonical content-type on the scrape endpoint.
+    # The version string ("0.0.4") tells Prometheus which text format we emit
+    # so it can parse the exposition correctly.
+    return PlainTextResponse(
+        _metrics.render(),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
 
 
 @app.get("/pki/public-key")
