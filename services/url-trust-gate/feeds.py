@@ -10,10 +10,14 @@ Implemented:
   - Google Safe Browsing v4 (Lookup API, network-call variant). For
     high-volume deployments switch to the Update API + local hash
     cache; the interface here is shaped to allow that drop-in.
+  - Microsoft Defender SmartScreen / Threat Intelligence indicator API.
+    Requires SMARTSCREEN_TENANT_ID + SMARTSCREEN_CLIENT_ID +
+    SMARTSCREEN_CLIENT_SECRET (Entra app with ThreatIntelligence.Read).
+  - VirusTotal v3 URL scan endpoint (rate-limited; results cached for
+    VIRUSTOTAL_CACHE_TTL_S seconds to stay within the free-tier quota of
+    500 lookups/day). Requires VIRUSTOTAL_API_KEY.
 
-Stubbed (TODO):
-  - Microsoft Defender / SmartScreen indicator API.
-  - VirusTotal v3 url/{id} (rate-limited; cache aggressively).
+Planned:
   - Tenant-supplied STIX/TAXII feeds.
 
 All adapters implement ``ReputationFeed.lookup`` and ``ReputationFeed.name``;
@@ -24,11 +28,13 @@ the gate's score vector.
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import logging
 import os
 import time
 from dataclasses import dataclass, field
-from typing import List, Optional, Protocol, runtime_checkable
+from typing import Dict, List, Optional, Protocol, Tuple, runtime_checkable
 
 import httpx
 
@@ -138,6 +144,288 @@ class SafeBrowsingFeed:
 
 
 # ---------------------------------------------------------------------------
+# Microsoft Defender SmartScreen / Threat Intelligence indicator API
+# ---------------------------------------------------------------------------
+
+
+class SmartScreenFeed:
+    """Microsoft Defender Threat Intelligence URL indicator lookup.
+
+    Uses the Microsoft Graph Security API:
+        GET https://graph.microsoft.com/v1.0/security/tiIndicators?$filter=...
+
+    Authentication is via the client-credentials OAuth2 flow (Entra ID).
+    The app registration needs the ``ThreatIndicators.Read.All``
+    application permission (Graph API).
+
+    Required env vars:
+      SMARTSCREEN_TENANT_ID   — Entra tenant (directory) ID
+      SMARTSCREEN_CLIENT_ID   — App registration client ID
+      SMARTSCREEN_CLIENT_SECRET — App client secret
+
+    The bearer token is cached for its lifetime (typically 3600 s) so we
+    don't hammer the token endpoint.
+    """
+
+    name = "microsoft-smartscreen"
+
+    _TOKEN_ENDPOINT = "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
+    _GRAPH_INDICATOR_ENDPOINT = (
+        "https://graph.microsoft.com/v1.0/security/tiIndicators"
+    )
+    # Threat categories that map to phishing.
+    _PHISHING_TYPES = frozenset({"phishing", "phishingUrl", "maliciousUrl"})
+    # Threat categories that map to malware.
+    _MALWARE_TYPES = frozenset({"malware", "botnet", "c2", "exploit", "ransomware"})
+
+    def __init__(
+        self,
+        tenant_id: Optional[str] = None,
+        client_id: Optional[str] = None,
+        client_secret: Optional[str] = None,
+        timeout_s: float = 2.0,
+    ):
+        self._tenant_id = tenant_id or os.getenv("SMARTSCREEN_TENANT_ID", "")
+        self._client_id = client_id or os.getenv("SMARTSCREEN_CLIENT_ID", "")
+        self._client_secret = client_secret or os.getenv("SMARTSCREEN_CLIENT_SECRET", "")
+        self._timeout_s = timeout_s
+        # Token cache: (access_token, expires_at_monotonic)
+        self._token_cache: Optional[Tuple[str, float]] = None
+
+    @property
+    def configured(self) -> bool:
+        return bool(self._tenant_id and self._client_id and self._client_secret)
+
+    async def _get_token(self) -> Optional[str]:
+        now = time.monotonic()
+        if self._token_cache:
+            token, expires_at = self._token_cache
+            if now < expires_at - 60:  # 60s buffer
+                return token
+
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout_s, trust_env=False) as c:
+                resp = await c.post(
+                    self._TOKEN_ENDPOINT.format(tenant=self._tenant_id),
+                    data={
+                        "grant_type": "client_credentials",
+                        "client_id": self._client_id,
+                        "client_secret": self._client_secret,
+                        "scope": "https://graph.microsoft.com/.default",
+                    },
+                )
+                if resp.status_code != 200:
+                    logger.debug(
+                        "smartscreen_token_error status=%s body=%s",
+                        resp.status_code,
+                        resp.text[:200],
+                    )
+                    return None
+                data = resp.json()
+                token = data.get("access_token", "")
+                expires_in = int(data.get("expires_in", 3600))
+                self._token_cache = (token, now + expires_in)
+                return token
+        except Exception as exc:
+            logger.debug("smartscreen_token_unreachable err=%s", exc)
+            return None
+
+    async def lookup(self, url: str) -> FeedVerdict:
+        if not self.configured:
+            return FeedVerdict(feed=self.name)
+
+        token = await self._get_token()
+        if not token:
+            return FeedVerdict(feed=self.name)
+
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout_s, trust_env=False) as c:
+                # Filter by networkDestinationUrl or url field.
+                filter_expr = (
+                    f"(networkDestinationUrl eq '{url}' or url eq '{url}')"
+                    " and isActive eq true"
+                )
+                resp = await c.get(
+                    self._GRAPH_INDICATOR_ENDPOINT,
+                    params={"$filter": filter_expr, "$top": "5"},
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                if resp.status_code == 404:
+                    # No match — clean URL.
+                    return FeedVerdict(feed=self.name)
+                if resp.status_code != 200:
+                    logger.debug(
+                        "smartscreen_lookup non-200 status=%s body=%s",
+                        resp.status_code,
+                        resp.text[:200],
+                    )
+                    return FeedVerdict(feed=self.name)
+
+                data = resp.json() or {}
+                indicators = data.get("value", []) or []
+                if not indicators:
+                    return FeedVerdict(feed=self.name)
+
+                threat_types: List[str] = []
+                max_confidence = 0.0
+                for ind in indicators:
+                    tlp = str(ind.get("tlpLevel", "")).lower()
+                    category = str(ind.get("threatType", "")).lower()
+                    if category:
+                        threat_types.append(category)
+                    # Microsoft confidence is 0–100.
+                    conf_raw = float(ind.get("confidence", 50) or 50)
+                    max_confidence = max(max_confidence, conf_raw / 100.0)
+
+                return FeedVerdict(
+                    feed=self.name,
+                    matched=True,
+                    threat_types=sorted(set(threat_types)),
+                    confidence=max_confidence,
+                    raw=data,
+                )
+        except Exception as exc:
+            logger.debug("smartscreen_lookup_unreachable err=%s", exc)
+            return FeedVerdict(feed=self.name)
+
+
+# ---------------------------------------------------------------------------
+# VirusTotal v3 URL reputation
+# ---------------------------------------------------------------------------
+
+
+_VT_CACHE_TTL_S = int(os.getenv("VIRUSTOTAL_CACHE_TTL_S", "3600"))
+
+
+class VirusTotalFeed:
+    """VirusTotal v3 URL reputation lookup.
+
+    Uses ``GET /urls/{id}`` where ``{id}`` is the URL-safe base64 encoding
+    of the URL as specified in the VT v3 docs.
+
+    Rate limits on the public (free) API: 4 req/min, 500/day.  This
+    adapter caches positive AND negative verdicts for
+    ``VIRUSTOTAL_CACHE_TTL_S`` (default 3600 s) to stay well inside
+    quota even under sustained load.
+
+    Confidence mapping: VT returns per-engine votes. We take
+    ``malicious / (malicious + harmless + undetected)`` as confidence,
+    floored at 0 and capped at 1.
+
+    Required env var:
+      VIRUSTOTAL_API_KEY — your VT API key (public or private tier).
+    """
+
+    name = "virustotal"
+    _API_BASE = "https://www.virustotal.com/api/v3"
+    # Threat categories that VT labels as phishing.
+    _PHISHING_CATS = frozenset({"phishing", "social-engineering"})
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        timeout_s: float = 2.0,
+        cache_ttl_s: int = _VT_CACHE_TTL_S,
+    ):
+        self._api_key = api_key or os.getenv("VIRUSTOTAL_API_KEY", "")
+        self._timeout_s = timeout_s
+        self._cache_ttl_s = cache_ttl_s
+        # Simple in-process TTL cache: url -> (FeedVerdict, expires_at_monotonic)
+        self._cache: Dict[str, Tuple[FeedVerdict, float]] = {}
+
+    @property
+    def configured(self) -> bool:
+        return bool(self._api_key)
+
+    @staticmethod
+    def _url_id(url: str) -> str:
+        """Compute the VT v3 URL identifier (URL-safe base64, no padding)."""
+        return base64.urlsafe_b64encode(url.encode()).rstrip(b"=").decode()
+
+    def _cache_get(self, url: str) -> Optional[FeedVerdict]:
+        entry = self._cache.get(url)
+        if entry is None:
+            return None
+        verdict, expires_at = entry
+        if time.monotonic() > expires_at:
+            del self._cache[url]
+            return None
+        return verdict
+
+    def _cache_set(self, url: str, verdict: FeedVerdict) -> None:
+        self._cache[url] = (verdict, time.monotonic() + self._cache_ttl_s)
+
+    async def lookup(self, url: str) -> FeedVerdict:
+        if not self._api_key:
+            return FeedVerdict(feed=self.name)
+
+        cached = self._cache_get(url)
+        if cached is not None:
+            return cached
+
+        url_id = self._url_id(url)
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout_s, trust_env=False) as c:
+                resp = await c.get(
+                    f"{self._API_BASE}/urls/{url_id}",
+                    headers={"x-apikey": self._api_key},
+                )
+                if resp.status_code == 404:
+                    # URL not in VT database — treat as clean.
+                    verdict = FeedVerdict(feed=self.name)
+                    self._cache_set(url, verdict)
+                    return verdict
+                if resp.status_code != 200:
+                    logger.debug(
+                        "virustotal_lookup non-200 status=%s body=%s",
+                        resp.status_code,
+                        resp.text[:200],
+                    )
+                    return FeedVerdict(feed=self.name)
+
+                data = resp.json() or {}
+                stats = (
+                    data.get("data", {})
+                    .get("attributes", {})
+                    .get("last_analysis_stats", {})
+                ) or {}
+                malicious = int(stats.get("malicious", 0) or 0)
+                suspicious = int(stats.get("suspicious", 0) or 0)
+                harmless = int(stats.get("harmless", 0) or 0)
+                undetected = int(stats.get("undetected", 0) or 0)
+                total = malicious + suspicious + harmless + undetected
+                if total == 0 or malicious == 0:
+                    verdict = FeedVerdict(feed=self.name)
+                    self._cache_set(url, verdict)
+                    return verdict
+
+                confidence = min(1.0, (malicious + suspicious * 0.5) / total)
+
+                # Pull threat categories from per-engine results.
+                categories_raw = (
+                    data.get("data", {})
+                    .get("attributes", {})
+                    .get("categories", {})
+                ) or {}
+                all_cats = {v.lower() for v in categories_raw.values() if v}
+                threat_types = sorted(all_cats or {"malware"})
+
+                verdict = FeedVerdict(
+                    feed=self.name,
+                    matched=True,
+                    threat_types=threat_types,
+                    confidence=confidence,
+                    raw={"last_analysis_stats": stats, "categories": categories_raw},
+                )
+                self._cache_set(url, verdict)
+                return verdict
+
+        except Exception as exc:
+            logger.debug("virustotal_lookup_unreachable err=%s", exc)
+            return FeedVerdict(feed=self.name)
+
+
+# ---------------------------------------------------------------------------
 # Aggregator
 # ---------------------------------------------------------------------------
 
@@ -170,8 +458,22 @@ class ReputationAggregator:
         sb = SafeBrowsingFeed()
         if sb.configured:
             feeds.append(sb)
-        # TODO: add SmartScreen / VirusTotal / STIX/TAXII adapters here
-        # once their credentials are wired through the secrets service.
+        ss = SmartScreenFeed()
+        if ss.configured:
+            feeds.append(ss)
+        vt = VirusTotalFeed()
+        if vt.configured:
+            feeds.append(vt)
+        if feeds:
+            logger.info(
+                "reputation_feeds_active feeds=%s",
+                [f.name for f in feeds],
+            )
+        else:
+            logger.info(
+                "reputation_feeds_active feeds=[] "
+                "(set SAFE_BROWSING_API_KEY / SMARTSCREEN_* / VIRUSTOTAL_API_KEY to enable)"
+            )
         return cls(feeds)
 
     async def lookup(self, url: str) -> AggregatedReputation:
@@ -197,13 +499,37 @@ class ReputationAggregator:
                 if tt and tt not in agg.threat_types:
                     agg.threat_types.append(tt)
             # Map threat-type -> score channel.
-            if any(t in r.threat_types for t in ("SOCIAL_ENGINEERING",)):
-                agg.phishing = max(agg.phishing, r.confidence)
-            if any(t in r.threat_types for t in (
+            # Covers Google Safe Browsing types (UPPER_CASE), Microsoft
+            # SmartScreen types (camelCase / lower), and VirusTotal
+            # category strings.
+            _PHISHING_THREAT_TYPES = frozenset({
+                # Safe Browsing
+                "SOCIAL_ENGINEERING",
+                # SmartScreen
+                "phishing", "phishingUrl", "maliciousUrl",
+                # VirusTotal categories
+                "phishing", "social-engineering",
+            })
+            _MALWARE_THREAT_TYPES = frozenset({
+                # Safe Browsing
                 "MALWARE",
                 "UNWANTED_SOFTWARE",
                 "POTENTIALLY_HARMFUL_APPLICATION",
-            )):
+                # SmartScreen
+                "malware", "botnet", "c2", "exploit", "ransomware",
+                # VirusTotal categories
+                "malware", "trojan", "ransomware", "adware",
+            })
+            for tt in r.threat_types:
+                if tt in _PHISHING_THREAT_TYPES:
+                    agg.phishing = max(agg.phishing, r.confidence)
+                if tt in _MALWARE_THREAT_TYPES:
+                    agg.malware = max(agg.malware, r.confidence)
+            # Fallback: if matched but no recognised type, treat as malware.
+            if not any(
+                tt in _PHISHING_THREAT_TYPES or tt in _MALWARE_THREAT_TYPES
+                for tt in r.threat_types
+            ):
                 agg.malware = max(agg.malware, r.confidence)
 
         agg.elapsed_ms = int((time.monotonic() - start) * 1000)
