@@ -48,20 +48,24 @@ const NAV = [
 ];
 
 // ─── Service Configuration ───────────────────────────────
-const SERVICES = [
-  { key: "cp",         name: "Control Plane",    proxyBase: "/admin-api/control-plane",    healthPath: "/health" },
-  { key: "pol",        name: "Policy",           proxyBase: "/admin-api/policy",           healthPath: "/health" },
-  { key: "det",        name: "Detection",        proxyBase: "/admin-api/detection",        healthPath: "/health" },
-  { key: "rsp",        name: "Response",         proxyBase: "/admin-api/response",         healthPath: "/health" },
-  { key: "identity",   name: "Identity",         proxyBase: "/admin-api/identity",         healthPath: "/health" },
-  { key: "siem",       name: "SIEM Connector",   proxyBase: "/admin-api/siem",             healthPath: "/health" },
-  { key: "compliance", name: "Compliance",       proxyBase: "/admin-api/compliance",       healthPath: "/health" },
-  { key: "px",         name: "Proxy Agent",      proxyBase: "/admin-api/proxy-agent",      healthPath: "/health" },
-  // AI Identity Control Plane services
-  { key: "agentId",    name: "Agent Identity",   proxyBase: "/admin-api/agent-identity",   healthPath: "/health" },
-  { key: "aiRouter",   name: "AI Router",        proxyBase: "/admin-api/ai-router",        healthPath: "/health" },
-  { key: "auditGraph", name: "Audit Graph",      proxyBase: "/admin-api/audit",            healthPath: "/health" },
+const DEFAULT_SERVICES = [
+  { key: "cp",                 service: "control-plane",       name: "Control Plane",       proxyBase: "/admin-api/control-plane",       healthPath: "/health" },
+  { key: "pol",                service: "policy",              name: "Policy",              proxyBase: "/admin-api/policy",              healthPath: "/health" },
+  { key: "det",                service: "detection",           name: "Detection",           proxyBase: "/admin-api/detection",           healthPath: "/health" },
+  { key: "rsp",                service: "response",            name: "Response",            proxyBase: "/admin-api/response",            healthPath: "/health" },
+  { key: "identity",           service: "identity",            name: "Identity",            proxyBase: "/admin-api/identity",            healthPath: "/health" },
+  { key: "siem",               service: "siem",                name: "SIEM Connector",      proxyBase: "/admin-api/siem",                healthPath: "/health" },
+  { key: "compliance",         service: "compliance",          name: "Compliance",          proxyBase: "/admin-api/compliance",          healthPath: "/health" },
+  { key: "runtime",            service: "runtime",             name: "Runtime",             proxyBase: "/admin-api/runtime",             healthPath: "/health" },
+  { key: "px",                 service: "proxy-agent",         name: "Proxy Agent",         proxyBase: "/admin-api/proxy-agent",         healthPath: "/health" },
+  { key: "urlGate",            service: "url-trust-gate",      name: "URL Trust Gate",      proxyBase: "/admin-api/url-trust-gate",      healthPath: "/health" },
+  { key: "agentId",            service: "agent-identity",      name: "Agent Identity",      proxyBase: "/admin-api/agent-identity",      healthPath: "/health" },
+  { key: "aiRouter",           service: "ai-router",           name: "AI Router",           proxyBase: "/admin-api/ai-router",           healthPath: "/health" },
+  { key: "auditGraph",         service: "audit",               name: "Audit Graph",         proxyBase: "/admin-api/audit",               healthPath: "/health" },
+  { key: "integrationControl", service: "integration-control", name: "Integration Control", proxyBase: "/admin-api/integration-control", healthPath: "/health" },
+  { key: "secretsService",     service: "secrets-service",     name: "Secrets Service",     proxyBase: "/admin-api/secrets-service",     healthPath: "/health" },
 ];
+let services = DEFAULT_SERVICES.map((service) => ({ ...service }));
 
 // ─── Settings ────────────────────────────────────────────
 const DEFAULTS = { tenantScope: "" };
@@ -246,11 +250,28 @@ async function apiFetch(url, { headers = {}, ...opts } = {}) {
 }
 
 function svcUrl(svcKey) {
-  const svc = SERVICES.find((item) => item.key === svcKey);
+  const svc = services.find((item) => item.key === svcKey);
   return svc?.proxyBase || "";
 }
 function svcHeaders(svcKey) {
   return { "Content-Type": "application/json" };
+}
+
+async function loadServiceCatalog() {
+  try {
+    const res = await fetch("/auth/admin-services", { credentials: "same-origin" });
+    if (!res.ok) throw new Error("Unable to load service registry");
+    const data = await res.json();
+    if (!Array.isArray(data.services) || data.services.length === 0) return;
+    services = data.services.map((service) => ({
+      ...service,
+      healthPath: service.healthPath || "/health",
+    }));
+    buildServiceStatus();
+    buildSettingsFields();
+  } catch (error) {
+    console.warn("Service registry fallback active", error);
+  }
 }
 
 function getTenant() { return settings.tenantScope || "default"; }
@@ -409,22 +430,36 @@ function setActiveNav(id) {
 
 function buildServiceStatus() {
   const el = $("#serviceStatus");
-  el.innerHTML = SERVICES.map(s =>
+  el.innerHTML = services.map(s =>
     `<div class="flex items-center justify-between"><span class="text-slate-300">${s.name}:</span><span id="svc_${s.key}" class="flex items-center gap-1"><span class="pulse-dot bg-slate-600"></span> —</span></div>`
   ).join("");
 }
 
 function buildSettingsFields() {
   const el = $("#settingsFields");
+  const serviceRows = services.map((service) => `
+    <div class="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+      <div class="text-sm font-medium text-slate-100">${esc(service.name)}</div>
+      <div class="mt-1 break-all font-mono text-xs text-slate-400">${esc(service.targetUrl || service.proxyBase)}</div>
+      <div class="mt-1 text-[11px] uppercase tracking-[0.18em] text-slate-500">${esc(service.healthPath || "/health")}</div>
+    </div>
+  `).join("");
   el.innerHTML = `
     <div class="md:col-span-2 rounded-2xl border border-emerald-900/60 bg-emerald-950/30 p-4 text-sm text-emerald-100">
-      Service API keys are now held server-side by the dashboard auth proxy and are never stored in this browser.
+      Service API keys are now held server-side by the dashboard auth proxy. This browser only sees the resolved service map and health endpoints.
     </div>
     <div class="md:col-span-2 rounded-2xl border border-slate-800 bg-slate-900 p-4">
       <div class="text-sm font-medium text-slate-100">How the admin console connects</div>
       <div class="mt-2 text-sm text-slate-400">
         All admin API calls go through same-origin <span class="font-mono text-cyan-200">/admin-api/*</span> proxy routes after dashboard authentication.
         The browser no longer stores or sends service secrets directly.
+      </div>
+      <div class="mt-4 flex items-center justify-between text-xs text-slate-500">
+        <span>Resolved services</span>
+        <span>${services.length} total</span>
+      </div>
+      <div class="mt-3 grid gap-3 md:grid-cols-2">
+        ${serviceRows}
       </div>
     </div>
     <div class="md:col-span-2 rounded-2xl border border-slate-800 bg-slate-900 p-4">
@@ -438,16 +473,25 @@ function buildSettingsFields() {
 
 // ─── Health Check ────────────────────────────────────────
 async function pingAll() {
-  for (const s of SERVICES) {
+  $("#healthStatus").textContent = "Pinging services...";
+  const results = await Promise.all(services.map(async (s) => {
     const el = $(`#svc_${s.key}`);
     el.innerHTML = `<div class="spinner"></div>`;
     try {
       await apiFetch(svcUrl(s.key) + s.healthPath, { headers: svcHeaders(s.key) });
       el.innerHTML = `<span class="pulse-dot bg-emerald-500"></span> OK`;
-    } catch {
-      el.innerHTML = `<span class="pulse-dot bg-rose-500"></span> Down`;
+      return { key: s.key, ok: true };
+    } catch (error) {
+      const detail = esc(error?.message || "Health check failed");
+      el.innerHTML = `<span class="pulse-dot bg-rose-500"></span><span title="${detail}">Down</span>`;
+      return { key: s.key, ok: false, detail };
     }
-  }
+  }));
+  const healthy = results.filter((result) => result.ok).length;
+  const down = results.length - healthy;
+  $("#healthStatus").textContent = down === 0
+    ? `${healthy}/${results.length} services healthy`
+    : `${healthy}/${results.length} healthy, ${down} need attention`;
 }
 
 // ─── VIEWS ───────────────────────────────────────────────
@@ -2992,6 +3036,7 @@ buildServiceStatus();
 buildSettingsFields();
 setConnectionLabels();
 hydrateDashboardAuth();
+loadServiceCatalog();
 
 function setConnectionLabels() {
   $("#tenantScope").value = settings.tenantScope || "";
@@ -3000,9 +3045,10 @@ function setConnectionLabels() {
 // Settings modal
 $("#openSettings").onclick = () => { buildSettingsFields(); $("#settingsModal").classList.remove("hidden"); $("#settingsModal").classList.add("flex"); };
 $("#closeSettings").onclick = () => { $("#settingsModal").classList.add("hidden"); $("#settingsModal").classList.remove("flex"); };
-$("#saveSettings").onclick = () => {
+$("#saveSettings").onclick = async () => {
+  await loadServiceCatalog();
   buildServiceStatus();
-  toast("Server-side proxy settings are active", "success");
+  toast("Service registry refreshed from dashboard proxy", "success");
   $("#settingsModal").classList.add("hidden");
   $("#settingsModal").classList.remove("flex");
 };

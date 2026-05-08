@@ -10,7 +10,7 @@ import smtplib
 import time
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
-from typing import Annotated, List, Optional
+from typing import Annotated, List, Optional, Sequence
 
 import httpx
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response, status
@@ -359,72 +359,154 @@ def _require_dashboard_email(db: Session, session_cookie: str | None) -> str:
 
 
 class AdminProxyTarget(BaseModel):
+    key: str
+    service: str
+    name: str
     url: str
     api_key: str
+    health_path: str = "/health"
+    dashboard_visible: bool = True
+
+    def dashboard_metadata(self) -> dict[str, str]:
+        return {
+            "key": self.key,
+            "service": self.service,
+            "name": self.name,
+            "proxyBase": f"/admin-api/{self.service}",
+            "healthPath": self.health_path,
+            "targetUrl": self.url,
+        }
 
 
-def _target_env_url(name: str, default: str) -> str:
-    return os.getenv(name, default).rstrip("/")
+def _resolve_env_value(names: str | Sequence[str], default: str) -> str:
+    candidates = [names] if isinstance(names, str) else list(names)
+    for name in candidates:
+        value = os.getenv(name, "").strip()
+        if value:
+            return value
+    return default
 
 
-def _target_env_secret(name: str, default: str) -> str:
-    return os.getenv(name, default)
+def _target_env_url(names: str | Sequence[str], default: str) -> str:
+    return _resolve_env_value(names, default).rstrip("/")
 
 
-ADMIN_PROXY_TARGETS: dict[str, AdminProxyTarget] = {
-    "control-plane": AdminProxyTarget(
-        url=_target_env_url("CONTROL_PLANE_URL", "http://control-plane:8000"),
-        api_key=_target_env_secret("CYBERARMOR_API_SECRET", "change-me"),
-    ),
-    "policy": AdminProxyTarget(
-        url=_target_env_url("POLICY_SERVICE_URL", "http://policy:8001"),
-        api_key=_target_env_secret("POLICY_API_SECRET", "change-me-policy"),
-    ),
-    "detection": AdminProxyTarget(
-        url=_target_env_url("DETECTION_SERVICE_URL", "http://detection:8002"),
-        api_key=_target_env_secret("DETECTION_API_SECRET", "change-me-detection"),
-    ),
-    "response": AdminProxyTarget(
-        url=_target_env_url("RESPONSE_SERVICE_URL", "http://response:8003"),
-        api_key=_target_env_secret("RESPONSE_API_SECRET", "change-me-response"),
-    ),
-    "identity": AdminProxyTarget(
-        url=_target_env_url("IDENTITY_SERVICE_URL", "http://identity:8004"),
-        api_key=_target_env_secret("IDENTITY_API_SECRET", "change-me-identity"),
-    ),
-    "siem": AdminProxyTarget(
-        url=_target_env_url("SIEM_SERVICE_URL", "http://siem-connector:8005"),
-        api_key=_target_env_secret("SIEM_API_SECRET", "change-me-siem"),
-    ),
-    "compliance": AdminProxyTarget(
-        url=_target_env_url("COMPLIANCE_URL", "http://compliance:8006"),
-        api_key=_target_env_secret("COMPLIANCE_API_SECRET", "change-me-compliance"),
-    ),
-    "proxy-agent": AdminProxyTarget(
-        url=_target_env_url("PROXY_AGENT_URL", "http://proxy-agent:8010"),
-        api_key=_target_env_secret("PROXY_AGENT_API_SECRET", "change-me-proxy"),
-    ),
-    "agent-identity": AdminProxyTarget(
-        url=_target_env_url("AGENT_IDENTITY_URL", "http://agent-identity:8008"),
-        api_key=_target_env_secret("AGENT_IDENTITY_API_SECRET", "change-me-agent-identity"),
-    ),
-    "ai-router": AdminProxyTarget(
-        url=_target_env_url("AI_ROUTER_URL", "http://ai-router:8009"),
-        api_key=_target_env_secret("ROUTER_API_SECRET", "change-me-router"),
-    ),
-    "audit": AdminProxyTarget(
-        url=_target_env_url("AUDIT_URL", "http://audit:8011"),
-        api_key=_target_env_secret("AUDIT_API_SECRET", "change-me-audit"),
-    ),
-    "integration-control": AdminProxyTarget(
-        url=_target_env_url("INTEGRATION_CONTROL_URL", "http://integration-control:8012"),
-        api_key=_target_env_secret("INTEGRATION_CONTROL_API_SECRET", "change-me-integration-control"),
-    ),
-    "secrets-service": AdminProxyTarget(
-        url=_target_env_url("SECRETS_SERVICE_URL", "http://secrets-service:8013"),
-        api_key=_target_env_secret("SECRETS_SERVICE_API_SECRET", "change-me-secrets-service"),
-    ),
-}
+def _target_env_secret(names: str | Sequence[str], default: str) -> str:
+    return _resolve_env_value(names, default)
+
+
+def _build_admin_proxy_targets() -> dict[str, AdminProxyTarget]:
+    targets = [
+        AdminProxyTarget(
+            key="cp",
+            service="control-plane",
+            name="Control Plane",
+            url=_target_env_url("CONTROL_PLANE_URL", "http://control-plane:8000"),
+            api_key=_target_env_secret("CYBERARMOR_API_SECRET", "change-me"),
+        ),
+        AdminProxyTarget(
+            key="pol",
+            service="policy",
+            name="Policy",
+            url=_target_env_url(["POLICY_SERVICE_URL", "POLICY_URL"], "http://policy:8001"),
+            api_key=_target_env_secret("POLICY_API_SECRET", "change-me-policy"),
+        ),
+        AdminProxyTarget(
+            key="det",
+            service="detection",
+            name="Detection",
+            url=_target_env_url(["DETECTION_SERVICE_URL", "DETECTION_URL"], "http://detection:8002"),
+            api_key=_target_env_secret("DETECTION_API_SECRET", "change-me-detection"),
+        ),
+        AdminProxyTarget(
+            key="rsp",
+            service="response",
+            name="Response",
+            url=_target_env_url(["RESPONSE_SERVICE_URL", "RESPONSE_URL"], "http://response:8003"),
+            api_key=_target_env_secret("RESPONSE_API_SECRET", "change-me-response"),
+        ),
+        AdminProxyTarget(
+            key="identity",
+            service="identity",
+            name="Identity",
+            url=_target_env_url(["IDENTITY_SERVICE_URL", "IDENTITY_URL"], "http://identity:8004"),
+            api_key=_target_env_secret("IDENTITY_API_SECRET", "change-me-identity"),
+        ),
+        AdminProxyTarget(
+            key="siem",
+            service="siem",
+            name="SIEM Connector",
+            url=_target_env_url(["SIEM_SERVICE_URL", "SIEM_CONNECTOR_URL"], "http://siem-connector:8005"),
+            api_key=_target_env_secret("SIEM_API_SECRET", "change-me-siem"),
+        ),
+        AdminProxyTarget(
+            key="compliance",
+            service="compliance",
+            name="Compliance",
+            url=_target_env_url("COMPLIANCE_URL", "http://compliance:8006"),
+            api_key=_target_env_secret("COMPLIANCE_API_SECRET", "change-me-compliance"),
+        ),
+        AdminProxyTarget(
+            key="runtime",
+            service="runtime",
+            name="Runtime",
+            url=_target_env_url(["AISR_RUNTIME_URL", "RUNTIME_URL"], "http://runtime:8000"),
+            api_key=_target_env_secret("CYBERARMOR_API_SECRET", "change-me"),
+        ),
+        AdminProxyTarget(
+            key="px",
+            service="proxy-agent",
+            name="Proxy Agent",
+            url=_target_env_url("PROXY_AGENT_URL", "http://proxy-agent:8010"),
+            api_key=_target_env_secret("PROXY_AGENT_API_SECRET", "change-me-proxy"),
+        ),
+        AdminProxyTarget(
+            key="urlGate",
+            service="url-trust-gate",
+            name="URL Trust Gate",
+            url=_target_env_url("URL_TRUST_GATE_URL", "http://url-trust-gate:8014"),
+            api_key=_target_env_secret("URL_TRUST_GATE_API_SECRET", "change-me-url-trust-gate"),
+        ),
+        AdminProxyTarget(
+            key="agentId",
+            service="agent-identity",
+            name="Agent Identity",
+            url=_target_env_url("AGENT_IDENTITY_URL", "http://agent-identity:8008"),
+            api_key=_target_env_secret("AGENT_IDENTITY_API_SECRET", "change-me-agent-identity"),
+        ),
+        AdminProxyTarget(
+            key="aiRouter",
+            service="ai-router",
+            name="AI Router",
+            url=_target_env_url("AI_ROUTER_URL", "http://ai-router:8009"),
+            api_key=_target_env_secret("ROUTER_API_SECRET", "change-me-router"),
+        ),
+        AdminProxyTarget(
+            key="auditGraph",
+            service="audit",
+            name="Audit Graph",
+            url=_target_env_url("AUDIT_URL", "http://audit:8011"),
+            api_key=_target_env_secret("AUDIT_API_SECRET", "change-me-audit"),
+        ),
+        AdminProxyTarget(
+            key="integrationControl",
+            service="integration-control",
+            name="Integration Control",
+            url=_target_env_url("INTEGRATION_CONTROL_URL", "http://integration-control:8012"),
+            api_key=_target_env_secret("INTEGRATION_CONTROL_API_SECRET", "change-me-integration-control"),
+        ),
+        AdminProxyTarget(
+            key="secretsService",
+            service="secrets-service",
+            name="Secrets Service",
+            url=_target_env_url("SECRETS_SERVICE_URL", "http://secrets-service:8013"),
+            api_key=_target_env_secret("SECRETS_SERVICE_API_SECRET", "change-me-secrets-service"),
+        ),
+    ]
+    return {target.service: target for target in targets}
+
+
+ADMIN_PROXY_TARGETS: dict[str, AdminProxyTarget] = _build_admin_proxy_targets()
 
 
 @app.get("/health")
@@ -450,6 +532,20 @@ def me(
 ) -> dict[str, str]:
     email = _require_dashboard_email(db, ca_dashboard_session)
     return {"email": email}
+
+
+@app.get("/admin-services")
+def admin_services(
+    db: Annotated[Session, Depends(get_db)],
+    ca_dashboard_session: Annotated[str | None, Cookie()] = None,
+) -> dict[str, list[dict[str, str]]]:
+    _require_dashboard_email(db, ca_dashboard_session)
+    services = [
+        target.dashboard_metadata()
+        for target in ADMIN_PROXY_TARGETS.values()
+        if target.dashboard_visible
+    ]
+    return {"services": services}
 
 
 @app.api_route(
@@ -493,6 +589,15 @@ async def admin_api_proxy(
     except httpx.HTTPError as exc:
         logger.warning("dashboard_admin_proxy_failed service=%s url=%s err=%s", service, upstream_url, exc)
         raise HTTPException(status_code=502, detail=f"Admin proxy upstream request failed for {service}")
+
+    if upstream.status_code >= 400:
+        logger.warning(
+            "dashboard_admin_proxy_upstream_status service=%s method=%s path=%s status=%s",
+            service,
+            request.method,
+            path,
+            upstream.status_code,
+        )
 
     passthrough_headers = {}
     if upstream.headers.get("content-type"):
