@@ -115,9 +115,14 @@ workloads is recommended.
 ## Evidence
 
 Every gate decision (other than `depth=fast` cache hits) writes an
-evidence record to the audit service via `POST /events`. Writes are
-best-effort and non-blocking — a failed write never delays the gate
-decision.
+evidence record to the audit service via `POST /events`. Writes use
+retry with exponential back-off (3 attempts, 0.25 s / 0.5 s / 1.0 s).
+On final failure the full payload is emitted as a structured
+`evidence_write_dead_letter` log entry so log aggregation pipelines
+(Splunk, CloudWatch, Elastic, etc.) can recover it independently.
+A failed write never delays or changes the gate verdict; callers
+increment the `evidence_write_errors_total` Prometheus counter so
+the gap is visible in dashboards.
 
 Each record carries:
 

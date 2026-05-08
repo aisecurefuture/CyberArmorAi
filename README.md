@@ -4,7 +4,7 @@
 
 ## Overview
 
-CyberArmor is a zero-trust, multi-layered security platform that provides real-time monitoring, policy enforcement, data loss prevention, and compliance management for enterprise AI workloads. Built with FIPS 140-3 and CNSA 2.0+ post-quantum cryptography throughout.
+CyberArmor is a zero-trust, multi-layered security platform that provides real-time monitoring, policy enforcement, data loss prevention, and compliance management for enterprise AI workloads. Designed to support deployment with FIPS 140-3-validated cryptographic modules where required by customer environments, and aligned with CNSA 2.0+ post-quantum algorithm recommendations.
 
 ## Architecture
 

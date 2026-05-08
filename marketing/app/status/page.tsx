@@ -107,7 +107,7 @@ const sections: Section[] = [
       {
         capability: "Evidence writes to audit service",
         status: "pilot",
-        notes: "POST /events. Best-effort, non-blocking.",
+        notes: "POST /events. Retry with exponential back-off (3 attempts). Dead-letter log on final failure for log-aggregation recovery. Gap visible in Prometheus evidence_write_errors_total.",
       },
       {
         capability: "/health, /ready, /metrics, /pki/public-key endpoints",

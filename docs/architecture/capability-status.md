@@ -30,7 +30,7 @@
 | Microsoft SmartScreen (Defender Threat Intelligence) feed | **Configurable** | Set `SMARTSCREEN_TENANT_ID` / `CLIENT_ID` / `CLIENT_SECRET` |
 | VirusTotal v3 URL reputation feed | **Configurable** | Set `VIRUSTOTAL_API_KEY`; results cached for `VIRUSTOTAL_CACHE_TTL_S` |
 | Tenant URL allow / block lists | **Working** | Via `GET /policies?tenant_id=…&scope=url-trust-gate` on policy service |
-| Evidence writes to audit service | **Working** | `POST /events`; best-effort, non-blocking |
+| Evidence writes to audit service | **Working** | `POST /events`; retry with exponential back-off (3 attempts); dead-letter log on final failure for log-aggregation recovery |
 | `/health`, `/ready`, `/metrics`, `/pki/public-key` endpoints | **Working** | Prometheus `text/plain; version=0.0.4` |
 | Score-based fallback policy decision | **Working** | Applied when policy returns no-match |
 | LangChain URL Trust Gate hook | **Working** | `sdks/python/cyberarmor/frameworks/langchain_url_trust_gate.py` |
