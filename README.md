@@ -1,8 +1,8 @@
-# CyberArmor
+# CyberArmorAi
 
 **Pre-Ingestion URL Trust Gate and AI Security Runtime**
 
-CyberArmor evaluates URLs, web pages, prompts, and agent-bound content before humans, browsers, applications, or AI agents trust them. It detects phishing, hidden prompt injection, promptware, credential-harvesting signals, sensitive-data risk, and IOC indicators, then enforces tenant policy through allow, warn, redact, sandbox, block, isolate, route, or evidence-only decisions. Comprehensive protection for organizations deploying AI, Agentic AI, and LLM-powered applications.
+CyberArmorAi evaluates URLs, web pages, prompts, and agent-bound content before humans, browsers, applications, or AI agents trust them. It detects phishing, hidden prompt injection, promptware, credential-harvesting signals, sensitive-data risk, and IOC indicators, then enforces tenant policy through allow, warn, redact, sandbox, block, isolate, route, or evidence-only decisions. Comprehensive protection for organizations deploying AI, Agentic AI, and LLM-powered applications.
 
 ## Overview
 
