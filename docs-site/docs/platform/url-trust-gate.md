@@ -175,4 +175,5 @@ Auth: `x-api-key: $URL_TRUST_GATE_API_SECRET`.
 - `sdks/python/cyberarmor/frameworks/llamaindex.py` — LlamaIndex reader and node-parser hook.
 - `scripts/poc/` — 15-minute PoC installer, demo script, four crafted attack pages, and README.
 - `docs/architecture/url-trust-gate.md` — deep-dive architecture doc with production traps mapped to code-level guards.
-- `docs/architecture/capability-status.md` — authoritative capability status table (Working / Configurable / Pilot / Roadmap).
+- `docs/architecture/capability-status.md` — internal capability status table (Working / Configurable / Pilot / Roadmap).
+- [cyberarmor.ai/status](https://cyberarmor.ai/status) — public buyer-facing status page with four states: Production-deployed, Pilot-ready, PoC/demo, Roadmap.

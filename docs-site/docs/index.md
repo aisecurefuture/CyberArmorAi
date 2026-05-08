@@ -112,6 +112,15 @@ CyberArmor currently includes:
 - endpoint agents, RASP packages, browser extensions, and IDE integrations for
   workload and user-side coverage
 
+## Capability status
+
+The public buyer-facing capability status table lives at
+[cyberarmor.ai/status](https://cyberarmor.ai/status). It uses four states:
+**Production-deployed**, **Pilot-ready**, **PoC/demo**, and **Roadmap**.
+The internal engineering table (`docs/architecture/capability-status.md`)
+uses the Working / Configurable / Pilot / Roadmap labels and maps directly
+to those four states.
+
 ## Recommended reading order
 
 1. [Getting Started](getting-started/index.md)

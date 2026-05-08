@@ -8,6 +8,7 @@ import { Menu, X } from "lucide-react";
 const navLinks = [
   { label: "Platform", href: "/platform" },
   { label: "URL Trust Gate", href: "/url-trust-gate" },
+  { label: "Status", href: "/status" },
   { label: "Solutions", href: "/solutions" },
   { label: "Industries", href: "/industries" },
   { label: "Advisory", href: "/advisory" },
