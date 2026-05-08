@@ -21,10 +21,34 @@ import FAQ from "@/components/sections/FAQ";
 import FinalCTA from "@/components/sections/FinalCTA";
 
 export const metadata: Metadata = {
-  title: "CyberArmor.AI — Pre-Ingestion URL Trust Gate and AI Security Runtime",
+  title: "CyberArmor.AI — Stop hostile web content before it becomes AI context",
   description:
-    "CyberArmor.AI gates external URLs and web content before they reach AI agents or users — detecting promptware, hidden prompt injection, phishing, and IOCs. Then controls and proves enterprise AI activity with runtime enforcement, redaction, routing, identity, and decision-level evidence.",
-};
+    "Pre-ingestion AI context security for URLs, web pages, prompts, agents, browsers, apps, and enterprise AI workflows. CyberArmor.AI gates external URLs and web content before they reach AI context or AI agents or users — detecting promptware, hidden prompt injection, phishing, and IOCs. Then controls and proves enterprise AI activity with runtime enforcement, redaction, routing, identity, and decision-level evidence.",
+  openGraph: {
+    title: "CyberArmorAI — Stop hostile web content before it becomes AI context",
+    description:
+      "Pre-ingestion AI trust control for URLs, prompts, pages, agents, browsers, apps, and enterprise AI workflows.",
+    url: "https://cyberarmor.ai/",
+    siteName: "CyberArmorAI",
+    images: [
+      {
+        url: "/CyberArmorLinkImage.png?v=20260508",
+        width: 1200,
+        height: 630,
+        alt: "CyberArmorAI — Stop hostile web content before it becomes AI context",
+      },
+    ],
+    locale: "en_US",
+    type: "website",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "CyberArmorAI — Stop hostile web content before it becomes AI context",
+    description:
+      "Pre-ingestion AI trust control for URLs, prompts, pages, agents, browsers, apps, and enterprise AI workflows.",
+    images: ["/CyberArmorLinkImage.png?v=20260508"],
+  },
+  };
 
 export default function HomePage() {
   return (
