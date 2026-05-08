@@ -38,7 +38,7 @@
 | RASP Python hook | **Working** | `rasp/python/cyberarmor_rasp_url_trust_gate.py` |
 | Browser extension hook | **Working** | `extensions/chromium-shared/url_trust_gate.js` |
 | Endpoint agent URL Trust Gate hook | **Working** | `agents/endpoint-agent/monitors/url_trust_gate.py` |
-| OpenAI / Anthropic tool-use URL field wrappers | **Roadmap** | Next on build queue |
+| OpenAI / Anthropic tool-use URL field wrappers | **Working** | `sdks/python/cyberarmor/frameworks/openai_url_trust_gate.py`, `anthropic_url_trust_gate.py` |
 | Feedback-driven detection fine-tuning pipeline | **Roadmap** | Evidence + `/feedback` exist; offline trainer not yet built |
 | Enforced mTLS between services | **Configurable** | Set `CYBERARMOR_ENFORCE_MTLS=true` and provision certs |
 | Redis-backed reputation cache (multi-replica) | **Configurable** | In-process cache works for single-node; Redis for multi-replica |
@@ -75,8 +75,8 @@
 | Node.js RASP | **Pilot** | `rasp/nodejs/` |
 | LangChain SDK wrapper | **Working** | `sdks/python/cyberarmor/frameworks/` |
 | LlamaIndex SDK wrapper | **Working** | `sdks/python/cyberarmor/frameworks/` |
-| OpenAI tool-use URL wrapper | **Roadmap** | |
-| Anthropic tool-use URL wrapper | **Roadmap** | |
+| OpenAI tool-use URL wrapper | **Working** | `sdks/python/cyberarmor/frameworks/openai_url_trust_gate.py` |
+| Anthropic tool-use URL wrapper | **Working** | `sdks/python/cyberarmor/frameworks/anthropic_url_trust_gate.py` |
 | macOS / Windows kernel sensors | **Pilot** | `kernel/` — verify scope before claiming in demos |
 
 ---

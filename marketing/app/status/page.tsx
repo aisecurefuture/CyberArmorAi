@@ -151,8 +151,8 @@ const sections: Section[] = [
       },
       {
         capability: "OpenAI / Anthropic tool-use URL field wrappers",
-        status: "roadmap",
-        notes: "Next on build queue. Intercepts tool-call response objects before agent fetch.",
+        status: "pilot",
+        notes: "sdks/python/cyberarmor/frameworks/openai_url_trust_gate.py, anthropic_url_trust_gate.py — intercepts tool-call response objects before agent fetch.",
       },
       {
         capability: "Kubernetes NetworkPolicy for detonation worker",
@@ -269,11 +269,13 @@ const sections: Section[] = [
       },
       {
         capability: "OpenAI tool-use URL wrapper",
-        status: "roadmap",
+        status: "pilot",
+        notes: "sdks/python/cyberarmor/frameworks/openai_url_trust_gate.py",
       },
       {
         capability: "Anthropic tool-use URL wrapper",
-        status: "roadmap",
+        status: "pilot",
+        notes: "sdks/python/cyberarmor/frameworks/anthropic_url_trust_gate.py",
       },
     ],
   },
