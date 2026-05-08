@@ -13,11 +13,9 @@ const footerLinks = {
     { label: "Protection-Backed Evidence", href: "/platform#evidence" },
   ],
   Solutions: [
-    { label: "Pilot Programs", href: "/pilots" },
-    { label: "URL Trust Gate Pilot", href: "/pilots#url-trust-gate" },
-    { label: "Runtime Control + Evidence", href: "/pilots#runtime" },
-    { label: "Agentic AI Trust Gate", href: "/pilots#agentic" },
     { label: "Shadow AI Discovery", href: "/solutions#shadow-ai" },
+    { label: "AI Agent Security", href: "/solutions#agents" },
+    { label: "Credential & Data Redaction", href: "/solutions#data" },
     { label: "Prompt Injection Defense", href: "/solutions#prompt" },
   ],
   Industries: [
@@ -27,6 +25,7 @@ const footerLinks = {
     { label: "Technology", href: "/industries#technology" },
   ],
   Company: [
+    { label: "Pilot Programs", href: "/pilots" },
     { label: "About", href: "/about" },
     { label: "Contact", href: "/contact" },
     { label: "Support", href: "https://support.cyberarmor.ai" },
