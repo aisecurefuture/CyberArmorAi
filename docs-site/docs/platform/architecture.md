@@ -7,12 +7,13 @@ AI stack.
 
 ## Architectural model
 
-At a high level, the platform operates across four responsibilities:
+At a high level, the platform operates across five responsibilities:
 
-1. **Discover** AI tools, agents, APIs, and unmanaged usage
-2. **Govern** with policy tied to tenant, user, service, and agent context
-3. **Protect** at runtime with detection and enforcement
-4. **Prove** with auditable, attributable evidence
+1. **Gate** external content before any human, browser, or AI agent ingests it
+2. **Discover** AI tools, agents, APIs, and unmanaged usage
+3. **Govern** with policy tied to tenant, user, service, and agent context
+4. **Protect** at runtime with detection and enforcement
+5. **Prove** with auditable, attributable evidence
 
 ## Core layers
 
@@ -23,6 +24,33 @@ At a high level, the platform operates across four responsibilities:
 - `admin.cyberarmor.ai` for operator/admin workflows
 - `docs.cyberarmor.ai` for technical guidance
 - `support.cyberarmor.ai` for support guidance
+
+### Pre-ingestion trust layer
+
+- `url-trust-gate` (port 8014) is the pre-ingestion control point for external
+  URLs and content. Before any consumer follows a URL or ingests content from
+  the web, the gate canonicalizes, fetches safely (SSRF-guarded), optionally
+  detonates in an isolated Playwright sandbox, scores for phishing / hidden
+  prompt injection / promptware / IOC signals, and applies a policy decision —
+  `allow`, `warn`, `redact`, `sandbox`, `block`, or `isolate`. Evidence is
+  written to audit on every non-cached decision.
+- `detonation-worker` (port 8015, internal only) is the isolated Playwright
+  service the gate calls for deep-mode renders. It runs on a dedicated
+  `detonation` Docker network with no route to internal services, so a hostile
+  page that escapes Chromium cannot reach `policy`, `detection`, `audit`, or
+  any other platform service.
+- Consumer hooks ship in the repo: browser extension
+  (`extensions/chromium-shared/url_trust_gate.js`), endpoint agent
+  (`agents/endpoint-agent/monitors/url_trust_gate.py`), RASP Python
+  (`rasp/python/cyberarmor_rasp_url_trust_gate.py`), LangChain SDK
+  (`sdks/python/cyberarmor/frameworks/langchain_url_trust_gate.py`), and
+  LlamaIndex SDK (`sdks/python/cyberarmor/frameworks/llamaindex.py`).
+- Optional reputation feeds: Google Safe Browsing v4, Microsoft SmartScreen
+  (Defender Threat Intelligence), VirusTotal v3 — each configurable via env
+  var; the gate works without them.
+
+See [URL Trust Gate](url-trust-gate.md) for the full pipeline, latency budgets,
+decision actions, evidence schema, and production hardening steps.
 
 ### Control and policy layer
 

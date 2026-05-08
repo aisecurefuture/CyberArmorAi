@@ -24,6 +24,8 @@ A standard hosted deployment can expose these public surfaces:
 
 Behind those public domains, the core platform includes:
 
+- `url-trust-gate` — pre-ingestion URL safety gate (pilot-ready; 15-minute PoC available)
+- `detonation-worker` — isolated Playwright sandbox used by the trust gate
 - `control-plane`
 - `policy`
 - `detection`
@@ -37,6 +39,21 @@ Behind those public domains, the core platform includes:
 - `openbao`
 - `siem-connector`
 - `compliance`
+
+## Fastest path to a live demo
+
+To see the URL Trust Gate block crafted attack pages in under 15 minutes
+without standing up the full stack:
+
+```bash
+git clone https://github.com/aisecurefuture/CyberArmorAi.git
+cd CyberArmorAi
+bash scripts/poc/install.sh
+```
+
+The installer generates secrets, brings up only the services the gate
+needs, and runs the demo script automatically. See
+`scripts/poc/README.md` for prerequisites and hardening steps.
 
 ## Recommended path
 

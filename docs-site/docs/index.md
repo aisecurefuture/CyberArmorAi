@@ -13,6 +13,16 @@ operate, and integrate the platform in real environments.
 
 <div class="grid cards" markdown>
 
+-   :material-link-lock: **URL Trust Gate — 15-minute PoC**
+
+    ---
+
+    Run `bash scripts/poc/install.sh` to see the URL Trust Gate block
+    phishing, hidden prompt injection, and promptware payloads with live
+    verdicts in under 120 ms — no full-stack setup required.
+
+    [:octicons-arrow-right-24: URL Trust Gate](platform/url-trust-gate.md)
+
 -   :material-rocket-launch: **Deploy the platform**
 
     ---
@@ -71,19 +81,19 @@ operate, and integrate the platform in real environments.
 
 ## Product boundary
 
-CyberArmor is strongest today in controlled pilots, internal deployments,
-staging environments, and operator-led production rollouts. The repository
-already contains the core AI security controls, but some customer-facing SaaS
-surface areas are still evolving.
+The URL Trust Gate runs end-to-end and is pilot-ready: the 15-minute PoC
+installer brings up the full gate stack on any developer laptop, and optional
+reputation feeds (Google Safe Browsing, Microsoft SmartScreen, VirusTotal) are
+configurable via environment variables.
 
-If you are validating the platform, keep the current boundary in mind:
+The broader platform — control plane, policy, detection, response, secrets, and
+endpoint agent — is deployable and testable today in controlled pilots, internal
+deployments, and operator-led staging environments. Some customer-facing SaaS
+surfaces are still evolving.
 
-- The control plane, policy, detection, response, secrets, and endpoint-agent
-  flows are deployable and testable now.
-- Customer-facing UX, public support/legal surfaces, and some packaging flows
-  are still being refined.
-- The docs aim to reflect the working product as it exists in the repo, not an
-  aspirational future state.
+The docs reflect the working product as it exists in the repo. See
+[capability-status](../docs/architecture/capability-status.md) for the
+authoritative status table.
 
 ## Core platform services
 
