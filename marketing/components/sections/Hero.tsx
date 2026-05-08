@@ -105,7 +105,7 @@ export default function Hero() {
           <div style={{ marginBottom: 28, display: "flex", justifyContent: "center", padding: "0 8px" }}>
             <div className="label-tag" style={{ gap: 6, textAlign: "center", whiteSpace: "nowrap", overflow: "hidden", maxWidth: "100%", textOverflow: "ellipsis" }}>
               <ShieldCheck size={11} style={{ flexShrink: 0 }} />
-              <span>Patent-pending AI security runtime architecture</span>
+              <span>Pre-breach protection for the AI era</span>
             </div>
           </div>
 

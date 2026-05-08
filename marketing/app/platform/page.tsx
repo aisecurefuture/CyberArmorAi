@@ -141,9 +141,10 @@ export default function PlatformPage() {
             fontSize: "1.1rem", color: "#8892A4", lineHeight: 1.75,
             maxWidth: 680, margin: "0 auto 40px",
           }}>
-            CyberArmor.AI is not a collection of point tools or a reporting layer.
-            It connects discovery, detection, policy, routing, identity, enforcement,
-            response, secrets, audit, and evidence into a single runtime control system.
+            Pre-ingestion trust control for AI agents and enterprise AI workflows.
+            CyberArmor connects URL trust gating, detection, policy, routing,
+            identity, enforcement, response, and evidence into a single runtime
+            control system — with proof at every decision point.
           </p>
           <div style={{ display: "flex", gap: 14, justifyContent: "center", flexWrap: "wrap" }}>
             <Link href="/contact" className="btn-primary">

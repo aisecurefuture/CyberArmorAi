@@ -6,14 +6,18 @@ import { BookOpen, LifeBuoy, Mail } from "lucide-react";
 const footerLinks = {
   Platform: [
     { label: "Overview", href: "/platform" },
+    { label: "URL Trust Gate", href: "/url-trust-gate" },
+    { label: "Capability Status", href: "/status" },
     { label: "AI Runtime Control", href: "/platform#runtime" },
     { label: "Policy Enforcement", href: "/platform#policy" },
     { label: "Protection-Backed Evidence", href: "/platform#evidence" },
   ],
   Solutions: [
+    { label: "Pilot Programs", href: "/pilots" },
+    { label: "URL Trust Gate Pilot", href: "/pilots#url-trust-gate" },
+    { label: "Runtime Control + Evidence", href: "/pilots#runtime" },
+    { label: "Agentic AI Trust Gate", href: "/pilots#agentic" },
     { label: "Shadow AI Discovery", href: "/solutions#shadow-ai" },
-    { label: "AI Agent Security", href: "/solutions#agents" },
-    { label: "Credential & Data Redaction", href: "/solutions#data" },
     { label: "Prompt Injection Defense", href: "/solutions#prompt" },
   ],
   Industries: [
@@ -58,8 +62,8 @@ export default function Footer() {
                 CyberArmor<span style={{ color: "#00A3FF" }}>.AI</span>
               </span>
             </Link>
-              <p style={{ fontSize: 14, color: "#8892A4", lineHeight: 1.7, marginBottom: 20, maxWidth: 220 }}>
-                CyberArmor.AI is the AI security runtime operated by CyberArmor AI, Inc.
+              <p style={{ fontSize: 14, color: "#8892A4", lineHeight: 1.7, marginBottom: 20, maxWidth: 240 }}>
+                Pre-ingestion trust control for AI agents and enterprise AI workflows.
               </p>
               <div style={{ display: "flex", gap: 10 }}>
               {[
