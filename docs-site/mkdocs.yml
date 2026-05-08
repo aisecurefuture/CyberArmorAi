@@ -5,6 +5,7 @@ site_author: CyberArmor AI
 
 theme:
   name: material
+  favicon: favicon.ico
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
