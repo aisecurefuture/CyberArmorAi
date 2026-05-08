@@ -101,7 +101,7 @@ class TenantListClient:
                 resp = await c.get(
                     f"{self._policy_url}/policies",
                     params={"tenant_id": tenant_id, "scope": "url-trust-gate"},
-                    headers=build_auth_headers(self._policy_secret),
+                    headers=build_auth_headers(self._policy_url, self._policy_secret),
                 )
                 if resp.status_code != 200:
                     logger.debug(

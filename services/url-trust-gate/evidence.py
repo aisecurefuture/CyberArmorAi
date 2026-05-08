@@ -59,7 +59,7 @@ class EvidenceWriter:
                 resp = await client.post(
                     f"{self._audit_url}/events",
                     json={"kind": "url-trust-gate", "data": payload},
-                    headers=build_auth_headers(self._audit_secret),
+                    headers=build_auth_headers(self._audit_url, self._audit_secret),
                 )
                 if resp.status_code >= 400:
                     logger.warning(

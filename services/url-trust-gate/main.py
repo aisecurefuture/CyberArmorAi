@@ -569,10 +569,15 @@ async def _score_with_detection(
                             "consumer_source": req.source,
                         },
                     },
-                    headers=build_auth_headers(DETECTION_API_SECRET),
+                    headers=build_auth_headers(DETECTION_SERVICE_URL, DETECTION_API_SECRET),
                 )
                 if resp.status_code == 200:
-                    findings = resp.json().get("findings", [])
+                    body = resp.json()
+                    # Detection service returns the list of findings under
+                    # "detections" (with "findings" kept as a back-compat
+                    # alias on some endpoints). Read both so we don't miss
+                    # signals if the schema shifts.
+                    findings = body.get("detections") or body.get("findings") or []
                     for f in findings:
                         kind = f.get("type", "")
                         conf = float(f.get("confidence", 0.0))
@@ -580,8 +585,12 @@ async def _score_with_detection(
                             scores.prompt_injection = max(scores.prompt_injection, conf)
                         if "promptware" in kind:
                             scores.promptware = max(scores.promptware, conf)
-                        if "exfil" in kind or "dlp" in kind:
+                        if "exfil" in kind or "dlp" in kind or "sensitive" in kind:
                             scores.data_exfil = max(scores.data_exfil, conf)
+                        if "phishing" in kind or "credential" in kind:
+                            scores.credential_harvest = max(
+                                scores.credential_harvest, conf
+                            )
                 else:
                     logger.warning(
                         "detection_non_200 status=%s body=%s",
@@ -650,7 +659,7 @@ async def _decide_with_policy(
             resp = await client.post(
                 f"{POLICY_SERVICE_URL}/evaluate",
                 json=payload,
-                headers=build_auth_headers(POLICY_API_SECRET),
+                headers=build_auth_headers(POLICY_SERVICE_URL, POLICY_API_SECRET),
             )
             if resp.status_code == 200:
                 data = resp.json()
@@ -737,7 +746,7 @@ async def _dispatch_incident(
             await client.post(
                 f"{RESPONSE_SERVICE_URL}/respond",
                 json=incident,
-                headers=build_auth_headers(RESPONSE_API_SECRET),
+                headers=build_auth_headers(RESPONSE_SERVICE_URL, RESPONSE_API_SECRET),
             )
     except Exception as exc:
         logger.warning("response_dispatch_failed err=%s", exc)

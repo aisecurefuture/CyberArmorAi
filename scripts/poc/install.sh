@@ -127,6 +127,7 @@ with open(path, "w") as f:
 print(f"replaced {replaced} change-me values with random 48-char hex tokens")
 PY
   ok "wrote $ENV_FILE with freshly generated secrets"
+  FRESHLY_GENERATED_ENV=1
 fi
 
 # Make sure the demo profile gets insecure-defaults allowed (it's already
@@ -134,6 +135,45 @@ fi
 if ! grep -q '^CYBERARMOR_ALLOW_INSECURE_DEFAULTS=true' "$ENV_FILE"; then
   echo 'CYBERARMOR_ALLOW_INSECURE_DEFAULTS=true' >> "$ENV_FILE"
   ok "appended CYBERARMOR_ALLOW_INSECURE_DEFAULTS=true (PoC mode)"
+fi
+
+# ---------------------------------------------------- volume hygiene check --
+#
+# Postgres initialises its data directory once, on first start, using the
+# POSTGRES_PASSWORD that was in scope at that moment. After that, the
+# password is baked into the volume. If a previous deployment left a
+# pgdata volume with a different password, our policy/audit services
+# will fail with "password authentication failed for user" — even though
+# the new container is running with the new env.
+#
+# So: if we just generated a fresh .env, wipe any pgdata/redis/openbao
+# volumes from a prior run. This is safe for a PoC; nothing of value
+# lives there. Production deployments must NOT use this script.
+
+if [[ "${FRESHLY_GENERATED_ENV:-0}" == "1" ]]; then
+  STALE_VOLS=()
+  for vol in docker-compose_pgdata docker-compose_openbao_data; do
+    if docker volume inspect "$vol" >/dev/null 2>&1; then
+      STALE_VOLS+=("$vol")
+    fi
+  done
+  if (( ${#STALE_VOLS[@]} > 0 )); then
+    step "Removing stale data volumes from a previous deployment"
+    warn "found pre-existing volumes: ${STALE_VOLS[*]}"
+    warn "they were initialised with different secrets and would block the PoC"
+    cd "$COMPOSE_DIR"
+    CYBERARMOR_ENV_FILE="$ENV_FILE" \
+      docker compose \
+        --env-file "$ENV_FILE" \
+        -f "$COMPOSE_BASE" \
+        -f "$COMPOSE_OVERLAY" \
+        --profile poc \
+        down -v --remove-orphans 2>/dev/null || true
+    for vol in "${STALE_VOLS[@]}"; do
+      docker volume rm -f "$vol" >/dev/null 2>&1 || true
+    done
+    ok "removed stale volumes; postgres + openbao will reinitialise with the new secrets"
+  fi
 fi
 
 # ----------------------------------------------------------- bring up stack --
