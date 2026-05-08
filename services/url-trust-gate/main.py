@@ -185,6 +185,30 @@ class TrustGateResponse(BaseModel):
     iocs: List[IOC] = Field(default_factory=list)
     decision: TrustGateDecision
     evidence_id: Optional[str] = None
+
+
+class FeedbackPayload(BaseModel):
+    """SOC analyst FP/FN correction on a prior gate decision.
+
+    Either ``request_id`` or ``url_fingerprint`` must be provided so the
+    record can be linked back to the original evidence entry in the audit
+    service. ``corrected_action`` is optional — omit it when the analyst
+    is only flagging the verdict without specifying what the right action
+    should have been.
+    """
+    tenant_id: str
+    # At least one of these must be supplied to identify the original decision.
+    request_id: Optional[str] = None
+    url_fingerprint: Optional[str] = None
+    # "false_positive" = gate blocked/warned something that was safe.
+    # "false_negative" = gate allowed something that was hostile.
+    verdict: str = Field(..., pattern="^(false_positive|false_negative)$")
+    corrected_action: Optional[str] = Field(
+        default=None,
+        pattern="^(allow|warn|redact|sandbox|block|isolate)$",
+    )
+    analyst_id: Optional[str] = None
+    notes: Optional[str] = None
     elapsed_ms: int = 0
 
 
@@ -499,18 +523,36 @@ async def evaluate(req: TrustGateRequest) -> TrustGateResponse:
 
 
 @app.post("/feedback", dependencies=[Depends(verify_api_key)])
-async def feedback(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Tenant override / FP-FN feedback hook.
+async def feedback(payload: FeedbackPayload) -> Dict[str, Any]:
+    """SOC analyst FP/FN correction on a prior gate decision.
 
-    Used by SOC analysts and the dashboard to mark a prior decision as
-    false positive / false negative. The flywheel: this writes back into
-    evidence and signals the ML training pipeline that the verdict on this
-    URL fingerprint should be revisited.
+    Accepts a structured, schema-validated correction record and persists it
+    to the audit service. The record is linked back to the original gate
+    decision via ``request_id`` or ``url_fingerprint``.
+
+    At least one of ``request_id`` or ``url_fingerprint`` must be supplied.
+    Returns 422 on schema violations (FastAPI validates the Pydantic model
+    before this function body runs).
+
+    Writes are best-effort and non-blocking — a failed audit write returns
+    ``accepted`` anyway so analysts are never blocked waiting for the
+    backend. The write failure is counted in Prometheus.
     """
+    if not payload.request_id and not payload.url_fingerprint:
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=422,
+            detail="At least one of request_id or url_fingerprint is required.",
+        )
 
-    # Persist feedback to the audit service so SOC analysts can review and
-    # so the ML detection layer accumulates signal. Best-effort: a failed
-    # write returns accepted anyway — feedback is never load-bearing.
+    record = payload.model_dump(exclude_none=True)
+    logger.info(
+        "feedback_received tenant=%s verdict=%s request_id=%s",
+        payload.tenant_id,
+        payload.verdict,
+        payload.request_id or payload.url_fingerprint,
+    )
+
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
             await client.post(
@@ -518,7 +560,7 @@ async def feedback(payload: Dict[str, Any]) -> Dict[str, Any]:
                 json={
                     "event_type": "url_trust_gate_feedback",
                     "service": "url-trust-gate",
-                    "payload": payload,
+                    "data": record,
                 },
                 headers={"x-api-key": AUDIT_API_SECRET},
             )
@@ -526,7 +568,7 @@ async def feedback(payload: Dict[str, Any]) -> Dict[str, Any]:
         logger.warning("feedback_audit_write_failed err=%s", exc)
         _metrics.inc_error("feedback_audit_write")
 
-    return {"status": "accepted", "received": payload}
+    return {"status": "accepted", "feedback_id": record.get("request_id") or record.get("url_fingerprint")}
 
 
 # ---------------------------------------------------------------------------
