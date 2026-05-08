@@ -1,10 +1,12 @@
 # CyberArmor
 
-**Enterprise AI Security Platform** — Comprehensive protection for organizations deploying AI, Agentic AI, and LLM-powered applications.
+**Pre-Ingestion URL Trust Gate and AI Security Runtime**
+
+CyberArmor evaluates URLs, web pages, prompts, and agent-bound content before humans, browsers, applications, or AI agents trust them. It detects phishing, hidden prompt injection, promptware, credential-harvesting signals, sensitive-data risk, and IOC indicators, then enforces tenant policy through allow, warn, redact, sandbox, block, isolate, route, or evidence-only decisions. Comprehensive protection for organizations deploying AI, Agentic AI, and LLM-powered applications.
 
 ## Overview
 
-CyberArmor is a zero-trust, multi-layered security platform that provides real-time monitoring, policy enforcement, data loss prevention, and compliance management for enterprise AI workloads. Designed to support deployment with FIPS 140-3-validated cryptographic modules where required by customer environments, and aligned with CNSA 2.0+ post-quantum algorithm recommendations.
+CyberArmor stops hostile external content before it becomes AI context, then connects the decision to policy, runtime enforcement, and evidence.  CyberArmor is a zero-trust, multi-layered security platform that provides real-time monitoring, policy enforcement, data loss prevention, and compliance management for enterprise AI workloads. Designed to support deployment with FIPS 140-3-validated cryptographic modules where required by customer environments, and aligned with CNSA 2.0+ post-quantum algorithm recommendations.
 
 ## Architecture
 
