@@ -5,7 +5,7 @@ import FinalCTA from "@/components/sections/FinalCTA";
 export const metadata: Metadata = {
   title: "Capability Status — CyberArmor.AI",
   description:
-    "Honest, buyer-facing status of every CyberArmor.AI capability: what is production-deployed, what works in controlled pilots, what runs locally as a PoC, and what is on the roadmap.",
+    "Honest, buyer-facing status of every CyberArmor.AI capability: what is production-deployed, what works in controlled pilots, what requires operator configuration to activate, and what is on the roadmap.",
 };
 
 // ─── Status definitions ────────────────────────────────────────────────────
@@ -25,10 +25,10 @@ const STATUS_META: Record<Status, { label: string; color: string; bg: string; de
     description: "Works in controlled deployment / design partner",
   },
   poc: {
-    label: "PoC / demo",
+    label: "Configurable",
     color: "#F59E0B",
     bg: "rgba(245,158,11,0.10)",
-    description: "Runs locally, not hardened or in SaaS",
+    description: "Implemented and tested; activate with API keys or operator configuration in SaaS or local deployment",
   },
   roadmap: {
     label: "Roadmap",
@@ -433,9 +433,10 @@ export default function StatusPage() {
           <p style={{ fontSize: 13, color: "#4A5568", lineHeight: 1.75 }}>
             Status reflects the current codebase and hosted deployment as of May 2026.
             Pilot-ready capabilities are available to design partners through a
-            controlled onboarding. PoC / demo capabilities can be activated by
-            operators with the noted configuration. Contact us to request access or
-            discuss deployment scope.
+            controlled onboarding. Configurable capabilities are implemented and
+            tested — activate them with the noted API keys or operator configuration
+            steps in the hosted SaaS stack or your own deployment. Contact us to
+            request access or discuss deployment scope.
           </p>
         </div>
       </section>
