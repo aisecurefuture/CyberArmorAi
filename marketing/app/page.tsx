@@ -32,9 +32,9 @@ export const metadata: Metadata = {
     siteName: "CyberArmorAI",
     images: [
       {
-        url: "/CyberArmorLinkImage.png?v=20260508",
+        url: "CyberArmorLinkImage.png?v=20260508",
         width: 1200,
-        height: 630,
+        height: 784,
         alt: "CyberArmorAI — Stop hostile web content before it becomes AI context",
       },
     ],
@@ -46,7 +46,7 @@ export const metadata: Metadata = {
     title: "CyberArmorAI — Stop hostile web content before it becomes AI context",
     description:
       "Pre-ingestion AI trust control for URLs, prompts, pages, agents, browsers, apps, and enterprise AI workflows.",
-    images: ["/CyberArmorLinkImage.png?v=20260508"],
+    images: ["CyberArmorLinkImage.png?v=20260508"],
   },
   };
 
