@@ -92,7 +92,7 @@ deployments, and operator-led staging environments. Some customer-facing SaaS
 surfaces are still evolving.
 
 The docs reflect the working product as it exists in the repo. See
-[capability-status](../docs/architecture/capability-status.md) for the
+`docs/architecture/capability-status.md` in the repository for the
 authoritative status table.
 
 ## Core platform services
