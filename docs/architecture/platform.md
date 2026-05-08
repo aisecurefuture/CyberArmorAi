@@ -4,19 +4,26 @@
 
 ```mermaid
 graph TD
-  subgraph Endpoints
-    E1[AI Tool Detector Agent]
-    E2[IDE/Browser Controls]
-    E3[Proxy Agent]
+  subgraph External["External Web"]
+    W1[URLs / Web Content]
   end
 
-  subgraph Apps
-    A1[RASP SDKs: Java/.NET/Python/Node/Go/Rust/Ruby/PHP/C++]
-    A2[Service Mesh / Envoy Filter]
+  subgraph TrustGate["URL & Context Trust Gate (port 8014)"]
+    G1[Canonicalise + Cache]
+    G2[Safe Crawler]
+    G3[Detonation Worker\nport 8015]
+    G4[Heuristic + ML Scoring]
+    G5[Policy Decision]
+    G1 --> G2 --> G4
+    G2 --> G3 --> G4
+    G4 --> G5
   end
 
-  subgraph Network
-    N1[Transparent Proxy]
+  subgraph Consumers
+    E1[Endpoint Agent]
+    E2[Browser Extension]
+    E3[RASP Python/Go/Java/Node]
+    E4[LangChain / LlamaIndex SDK]
   end
 
   subgraph Runtime
@@ -29,19 +36,24 @@ graph TD
   subgraph ControlPlane
     C1[Control Plane API]
     C2[(Postgres)]
-    C3[Audit Logs]
-    C4[Compliance Evidence]
+    C3[Audit / Evidence]
+    C4[Compliance Engine]
   end
 
   subgraph Telemetry
-    T1[eBPF Sensor (Linux)]
+    T1[eBPF Sensor]
     T2[OTLP / JSON Ingest]
   end
 
+  W1 --> G1
+  Consumers --> G1
+  G5 --> R2
+  G5 --> R3
+  G5 --> C3
+
   E1 --> R1
-  E3 --> N1 --> R1
-  A1 --> R1
-  A2 --> R1
+  E3 --> R1
+  E4 --> R1
   T1 --> T2 --> C1
 
   R1 --> R2
@@ -55,22 +67,23 @@ graph TD
 
 ## Product narrative (investor + buyer)
 CyberArmor is an **AI Security Runtime** that enforces policy at the point where AI is actually used:
-- on the endpoint
-- inside the application
+- before AI ingests external content (URL / Context Trust Gate)
+- on the endpoint and inside the application
 - on the network path
 - and at the kernel (telemetry)
 
 Unlike single-layer “prompt filters,” CyberArmor provides a **closed-loop runtime**:
-1) observe, 2) decide, 3) act, 4) prove.
+1) gate external content before ingestion, 2) observe, 3) decide, 4) act, 5) prove.
 
-## “Kernel to Cloud” proof points
+## Key proof points
+- **Pre-ingestion gate**: URL Trust Gate with ML-based detection, three reputation feeds, and Playwright detonation — running end-to-end, 15-minute PoC installer available
 - **Linux**: eBPF sensor for process + network telemetry
-- **macOS**: Endpoint Security framework (agent roadmap)
-- **Windows**: minifilter/ETW roadmap
+- **macOS**: Endpoint Security framework sensor (pilot)
+- **Windows**: kernel sensor (pilot)
 
 ## What to demo in 60 seconds
-1. Send a prompt injection payload through the proxy
-2. Detection fires
-3. Response blocks via proxy-agent
-4. Control plane shows incident + audit record
-5. Generate compliance evidence snapshot
+1. Run `scripts/poc/install.sh` — stack up in under 2 minutes
+2. `python run_url_trust_gate_demo.py` submits four crafted attack pages
+3. Each returns a live verdict (allow / warn / block) in under 120 ms
+4. Audit service records the evidence chain with scores and IOCs
+5. Policy service shows the tenant block-list rule that triggered the block
