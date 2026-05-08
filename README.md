@@ -1,6 +1,8 @@
 # CyberArmor
 
-**Enterprise AI Security Platform** — Comprehensive protection for organizations deploying AI, Agentic AI, and LLM-powered applications.
+**Pre-Ingestion URL Trust Gate and AI Security Runtime**
+
+CyberArmor evaluates URLs, web pages, prompts, and agent-bound content before humans, browsers, applications, or AI agents trust them. It detects phishing, hidden prompt injection, promptware, credential-harvesting signals, sensitive-data risk, and IOC indicators, then enforces tenant policy through allow, warn, redact, sandbox, block, isolate, route, or evidence-only decisions. — Comprehensive protection for organizations deploying AI, Agentic AI, and LLM-powered applications.
 
 ## Overview
 
@@ -162,14 +164,14 @@ Access the admin dashboard at `http://localhost:3000`
 
 ## Deployment Docs
 
-- Hetzner Ubuntu test deployment: [docs/deployment/hetzner-ubuntu-vm.md](/Users/patrickkelly/Documents/CyberArmorAi/docs/deployment/hetzner-ubuntu-vm.md)
-- One-pass first-server checklist: [docs/deployment/hetzner-first-server-checklist.md](/Users/patrickkelly/Documents/CyberArmorAi/docs/deployment/hetzner-first-server-checklist.md)
-- PQC auth rollout guide: [docs/security/pqc-auth-rollout.md](/Users/patrickkelly/Documents/CyberArmorAi/docs/security/pqc-auth-rollout.md)
-- OpenBao + secrets service architecture: [docs/architecture/openbao-cyberarmor-secrets-service.md](/Users/patrickkelly/Documents/CyberArmorAi/docs/architecture/openbao-cyberarmor-secrets-service.md)
-- Jenkins security and OpenBao integration pipeline: [docs/security/jenkins-security-pipeline.md](/Users/patrickkelly/Documents/CyberArmorAi/docs/security/jenkins-security-pipeline.md)
-- Jenkins security pipeline: [docs/security/jenkins-security-pipeline.md](/Users/patrickkelly/Documents/CyberArmorAi/docs/security/jenkins-security-pipeline.md)
-- V1 readiness and tenant onboarding plan: [docs/v1-readiness-plan.md](/Users/patrickkelly/Documents/CyberArmorAi/docs/v1-readiness-plan.md)
-- Ubuntu hardening helper script: [scripts/hardening/harden_ubuntu_server.sh](/Users/patrickkelly/Documents/CyberArmorAi/scripts/hardening/harden_ubuntu_server.sh)
+- Hetzner Ubuntu test deployment: [docs/deployment/hetzner-ubuntu-vm.md](./docs/deployment/hetzner-ubuntu-vm.md)
+- One-pass first-server checklist: [docs/deployment/hetzner-first-server-checklist.md](./docs/deployment/hetzner-first-server-checklist.md)
+- PQC auth rollout guide: [docs/security/pqc-auth-rollout.md](./docs/security/pqc-auth-rollout.md)
+- OpenBao + secrets service architecture: [docs/architecture/openbao-cyberarmor-secrets-service.md](./docs/architecture/openbao-cyberarmor-secrets-service.md)
+- Jenkins security and OpenBao integration pipeline: [docs/security/jenkins-security-pipeline.md](.docs/security/jenkins-security-pipeline.md)
+- Jenkins security pipeline: [docs/security/jenkins-security-pipeline.md](./docs/security/jenkins-security-pipeline.md)
+- V1 readiness and tenant onboarding plan: [docs/v1-readiness-plan.md](./docs/v1-readiness-plan.md)
+- Ubuntu hardening helper script: [scripts/hardening/harden_ubuntu_server.sh](./scripts/hardening/harden_ubuntu_server.sh)
 
 ## Current Product Boundary
 
@@ -372,5 +374,5 @@ Proprietary - Gratitech Research and Charitable Endeavor Corporation - All right
 
 ## Support
 
-- Enterprise Support: support@gratitech.com
-- Security Issues: security@gratitech.com
+- Enterprise Support: support@cyberarmor.com
+- Security Issues: security@cyberarmor.com

@@ -7,7 +7,7 @@ repo as it exists today.
 
 For operator-led pilots and controlled production-style validation:
 
-- Ubuntu 24.04
+- Linux
 - Docker Compose
 - Caddy for public TLS termination
 - PostgreSQL and Redis
@@ -19,8 +19,8 @@ For operator-led pilots and controlled production-style validation:
 The current public domain split is:
 
 - `cyberarmor.ai` — marketing site
+- `admin.cyberarmor.ai` for the operator/admin dashboard
 - `app.cyberarmor.ai` — customer portal and bootstrap-facing public app routes
-- `admin.cyberarmor.ai` — operator/admin dashboard
 - `docs.cyberarmor.ai` — technical documentation
 - `support.cyberarmor.ai` — support landing page
 

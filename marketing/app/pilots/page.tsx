@@ -136,7 +136,7 @@ export default function PilotsPage() {
             fontSize: "1.1rem", color: "#8892A4", lineHeight: 1.75,
             maxWidth: 660, margin: "0 auto 16px",
           }}>
-            CyberArmor owns the category of{" "}
+            CyberArmor is focused on defining the category of{" "}
             <strong style={{ color: "#ffffff" }}>
               pre-ingestion trust control for AI agents and enterprise AI workflows.
             </strong>{" "}
