@@ -149,8 +149,8 @@ export default function PlatformPage() {
             <Link href="/contact" className="btn-primary">
               Request a Demo <ArrowRight size={16} />
             </Link>
-            <Link href="/solutions" className="btn-ghost">
-              See Use Cases <ArrowRight size={15} />
+            <Link href="/url-trust-gate" className="btn-ghost">
+              URL Trust Gate — 15-min PoC <ArrowRight size={15} />
             </Link>
           </div>
         </div>
