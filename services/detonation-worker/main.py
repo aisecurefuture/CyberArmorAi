@@ -33,6 +33,85 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
+# ---------------------------------------------------------------------------
+# Metrics (self-contained Prometheus text-format exposition)
+# ---------------------------------------------------------------------------
+
+import threading
+from collections import defaultdict
+from typing import Tuple
+
+_LATENCY_BUCKETS_MS = (50, 100, 250, 500, 1000, 2500, 5000, 10000, 20000, 30000)
+
+_DETONATION_HELP = {
+    "detonation_renders_total": "Total /render requests, labelled by result (success, error, timeout, cancelled).",
+    "detonation_render_latency_ms": "End-to-end /render latency in milliseconds. Use histogram_quantile for p50/p95/p99.",
+    "detonation_bytes_transferred_total": "Total bytes transferred across all sub-resources per render.",
+    "detonation_subrequests_total": "Total sub-resource requests issued during renders.",
+}
+
+
+class _DetMetrics:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._counters: Dict[Tuple, float] = defaultdict(float)
+        self._histograms: Dict[Tuple, Dict] = {}
+
+    def record_render(self, result: str, elapsed_ms: int, bytes_xfr: int, req_count: int) -> None:
+        with self._lock:
+            self._counters[(("detonation_renders_total", "result", result),)] += 1
+            self._counters[(("detonation_bytes_transferred_total",),)] += bytes_xfr
+            self._counters[(("detonation_subrequests_total",),)] += req_count
+            key = ("detonation_render_latency_ms",)
+            h = self._histograms.setdefault(key, {
+                "sum": 0.0, "count": 0,
+                "buckets": [0] * len(_LATENCY_BUCKETS_MS), "overflow": 0,
+            })
+            h["sum"] += elapsed_ms
+            h["count"] += 1
+            placed = False
+            for i, b in enumerate(_LATENCY_BUCKETS_MS):
+                if elapsed_ms <= b:
+                    h["buckets"][i] += 1
+                    placed = True
+                    break
+            if not placed:
+                h["overflow"] += 1
+
+    def render(self) -> str:
+        with self._lock:
+            lines: list[str] = []
+            seen: set[str] = set()
+            for key, val in self._counters.items():
+                if len(key) == 1:
+                    name = key[0][0]
+                    lbl = ""
+                else:
+                    name, lk, lv = key[0]
+                    lbl = '{' + f'{lk}="{lv}"' + '}'
+                if name not in seen:
+                    lines.append(f"# HELP {name} {_DETONATION_HELP.get(name, name)}")
+                    lines.append(f"# TYPE {name} counter")
+                    seen.add(name)
+                lines.append(f"{name}{lbl} {val}")
+            for (name,), h in self._histograms.items():
+                if name not in seen:
+                    lines.append(f"# HELP {name} {_DETONATION_HELP.get(name, name)}")
+                    lines.append(f"# TYPE {name} histogram")
+                    seen.add(name)
+                cum = 0
+                for b, cnt in zip(_LATENCY_BUCKETS_MS, h["buckets"]):
+                    cum += cnt
+                    lines.append(f'{name}_bucket{{le="{b}"}} {cum}')
+                cum += h["overflow"]
+                lines.append(f'{name}_bucket{{le="+Inf"}} {cum}')
+                lines.append(f"{name}_sum {h['sum']}")
+                lines.append(f"{name}_count {h['count']}")
+            return "\n".join(lines) + "\n"
+
+
+_metrics = _DetMetrics()
+
 logger = logging.getLogger("detonation_worker")
 logging.basicConfig(
     level=logging.INFO,
@@ -194,8 +273,11 @@ def ready() -> Dict[str, Any]:
 
 
 @app.get("/metrics", response_class=PlainTextResponse)
-def metrics() -> str:
-    return "# detonation-worker metrics not yet implemented\n"
+def metrics() -> PlainTextResponse:
+    return PlainTextResponse(
+        _metrics.render(),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
 
 
 @app.post(
@@ -204,16 +286,28 @@ def metrics() -> str:
     dependencies=[Depends(_verify_api_key)],
 )
 async def render(req: RenderRequest) -> RenderResponse:
+    import time as _time
     nav_timeout = req.nav_timeout_ms or NAV_TIMEOUT_MS
     total_timeout = req.total_timeout_s or TOTAL_TIMEOUT_S
+    _start = _time.monotonic()
+
+    def _done(resp: RenderResponse, *, result: str) -> RenderResponse:
+        elapsed = int((_time.monotonic() - _start) * 1000)
+        _metrics.record_render(
+            result=result,
+            elapsed_ms=elapsed,
+            bytes_xfr=resp.bytes_transferred,
+            req_count=resp.request_count,
+        )
+        return resp
 
     try:
         browser = await _ensure_browser()
     except ImportError:
-        return RenderResponse(error="playwright_not_installed")
+        return _done(RenderResponse(error="playwright_not_installed"), result="error")
     except Exception as exc:
         logger.warning("browser_launch_failed err=%s", exc)
-        return RenderResponse(error=f"browser_launch_failed:{type(exc).__name__}")
+        return _done(RenderResponse(error=f"browser_launch_failed:{type(exc).__name__}"), result="error")
 
     try:
         context = await browser.new_context(
@@ -229,7 +323,7 @@ async def render(req: RenderRequest) -> RenderResponse:
             storage_state=None,
         )
     except Exception as exc:
-        return RenderResponse(error=f"context_create_failed:{type(exc).__name__}")
+        return _done(RenderResponse(error=f"context_create_failed:{type(exc).__name__}"), result="error")
 
     result = RenderResponse()
     downloads: List[Dict[str, Any]] = []
@@ -308,7 +402,8 @@ async def render(req: RenderRequest) -> RenderResponse:
         result.downloads = downloads
         result.request_count = request_count
         result.bytes_transferred = bytes_transferred
-        return result
+        _result_label = "cancelled" if cancelled else ("error" if result.error else "success")
+        return _done(result, result=_result_label)
     except Exception as exc:
         logger.warning(
             "detonation_unexpected tenant=%s request=%s err=%s",
@@ -316,7 +411,7 @@ async def render(req: RenderRequest) -> RenderResponse:
             req.request_id,
             exc,
         )
-        return RenderResponse(error=f"unexpected:{type(exc).__name__}")
+        return _done(RenderResponse(error=f"unexpected:{type(exc).__name__}"), result="error")
     finally:
         try:
             await context.close()

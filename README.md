@@ -74,7 +74,7 @@ CyberArmor is a zero-trust, multi-layered security platform that provides real-t
 - **PQC API Key Transport**: `PQC:<base64>` header format with AES-256-GCM encryption
 - **Zero Trust Architecture**: All inter-service communication authenticated
 - **Multi-Tenant**: Complete tenant isolation across all services
-- **FIPS 140-3 Compliant**: Validated cryptographic modules
+- **FIPS 140-3 Support**: Designed to integrate with FIPS 140-3-validated cryptographic modules where customer environments require them
 - **CNSA 2.0+ Ready**: Post-quantum algorithm suite
 
 ## Compliance Frameworks (14)

@@ -58,6 +58,26 @@ class MetricsRegistry:
             elapsed_ms,
         )
 
+    def observe_feed_hit(self, feed: str) -> None:
+        """Record a reputation-feed match (Safe Browsing, SmartScreen, VirusTotal)."""
+        self._inc("url_trust_gate_feed_hits_total", (("feed", feed),))
+
+    def observe_crawl_error(self, reason: str) -> None:
+        """Record a safe-crawl failure (SSRF block, timeout, HTTP error, etc.)."""
+        self._inc("url_trust_gate_crawl_errors_total", (("reason", reason),))
+
+    def observe_detonation_timeout(self) -> None:
+        """Record a detonation-sandbox timeout."""
+        self._inc("url_trust_gate_detonation_timeouts_total", ())
+
+    def observe_evidence_write_error(self) -> None:
+        """Record a failed evidence write to the audit service."""
+        self._inc("url_trust_gate_evidence_write_errors_total", ())
+
+    def inc_error(self, error_type: str) -> None:
+        """Generic error counter, labelled by type."""
+        self._inc("url_trust_gate_errors_total", (("type", error_type),))
+
     def render(self) -> str:
         with self._lock:
             lines: list[str] = []
@@ -124,10 +144,15 @@ class MetricsRegistry:
 
 _HELP = {
     "url_trust_gate_requests_total": "Total /evaluate requests, labelled by depth and decision.",
-    "url_trust_gate_cache_hits_total": "Reputation-cache hits on the fast path.",
-    "url_trust_gate_crawls_total": "Crawl attempts (regardless of result).",
-    "url_trust_gate_detonations_total": "Detonation-sandbox renders (regardless of result).",
-    "url_trust_gate_decision_latency_ms": "End-to-end /evaluate latency in milliseconds.",
+    "url_trust_gate_cache_hits_total": "Reputation-cache hits, labelled by depth.",
+    "url_trust_gate_crawls_total": "Safe-crawl attempts, labelled by depth.",
+    "url_trust_gate_detonations_total": "Detonation-sandbox renders, labelled by depth.",
+    "url_trust_gate_decision_latency_ms": "End-to-end /evaluate latency in milliseconds, labelled by depth. Use histogram_quantile(0.5|0.95|0.99, ...) for p50/p95/p99.",
+    "url_trust_gate_feed_hits_total": "Reputation-feed matches, labelled by feed (safe_browsing, smartscreen, virustotal).",
+    "url_trust_gate_crawl_errors_total": "Safe-crawl failures, labelled by reason (ssrf_blocked, timeout, http_error, size_exceeded).",
+    "url_trust_gate_detonation_timeouts_total": "Detonation-sandbox timeouts (nav or total budget exceeded).",
+    "url_trust_gate_evidence_write_errors_total": "Failed evidence writes to the audit service.",
+    "url_trust_gate_errors_total": "Generic error counter, labelled by type.",
 }
 
 

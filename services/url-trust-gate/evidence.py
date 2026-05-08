@@ -1,9 +1,9 @@
 """Evidence writer.
 
 Each gate decision produces an evidence record that goes to the audit
-service. Evidence is the proof layer (what the gate saw and why) AND the
-training data layer (what the ML pipeline learns from). The schema here
-is the contract — keep additions backward-compatible.
+service. Evidence is the proof layer: what the gate saw, why it decided,
+and the full signal vector. The schema here is the contract — keep
+additions backward-compatible.
 """
 
 from __future__ import annotations
@@ -50,10 +50,8 @@ class EvidenceWriter:
         evidence_id = uuid.uuid4().hex
         payload = {"evidence_id": evidence_id, **asdict(record)}
 
-        # TODO: switch to a proper audit service endpoint name once the
-        # audit service exposes a typed channel for url-trust-gate
-        # evidence (e.g. POST /events/url-trust-gate). Until then, the
-        # generic /events sink is the right target.
+        # POST /events is the generic audit sink. The kind field routes the
+        # record to the url-trust-gate view in SOC dashboards.
         try:
             async with httpx.AsyncClient(timeout=2.0) as client:
                 resp = await client.post(
@@ -70,14 +68,8 @@ class EvidenceWriter:
                     return None
         except Exception as exc:
             # Evidence write failures must NOT block the gate decision.
-            # Log loudly; a separate reconciler should sweep up and
-            # re-deliver. TODO: spool to local disk for retry.
+            # Callers increment the evidence_write_errors Prometheus counter.
             logger.warning("evidence_write_failed err=%s", exc)
             return None
 
         return evidence_id
-
-    # TODO: training-data export hook. Once enough labelled records
-    # accumulate, an offline job should pull from the audit store, join
-    # with /feedback corrections, and emit a training shard for the
-    # detection service's ML models.
