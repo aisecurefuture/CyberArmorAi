@@ -575,6 +575,44 @@ def get_proxy_mode(
     return ProxyModeOut(tenant_id=tenant_id, mode=mode, source=source)
 
 
+@app.get("/policies", response_model=List[PolicyOut])
+def list_policies(
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[None, Depends(verify_api_key)],
+    tenant_id: str = Query(...),
+    scope: Optional[str] = Query(None),
+    enabled_only: bool = Query(False),
+    action: Optional[str] = Query(None),
+    include_archived: bool = Query(False),
+    tag: Optional[str] = Query(None),
+):
+    """Return policies for a tenant, optionally filtered by scope.
+
+    This is the endpoint consumed by the URL Trust Gate's TenantListClient
+    (``GET /policies?tenant_id=...&scope=url-trust-gate``).  It is a
+    flat-query alternative to ``GET /policies/{tenant_id}`` and supports
+    the same filter set.
+    """
+    q = db.query(Policy).filter(Policy.tenant_id == tenant_id)
+    if enabled_only:
+        q = q.filter(Policy.enabled.is_(True))
+    if action:
+        q = q.filter(Policy.action == action)
+    if scope:
+        q = q.filter(Policy.scope == scope)
+    if not include_archived:
+        q = q.filter(Policy.archived_at.is_(None))
+    rows = q.order_by(Policy.priority.asc(), Policy.updated_at.desc()).all()
+    if not rows:
+        return []
+    for r in rows:
+        r.conditions = _coerce_json_field(r.conditions)
+        r.rules = _coerce_json_field(r.rules) or {}
+        r.compliance_frameworks = _coerce_json_field(r.compliance_frameworks)
+        r.tags = _coerce_json_field(r.tags)
+    return rows
+
+
 @app.get("/policies/{tenant_id}", response_model=List[PolicyOut])
 def get_policies_for_tenant(
     tenant_id: str,
@@ -1324,7 +1362,7 @@ def ready(db: Annotated[Session, Depends(get_db)]):
         raise HTTPException(status_code=503, detail="db_not_ready")
 
 
-@app.get("/metrics", response_class=PlainTextResponse)
+@app.get("/metrics")
 def metrics(db: Annotated[Session, Depends(get_db)]):
     total = db.query(Policy).count()
     enabled = db.query(Policy).filter(Policy.enabled.is_(True)).count()
@@ -1336,7 +1374,10 @@ def metrics(db: Annotated[Session, Depends(get_db)]):
         "# TYPE cyberarmor_policy_enabled gauge",
         f"cyberarmor_policy_enabled {enabled}",
     ]
-    return PlainTextResponse("\n".join(lines) + "\n", media_type="text/plain")
+    return PlainTextResponse(
+        "\n".join(lines) + "\n",
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
 
 
 @app.get("/pki/public-key")
