@@ -213,7 +213,7 @@ const sections: Section[] = [
     title: "Consumer Surfaces",
     rows: [
       {
-        capability: "Endpoint agent (Linux / macOS sensor)",
+        capability: "Endpoint agent (Linux / macOS / Windows)",
         status: "pilot",
         notes: "agents/endpoint-agent/",
       },

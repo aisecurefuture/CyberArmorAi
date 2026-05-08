@@ -65,7 +65,7 @@
 
 | Surface | Status | Notes |
 | --- | --- | --- |
-| Endpoint agent (Linux / macOS sensor) | **Working** | `agents/endpoint-agent/` |
+| Endpoint agent (Linux / macOS / Windows) | **Working** | `agents/endpoint-agent/` |
 | Chromium browser extension | **Working** | `extensions/chromium-shared/` |
 | VS Code extension | **Pilot** | `extensions/vscode/` |
 | Office add-in | **Pilot** | `extensions/office/` |
