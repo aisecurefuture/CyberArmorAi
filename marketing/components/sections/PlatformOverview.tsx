@@ -1,10 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowRight, Eye, Shield, Lock, FileSearch, Cpu, Users } from "lucide-react";
+import { ArrowRight, Eye, Shield, Lock, FileSearch, Cpu, Users, Link2 } from "lucide-react";
 
 const layers = [
   { icon: Eye, label: "Identify", desc: "Understand the actor, tenant, app, agent, provider, model, and data context behind an AI action" },
+  { icon: Link2, label: "Gate", desc: "Evaluate external URLs and web content for phishing, promptware, and prompt injection before it reaches any human, browser, or AI agent" },
   { icon: Shield, label: "Inspect", desc: "Evaluate prompt risk, sensitive data, credentials, provider posture, and policy-relevant signals" },
   { icon: Lock, label: "Control", desc: "Monitor, warn, block, route, limit, or redact in supported runtime and user workflow paths" },
   { icon: FileSearch, label: "Prove", desc: "Capture decision-level evidence that explains what happened, what changed, and which policy applied" },
@@ -40,9 +41,10 @@ export default function PlatformOverview() {
             <span className="gradient-text-blue">Control and Proof.</span>
           </h2>
           <p style={{ color: "#8892A4", fontSize: "1.05rem", lineHeight: 1.7 }}>
-            CyberArmor.AI connects detection, policy, routing, identity, redaction,
-            response, audit, and evidence into one operating model. It is not
-            evidence alone. It is protection-backed evidence.
+            CyberArmor.AI gates external content before it is trusted, then
+            connects detection, policy, routing, identity, redaction, response,
+            audit, and evidence into one operating model. Pre-ingestion control
+            and protection-backed evidence.
           </p>
         </div>
 
@@ -58,7 +60,7 @@ export default function PlatformOverview() {
             <div key={label} style={{
               background: "#0F1117",
               border: "1px solid #1E2335",
-              borderRadius: i === 0 ? "12px 0 0 12px" : i === layers.length - 1 ? "0 12px 12px 0" : 0,
+              borderRadius: i === 0 ? "12px 0 0 12px" : i === layers.length - 1 ? "0 12px 12px 0" : "0",
               padding: "32px 24px",
               position: "relative",
               textAlign: "center",

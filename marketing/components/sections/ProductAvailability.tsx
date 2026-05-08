@@ -1,6 +1,10 @@
 import { CheckCircle2, Clock3, FileCheck2, ShieldCheck } from "lucide-react";
 
 const availableToday = [
+  "URL & Context Trust Gate — 15-minute pilot PoC with four live attack-page demos (display:none promptware, zero-width injection, credential harvest, benign)",
+  "SSRF-guarded safe crawler and optional Playwright detonation sandbox for JavaScript-heavy content",
+  "External reputation feeds: Safe Browsing v4, Microsoft SmartScreen, and VirusTotal v3 with in-process caching",
+  "Tenant URL allow/block lists with scope-based policy integration",
   "AI request monitoring and policy decision logging",
   "Prompt-risk, credential leak, and sensitive-data inspection",
   "Redaction-mode policy decisions for supported browser, endpoint, SDK, extension, and provider paths",
@@ -8,7 +12,6 @@ const availableToday = [
   "Agent identity registration, tenant scoping, delegation metadata, and revocation paths",
   "Endpoint-assisted AI tool and connection discovery",
   "Tenant-scoped policy builder, artifacts, and API-key flows",
-  "Bootstrap onboarding for agents, SDKs, and extensions",
   "Audit logs, telemetry, incidents, and evidence capture",
 ];
 
@@ -23,9 +26,9 @@ const pilotPhase = [
 ];
 
 const proofPoints = [
-  { icon: ShieldCheck, label: "Control plane, detection, policy, runtime, AI router, agent identity, and secrets-service components exist in the platform." },
+  { icon: ShieldCheck, label: "URL Trust Gate runs end-to-end in 15 minutes on a developer laptop — detection, policy, evidence, and four live attack-page verdicts." },
   { icon: FileCheck2, label: "Audit, action graph, compliance, and evidence paths are tied to enforcement decisions, not just reporting copy." },
-  { icon: CheckCircle2, label: "Endpoint agents, browser/IDE/Office extensions, SDKs, and RASP surfaces support pilot validation." },
+  { icon: CheckCircle2, label: "Endpoint agents, browser/IDE/Office extensions, SDKs, RASP hooks, and LangChain/LlamaIndex wrappers support pilot validation." },
 ];
 
 function ListColumn({

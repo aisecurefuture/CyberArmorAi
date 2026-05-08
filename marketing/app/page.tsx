@@ -18,9 +18,9 @@ import FAQ from "@/components/sections/FAQ";
 import FinalCTA from "@/components/sections/FinalCTA";
 
 export const metadata: Metadata = {
-  title: "CyberArmor.AI — AI Security Runtime for Governed Enterprise AI",
+  title: "CyberArmor.AI — Pre-Ingestion URL Trust Gate and AI Security Runtime",
   description:
-    "CyberArmor.AI controls and proves enterprise AI activity across users, applications, agents, APIs, providers, and models with runtime enforcement, redaction, routing, identity, and decision-level evidence.",
+    "CyberArmor.AI gates external URLs and web content before they reach AI agents or users — detecting promptware, hidden prompt injection, phishing, and IOCs. Then controls and proves enterprise AI activity with runtime enforcement, redaction, routing, identity, and decision-level evidence.",
 };
 
 export default function HomePage() {

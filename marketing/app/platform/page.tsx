@@ -4,12 +4,26 @@ import { ArrowRight, Eye, Shield, Lock, FileSearch, Cpu, Network, UserCheck, Act
 import FinalCTA from "@/components/sections/FinalCTA";
 
 export const metadata: Metadata = {
-  title: "Platform — AI Security Runtime Architecture",
+  title: "Platform — AI Security Runtime with URL Trust Gate",
   description:
-    "Explore CyberArmor.AI's AI security runtime architecture: detection, policy, routing, identity, enforcement, response, secrets, audit, and protection-backed evidence.",
+    "Explore CyberArmor.AI's AI security runtime: URL Trust Gate for pre-ingestion promptware and phishing defense, ML-based detection, policy enforcement, routing, identity, audit, and protection-backed evidence.",
 };
 
 const layers = [
+  {
+    id: "url-trust-gate",
+    icon: Link2,
+    title: "URL & Context Trust Gate",
+    color: "#0EA5E9",
+    description:
+      "A pre-ingestion control point that evaluates URLs and external content before a human, browser, endpoint agent, RASP-instrumented app, or AI agent fetches them. Existing URL filters answer 'is this site malicious for a human?'; CyberArmor.AI also answers 'is this content safe for an AI agent to ingest?' A 15-minute pilot PoC is available.",
+    capabilities: [
+      "Canonicalisation, querystring redaction, and homoglyph / punycode checks before any network call",
+      "SSRF-guarded safe crawl plus optional Playwright detonation to surface CSS-hidden, off-screen, and Unicode-tag-encoded promptware",
+      "Detection-service fan-out for phishing, hidden prompt injection, promptware, data-exfil, and IOC scoring with optional Safe Browsing v4, Microsoft SmartScreen, and VirusTotal reputation feeds",
+      "Policy decisions across allow, warn, redact, sandbox, block, and isolate — with evidence written to audit",
+    ],
+  },
   {
     id: "discovery",
     icon: Eye,
@@ -94,20 +108,6 @@ const layers = [
       "Containment capabilities: redaction-mode response, agent suspension, scope reduction, access revocation, and routing changes",
     ],
   },
-  {
-    id: "url-trust-gate",
-    icon: Link2,
-    title: "URL & Context Trust Gate",
-    color: "#0EA5E9",
-    description:
-      "A pre-ingestion control point that evaluates URLs and external content before a human, browser, endpoint agent, RASP-instrumented app, or AI agent fetches them. Existing URL filters answer 'is this site malicious for a human?'; CyberArmor.AI also answers 'is this site safe for an AI agent to consume?'",
-    capabilities: [
-      "Canonicalisation, querystring redaction, and homoglyph / punycode checks before any network call",
-      "SSRF-guarded safe crawl plus optional Playwright detonation to surface CSS-hidden, off-screen, and Unicode-tag-encoded promptware",
-      "Detection-service fan-out for phishing, hidden prompt injection, promptware, data-exfil, and IOC scoring with optional Safe Browsing v4 second opinion",
-      "Policy decisions across allow, warn, redact, sandbox, block, and isolate — with evidence written to audit and false-positive feedback piped into the ML training flywheel",
-    ],
-  },
 ];
 
 const integrations = [
@@ -170,7 +170,7 @@ export default function PlatformPage() {
               Platform Architecture — AI Security Runtime
             </p>
             <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 0, flexWrap: "wrap" }}>
-              {["Identify", "Inspect", "Decide", "Control", "Respond", "Prove"].map((step, i, arr) => (
+              {["Identify", "Gate", "Inspect", "Decide", "Control", "Respond", "Prove"].map((step, i, arr) => (
                 <div key={step} style={{ display: "flex", alignItems: "center" }}>
                   <div style={{
                     background: "rgba(0,163,255,0.08)",
@@ -189,7 +189,7 @@ export default function PlatformPage() {
             </div>
             <div className="glow-line" style={{ margin: "40px 0 32px" }} />
             <div style={{ display: "flex", justifyContent: "center", gap: 12, flexWrap: "wrap" }}>
-              {["Users", "Applications", "AI Agents", "APIs", "Providers", "Models", "Data", "Evidence"].map((layer) => (
+              {["External URLs & Content", "Users", "Applications", "AI Agents", "APIs", "Providers", "Models", "Data", "Evidence"].map((layer) => (
                 <span key={layer} style={{
                   background: "#12151E",
                   border: "1px solid #1E2335",
@@ -214,12 +214,12 @@ export default function PlatformPage() {
         <div className="container-wide">
           <div style={{ textAlign: "center", maxWidth: 680, margin: "0 auto 64px" }}>
             <h2 className="section-headline" style={{ marginBottom: 16 }}>
-              Six Runtime Capabilities.<br />
+              Seven Runtime Capabilities.<br />
               <span className="gradient-text-blue">One Integrated Control Loop.</span>
             </h2>
             <p style={{ color: "#8892A4", fontSize: "1.05rem", lineHeight: 1.7 }}>
               Each capability can support a focused pilot, but the real value appears when the pieces work together:
-              identity, detection, policy, routing, response, and evidence in one explainable flow.
+              pre-ingestion trust gating, identity, detection, policy, routing, response, and evidence in one explainable flow.
             </p>
           </div>
 

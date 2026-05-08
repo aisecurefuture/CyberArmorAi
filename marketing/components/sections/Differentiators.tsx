@@ -27,6 +27,13 @@ const diffs = [
       "Enterprise buyers trust specific claims. CyberArmor.AI separates pilot-ready capabilities from roadmap expansion, because a security runtime has to be credible before it can be trusted.",
     tag: "Buyer-Safe Roadmap",
   },
+  {
+    number: "05",
+    title: "Pre-Ingestion AI Safe Browsing",
+    body:
+      "Existing URL filters answer 'is this site safe for a human?' CyberArmor.AI also answers 'is this content safe for an AI agent to ingest?' The URL Trust Gate evaluates external destinations for promptware, hidden prompt injection, phishing, IOCs, and credential harvesting before content ever reaches AI context — with policy-based enforcement and evidence written to audit.",
+    tag: "URL Trust Gate",
+  },
 ];
 
 export default function Differentiators() {

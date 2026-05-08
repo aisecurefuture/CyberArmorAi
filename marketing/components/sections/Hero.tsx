@@ -126,10 +126,11 @@ export default function Hero() {
             margin: "0 auto 40px",
             overflowWrap: "break-word",
           }}>
-            CyberArmor.AI controls and proves AI activity across users,
-            applications, agents, APIs, providers, and models. Inspect the
-            request, enforce the policy, redact or block sensitive data in
-            supported paths, and preserve decision-level evidence.
+            CyberArmor.AI evaluates external URLs and web content before they
+            reach any human, browser, or AI agent — then controls and proves
+            AI activity across applications, agents, APIs, providers, and
+            models. Pre-ingestion trust gate. Runtime enforcement.
+            Decision-level evidence.
           </p>
 
           {/* CTAs */}
@@ -151,8 +152,8 @@ export default function Hero() {
             flexWrap: "wrap",
           }}>
             {[
-              "Runtime control, not governance theater",
-              "Redaction, routing, identity, policy, and audit evidence",
+              "Pre-ingestion URL trust gate — 15-minute pilot PoC",
+              "Runtime control: redaction, routing, identity, and audit evidence",
               "Built for security-led pilots and design partners",
             ].map((t) => (
               <div key={t} style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -234,8 +235,8 @@ export default function Hero() {
             {/* Activity feed mock */}
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {[
-                { type: "REDACTED", msg: "Credential removed before AI submission — browser prompt", time: "2s ago", color: "#22C55E" },
-                { type: "BLOCKED", msg: "Prompt injection attempt stopped — finance assistant", time: "14s ago", color: "#EF4444" },
+                { type: "BLOCKED", msg: "URL trust gate: zero-width promptware detected — AI agent fetch blocked", time: "2s ago", color: "#EF4444" },
+                { type: "REDACTED", msg: "Credential removed before AI submission — browser prompt", time: "18s ago", color: "#22C55E" },
                 { type: "ROUTED", msg: "Provider policy applied — approved model path selected", time: "1m ago", color: "#00A3FF" },
               ].map((item) => (
                 <div key={item.msg} style={{

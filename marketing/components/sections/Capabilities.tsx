@@ -2,6 +2,16 @@ import { Eye, Bot, ShieldAlert, Database, UserCheck, Activity, FileText, Route, 
 
 const capabilities = [
   {
+    icon: Link2,
+    title: "URL & Context Trust Gate",
+    body: "Pre-ingestion safety check for URLs and external content before it reaches any human, browser, endpoint agent, or AI agent. Detects phishing, hidden prompt injection, promptware, and IOCs — including CSS-hidden and zero-width-encoded payloads. Backed by Safe Browsing v4, Microsoft SmartScreen, and VirusTotal reputation feeds. 15-minute pilot PoC available.",
+  },
+  {
+    icon: ShieldAlert,
+    title: "Prompt Injection Defense",
+    body: "Detect prompt injection, jailbreak attempts, adversarial normalization patterns, and suspicious prompt behavior targeting AI applications and workflows.",
+  },
+  {
     icon: Eye,
     title: "Shadow AI Discovery",
     body: "Surface unreviewed AI tools, model calls, browser usage, endpoint activity, APIs, and service connections through supported signals.",
@@ -10,11 +20,6 @@ const capabilities = [
     icon: Bot,
     title: "AI Agent Trust & Control",
     body: "Register AI agents, scope allowed tools, track delegation context, and preserve evidence around autonomous workflows as trust controls mature.",
-  },
-  {
-    icon: ShieldAlert,
-    title: "Prompt Injection Defense",
-    body: "Detect prompt injection, jailbreak attempts, adversarial normalization patterns, and suspicious prompt behavior targeting AI applications and workflows.",
   },
   {
     icon: Database,
@@ -40,11 +45,6 @@ const capabilities = [
     icon: Activity,
     title: "Runtime Response",
     body: "Connect detection and policy decisions to response actions such as block, redact, route, notify, limit, revoke, or hand off into SOC workflows.",
-  },
-  {
-    icon: Link2,
-    title: "URL & Context Trust Gate",
-    body: "Pre-ingestion safety check for URLs and external content destined for humans, browsers, endpoint agents, RASP-instrumented apps, and AI agents. Detects phishing, hidden prompt injection, promptware, and IOCs in CSS-hidden and Unicode-encoded text before content ever reaches AI context.",
   },
 ];
 

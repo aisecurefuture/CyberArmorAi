@@ -86,12 +86,20 @@ export default function EvidenceLayer() {
               <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 28 }}>
                 {[
                   {
+                    id: "EVT-00482",
+                    action: "URL trust gate: BLOCKED",
+                    detail: "Zero-width prompt injection detected in external page — AI agent fetch blocked before content ingestion",
+                    policy: "POL-URL-01: Block Promptware",
+                    ts: "2026-04-11 09:14:38 UTC",
+                    color: "#EF4444",
+                  },
+                  {
                     id: "EVT-00481",
                     action: "Policy enforcement: REDACT",
                     detail: "Credential removed before AI-bound browser prompt submission",
                     policy: "POL-DLP-04: Redact Secrets",
                     ts: "2026-04-11 09:14:32 UTC",
-                    color: "#EF4444",
+                    color: "#F59E0B",
                   },
                   {
                     id: "EVT-00480",
@@ -100,14 +108,6 @@ export default function EvidenceLayer() {
                     policy: "POL-ROUTE-02: Approved Provider",
                     ts: "2026-04-11 09:14:28 UTC",
                     color: "#22C55E",
-                  },
-                  {
-                    id: "EVT-00479",
-                    action: "Agent trust verification: PASS",
-                    detail: "Claims processing agent identity confirmed and scope validated",
-                    policy: "POL-AGENT-07: Scope Boundary Check",
-                    ts: "2026-04-11 09:14:20 UTC",
-                    color: "#F59E0B",
                   },
                 ].map((e) => (
                   <div key={e.id} style={{
