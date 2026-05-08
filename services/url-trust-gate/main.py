@@ -71,13 +71,13 @@ logging.basicConfig(
 # ---------------------------------------------------------------------------
 
 URL_TRUST_GATE_API_SECRET = os.getenv("URL_TRUST_GATE_API_SECRET", "change-me-url-trust-gate")
-DETECTION_SERVICE_URL = os.getenv("DETECTION_SERVICE_URL", "http://detection-service:8002")
+DETECTION_SERVICE_URL = os.getenv("DETECTION_SERVICE_URL", "http://detection:8002")
 DETECTION_API_SECRET = os.getenv("DETECTION_API_SECRET", "change-me-detection")
-POLICY_SERVICE_URL = os.getenv("POLICY_SERVICE_URL", "http://policy-service:8001")
+POLICY_SERVICE_URL = os.getenv("POLICY_SERVICE_URL", "http://policy:8001")
 POLICY_API_SECRET = os.getenv("POLICY_API_SECRET", "change-me-policy")
-RESPONSE_SERVICE_URL = os.getenv("RESPONSE_SERVICE_URL", "http://response-service:8003")
+RESPONSE_SERVICE_URL = os.getenv("RESPONSE_SERVICE_URL", "http://response:8003")
 RESPONSE_API_SECRET = os.getenv("RESPONSE_API_SECRET", "change-me-response")
-AUDIT_SERVICE_URL = os.getenv("AUDIT_SERVICE_URL", "http://audit-service:8004")
+AUDIT_SERVICE_URL = os.getenv("AUDIT_SERVICE_URL", "http://audit:8011")
 AUDIT_API_SECRET = os.getenv("AUDIT_API_SECRET", "change-me-audit")
 
 ENFORCE_SECURE_SECRETS = os.getenv(

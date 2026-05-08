@@ -180,7 +180,7 @@ services:
       DETECTION_SERVICE_URL: "http://detection:8002"
       POLICY_SERVICE_URL: "http://policy:8001"
       RESPONSE_SERVICE_URL: "http://response:8003"
-      AUDIT_SERVICE_URL: "http://audit:8004"
+      AUDIT_SERVICE_URL: "http://audit:8011"
       # Detonation worker — separate service on its own egress-only
       # network. If unset, the gate cleanly downgrades deep-mode
       # requests to standard.
@@ -459,6 +459,22 @@ services:
       context: ../../
       dockerfile: services/dashboard-auth/Dockerfile
     env_file: ["${CYBERARMOR_ENV_FILE:-.env}"]
+    environment:
+      CONTROL_PLANE_URL: "http://control-plane:8000"
+      POLICY_SERVICE_URL: "http://policy:8001"
+      DETECTION_SERVICE_URL: "http://detection:8002"
+      RESPONSE_SERVICE_URL: "http://response:8003"
+      IDENTITY_SERVICE_URL: "http://identity:8004"
+      SIEM_SERVICE_URL: "http://siem-connector:8005"
+      COMPLIANCE_URL: "http://compliance:8006"
+      AISR_RUNTIME_URL: "http://runtime:8000"
+      PROXY_AGENT_URL: "http://proxy-agent:8010"
+      URL_TRUST_GATE_URL: "http://url-trust-gate:8014"
+      AGENT_IDENTITY_URL: "http://agent-identity:8008"
+      AI_ROUTER_URL: "http://ai-router:8009"
+      AUDIT_URL: "http://audit:8011"
+      INTEGRATION_CONTROL_URL: "http://integration-control:8012"
+      SECRETS_SERVICE_URL: "http://secrets-service:8013"
     expose: ["8088"]
     volumes:
       - dashboard_auth_data:/app/data

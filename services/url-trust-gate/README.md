@@ -72,10 +72,10 @@ The traps from the architecture design are real:
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `URL_TRUST_GATE_API_SECRET` | `change-me-url-trust-gate` | Inbound API key. |
-| `DETECTION_SERVICE_URL` | `http://detection-service:8002` | |
-| `POLICY_SERVICE_URL` | `http://policy-service:8001` | |
-| `RESPONSE_SERVICE_URL` | `http://response-service:8003` | |
-| `AUDIT_SERVICE_URL` | `http://audit-service:8004` | |
+| `DETECTION_SERVICE_URL` | `http://detection:8002` | Detection service base URL. |
+| `POLICY_SERVICE_URL` | `http://policy:8001` | Policy service base URL. |
+| `RESPONSE_SERVICE_URL` | `http://response:8003` | Response service base URL. |
+| `AUDIT_SERVICE_URL` | `http://audit:8011` | Audit graph service base URL. |
 | `URL_TRUST_GATE_CRAWLER_TIMEOUT_S` | `4.0` | Per-request crawler timeout. |
 | `URL_TRUST_GATE_CRAWLER_MAX_BYTES` | `1048576` | Hard cap on fetched body size. |
 | `URL_TRUST_GATE_CRAWLER_MAX_REDIRECTS` | `5` | Each hop re-validated against SSRF rules. |
