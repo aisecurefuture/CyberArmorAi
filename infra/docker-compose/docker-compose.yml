@@ -552,6 +552,9 @@ services:
   dashboard:
     security_opt: ["no-new-privileges:true"]
     cap_drop: ["ALL"]
+    # nginx:alpine entrypoint chowns /var/cache/nginx/* dirs to the nginx
+    # user (UID 101), then setuids to nginx for worker processes.
+    cap_add: ["CHOWN", "SETGID", "SETUID", "DAC_OVERRIDE"]
     image: nginx:alpine
     depends_on: [dashboard-auth, control-plane, policy, proxy-agent, identity, siem-connector, compliance, agent-identity, ai-router, audit, secrets-service]
     ports: ["${HOST_BIND:-0.0.0.0}:3000:80"]
@@ -563,6 +566,8 @@ services:
   customer-portal:
     security_opt: ["no-new-privileges:true"]
     cap_drop: ["ALL"]
+    # See dashboard above — nginx:alpine entrypoint chowns and setuids.
+    cap_add: ["CHOWN", "SETGID", "SETUID", "DAC_OVERRIDE"]
     image: nginx:alpine
     depends_on: [control-plane]
     ports: ["${HOST_BIND:-0.0.0.0}:${CUSTOMER_PORTAL_HOST_PORT:-3001}:80"]
@@ -593,6 +598,9 @@ services:
   docs:
     security_opt: ["no-new-privileges:true"]
     cap_drop: ["ALL"]
+    # docs final image is nginx:alpine (multi-stage build).
+    # See dashboard above — chown + setuid at startup.
+    cap_add: ["CHOWN", "SETGID", "SETUID", "DAC_OVERRIDE"]
     build:
       context: ../../docs-site
       dockerfile: Dockerfile
