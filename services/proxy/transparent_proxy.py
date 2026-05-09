@@ -140,13 +140,18 @@ _enforce_mtls_transport()
 class InspectionResult:
     """Result from content inspection pipeline."""
     request_id: str
-    action: str = "allow"  # allow | block | warn | monitor
+    action: str = "allow"  # allow | block | warn | monitor | redact
     reason: str = ""
     policy_id: Optional[str] = None
     policy_name: Optional[str] = None
     risk_score: float = 0.0
     detections: List[Dict[str, Any]] = field(default_factory=list)
     latency_ms: float = 0.0
+    # Path B (Step 2): when action=redact, classes to mask via detection
+    redact_targets: List[str] = field(default_factory=list)
+    # Per-class match counts after redaction (safe to log; never the
+    # original matched values).
+    redact_class_counts: Dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -273,6 +278,39 @@ async def evaluate_policy(
 # ---------------------------------------------------------------------------
 # Detection Service integration
 # ---------------------------------------------------------------------------
+
+async def _redact_via_detection(
+    tenant_id: str,
+    text: str,
+    targets: List[str],
+) -> Optional[Dict[str, Any]]:
+    """Path B (Step 2b): call detection /scan/redact and return the
+    redacted text + per-class counts. Never logs the raw `text` or any
+    matched values from the response."""
+    if not text or not targets:
+        return None
+    client = _get_http_client()
+    try:
+        resp = await client.post(
+            f"{DETECTION_SERVICE_URL}/scan/redact",
+            json={"tenant_id": tenant_id, "text": text, "targets": targets},
+            headers=build_auth_headers(
+                DETECTION_SERVICE_URL,
+                DETECTION_SECRET or "",
+                {"Content-Type": "application/json"},
+            ),
+        )
+        if resp.status_code == 200:
+            return resp.json()
+        logger.warning(
+            "redact_endpoint_error status=%d body=%s",
+            resp.status_code, resp.text[:200],
+        )
+        return None
+    except Exception as exc:
+        logger.error("redact_endpoint_exception err=%s", exc)
+        return None
+
 
 async def scan_content(
     tenant_id: str,
@@ -638,13 +676,23 @@ class TransparentProxyAddon:
                 decision = (runtime_result.get("decision") or "allow").lower()
                 if decision == "block":
                     inspection.action = "block"
-                elif decision in {"warn", "redact"}:
+                elif decision == "redact":
+                    # Path B: honor redact natively. Pull the target classes
+                    # from runtime; the actual content rewrite happens in
+                    # the enforcement step below.
+                    inspection.action = "redact"
+                    inspection.redact_targets = list(runtime_result.get("redaction_targets") or [])
+                elif decision == "warn":
                     inspection.action = "warn"
                 else:
                     inspection.action = "allow"
 
                 reasons = runtime_result.get("reasons") or []
                 inspection.reason = ",".join(reasons) if isinstance(reasons, list) else str(reasons)
+                if runtime_result.get("policy_id"):
+                    inspection.policy_id = runtime_result.get("policy_id")
+                if runtime_result.get("policy_name"):
+                    inspection.policy_name = runtime_result.get("policy_name")
 
                 # Carry through risk metadata when present
                 risk = runtime_result.get("risk") or {}
@@ -670,8 +718,30 @@ class TransparentProxyAddon:
                 )
 
                 if policy_result:
-                    action = policy_result.get("action", "allow")
-                    inspection.action = action
+                    # Two response shapes from the policy service:
+                    #   - PolicyDecisionOut from POST /evaluate (Path B): has
+                    #     `decision` (e.g. ALLOW_WITH_REDACTION) + modifiers
+                    #   - Legacy dict from POST /policies/{tid}/evaluate: has
+                    #     `action` (allow/block/warn) directly
+                    # Try the full decision shape first, then fall back.
+                    decision_full = str(policy_result.get("decision") or "").upper()
+                    if decision_full == "DENY":
+                        inspection.action = "block"
+                    elif decision_full == "ALLOW_WITH_REDACTION":
+                        modifiers = policy_result.get("modifiers") or {}
+                        targets = modifiers.get("redaction_targets") or []
+                        if targets:
+                            inspection.action = "redact"
+                            inspection.redact_targets = list(targets)
+                        else:
+                            inspection.action = "allow"
+                    elif decision_full in {"REQUIRE_APPROVAL", "QUARANTINE"}:
+                        inspection.action = "block"
+                    elif decision_full.startswith("ALLOW"):
+                        inspection.action = "allow"
+                    else:
+                        # Legacy shape — read the `action` field directly
+                        inspection.action = policy_result.get("action", "allow")
                     inspection.reason = policy_result.get("reason", "")
                     inspection.policy_id = policy_result.get("policy_id")
                     inspection.policy_name = policy_result.get("policy_name")
@@ -727,6 +797,59 @@ class TransparentProxyAddon:
             # Inject warning header but allow the request to proceed
             flow.request.headers["X-CyberArmor-Warning"] = inspection.reason
             # Attach trace headers for downstream services/log correlation.
+            flow.request.headers["X-Request-ID"] = request_id
+            flow.request.headers["X-CyberArmor-Request-ID"] = request_id
+        elif inspection.action == "redact" and inspection.redact_targets and body_text:
+            # Path B (Step 2b): mask the matched DLP classes in the request
+            # body before forwarding to the provider. Detection's /scan/redact
+            # returns redacted_text + per-class match counts (never the raw
+            # values).
+            self._inc_stat("redacted")
+            try:
+                redact_result = await _redact_via_detection(
+                    tenant_id=tenant_id,
+                    text=body_text,
+                    targets=inspection.redact_targets,
+                )
+                if redact_result and redact_result.get("any_redacted"):
+                    new_body = redact_result["redacted_text"]
+                    inspection.redact_class_counts = dict(
+                        redact_result.get("class_counts") or {}
+                    )
+                    flow.request.set_content(new_body.encode("utf-8"))
+                    # Update Content-Length so upstream parses the new body
+                    flow.request.headers["content-length"] = str(len(new_body.encode("utf-8")))
+                    flow.request.headers["X-CyberArmor-Redacted"] = ",".join(
+                        sorted(inspection.redact_class_counts.keys())
+                    )
+                    logger.info(
+                        "request_redacted request_id=%s url=%s policy=%s class_counts=%s",
+                        request_id,
+                        url,
+                        inspection.policy_name,
+                        # Counts only — never the redacted values themselves.
+                        inspection.redact_class_counts,
+                    )
+                else:
+                    # No matches in the body; nothing to redact, request goes through unchanged.
+                    logger.info(
+                        "request_redact_no_match request_id=%s url=%s targets=%s",
+                        request_id, url, inspection.redact_targets,
+                    )
+            except Exception as exc:
+                logger.error(
+                    "request_redact_failed request_id=%s url=%s err=%s",
+                    request_id, url, exc,
+                )
+                # Fail-closed for redact: if we can't mask, block the request.
+                # The whole point of redact is to keep secrets out of the AI
+                # pipeline; allowing the unmodified body through would defeat
+                # the policy.
+                flow.response = _build_block_response(
+                    "redact_enforcement_failed",
+                    request_id,
+                    accept_header=flow.request.headers.get("accept", ""),
+                )
             flow.request.headers["X-Request-ID"] = request_id
             flow.request.headers["X-CyberArmor-Request-ID"] = request_id
         else:

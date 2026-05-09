@@ -118,6 +118,13 @@ class RuntimeDecision(BaseModel):
     actions: List[Dict[str, Any]] = Field(default_factory=list)
     risk: Dict[str, Any] = Field(default_factory=dict)
     evidence_snapshot: Optional[Dict[str, Any]] = None
+    # Path B (Step 2): when decision=redact, list of DLP class names the
+    # caller should mask via detection's /scan/redact. Sourced from the
+    # matching policy's redact_classes field merged with any classes the
+    # detection service flagged in this request.
+    redaction_targets: List[str] = Field(default_factory=list)
+    policy_id: Optional[str] = None
+    policy_name: Optional[str] = None
 
 
 @app.get("/health")
@@ -193,9 +200,10 @@ async def evaluate(req: RuntimeRequest, x_api_key: Optional[str] = Header(defaul
         policy_secret,
         {"Content-Type": "application/json"},
     )
+    policy_decision: Dict[str, Any] = {}
     try:
         async with httpx.AsyncClient(timeout=3.0, **_internal_httpx_kwargs()) as client:
-            await client.post(
+            pol_resp = await client.post(
                 f"{POLICY_BASE}/evaluate",
                 headers=pol_headers,
                 json={
@@ -212,6 +220,8 @@ async def evaluate(req: RuntimeRequest, x_api_key: Optional[str] = Header(defaul
                     },
                 },
             )
+            if pol_resp.status_code == 200:
+                policy_decision = pol_resp.json() or {}
     except Exception:
         pass
 
@@ -219,11 +229,36 @@ async def evaluate(req: RuntimeRequest, x_api_key: Optional[str] = Header(defaul
     decision = "allow"
     reasons: List[str] = []
     actions: List[Dict[str, Any]] = []
+    redaction_targets: List[str] = []
+    policy_id: Optional[str] = None
+    policy_name: Optional[str] = None
 
-    # Simple decisioning for v1: block if any finding severity is high
+    # 3a) Honor the policy decision FIRST — the policy author's intent
+    # outranks heuristic findings. Path B: ALLOW_WITH_REDACTION carries the
+    # target classes via modifiers.redaction_targets (set by the policy
+    # service when a `redact` policy matches).
+    pol_dec = str(policy_decision.get("decision") or "").upper()
+    pol_modifiers = policy_decision.get("modifiers") or {}
+    pol_targets = pol_modifiers.get("redaction_targets") or []
+    if pol_dec == "DENY":
+        decision = "block"
+        reasons.append(policy_decision.get("reason") or "policy_block")
+    elif pol_dec == "ALLOW_WITH_REDACTION" and pol_targets:
+        decision = "redact"
+        redaction_targets = list(pol_targets)
+        reasons.append(policy_decision.get("reason") or "policy_redact")
+    elif pol_dec in {"REQUIRE_APPROVAL", "QUARANTINE"}:
+        decision = "block"
+        reasons.append(policy_decision.get("reason") or pol_dec.lower())
+    if policy_decision:
+        policy_id = policy_decision.get("policy_id")
+        policy_name = policy_decision.get("policy_name")
+
+    # 3b) Detection findings escalate but never demote: if the policy said
+    # allow and a high-severity finding shows up, escalate to block.
     for f in findings:
         sev = (f.get("severity") or "").lower()
-        if sev in {"high", "critical"}:
+        if sev in {"high", "critical"} and decision == "allow":
             decision = "block"
             reasons.append(f.get("type") or "high_severity_finding")
 
@@ -325,4 +360,7 @@ async def evaluate(req: RuntimeRequest, x_api_key: Optional[str] = Header(defaul
         actions=actions,
         risk={"findings": len(findings)},
         evidence_snapshot=evidence_snapshot,
+        redaction_targets=redaction_targets,
+        policy_id=policy_id,
+        policy_name=policy_name,
     )
