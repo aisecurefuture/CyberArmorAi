@@ -201,6 +201,18 @@ async def evaluate(req: RuntimeRequest, x_api_key: Optional[str] = Header(defaul
         {"Content-Type": "application/json"},
     )
     policy_decision: Dict[str, Any] = {}
+    # Split the URL so policy authors can write conditions on request.path
+    # (the canonical field name) without having to know the full URL shape.
+    _url = req.metadata.get("url", "") or ""
+    try:
+        from urllib.parse import urlsplit
+        _parts = urlsplit(_url)
+        _path = _parts.path or ""
+        _scheme = _parts.scheme or ""
+    except Exception:
+        _path = _url
+        _scheme = ""
+
     try:
         async with httpx.AsyncClient(timeout=3.0, **_internal_httpx_kwargs()) as client:
             pol_resp = await client.post(
@@ -210,7 +222,9 @@ async def evaluate(req: RuntimeRequest, x_api_key: Optional[str] = Header(defaul
                     "tenant_id": req.tenant_id,
                     "context": {
                         "request": {
-                            "url": req.metadata.get("url", ""),
+                            "url": _url,
+                            "path": _path,
+                            "scheme": _scheme,
                             "method": req.metadata.get("method", ""),
                             "host": req.metadata.get("host", ""),
                             "headers": req.metadata.get("headers", {}),
