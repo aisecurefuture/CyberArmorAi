@@ -57,10 +57,14 @@ class PolicyEvalResult:
     matched: bool
     policy_id: str
     policy_name: str
-    action: str          # monitor | block | warn | allow
+    action: str          # allow | monitor | warn | redact | block (general)
+                          # url-trust-gate also: sandbox | isolate
     reason: str = ""
     matched_rules: List[str] = field(default_factory=list)
     compliance_frameworks: List[str] = field(default_factory=list)
+    # Path B: list of DLP class names this policy wants redacted on match.
+    # Empty when action != "redact" or when the author left it blank.
+    redact_classes: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -149,6 +153,7 @@ class OPABackend:
                     compliance_frameworks=list(
                         item.get("compliance_frameworks") or []
                     ),
+                    redact_classes=list(item.get("redact_classes") or []),
                 )
             )
 
@@ -216,6 +221,7 @@ class PythonPolicyEngine:
                         reason=f"Matched {len(matched_rules)} rule(s)",
                         matched_rules=matched_rules,
                         compliance_frameworks=policy.get("compliance_frameworks") or [],
+                        redact_classes=policy.get("redact_classes") or [],
                     )
                 )
 

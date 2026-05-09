@@ -141,6 +141,15 @@ def _apply_lightweight_migrations() -> None:
                     )
                 if "archived_at" not in existing:
                     conn.exec_driver_sql("ALTER TABLE policies ADD COLUMN archived_at TIMESTAMP NULL")
+                if "redact_classes" not in existing:
+                    # Path B (Step 1): policy-side redact-target list. Stored as
+                    # JSONB on Postgres / TEXT on SQLite to match the existing
+                    # JSONB-with-Text-variant pattern on this table.
+                    conn.exec_driver_sql(
+                        "ALTER TABLE policies ADD COLUMN redact_classes JSONB"
+                        if engine.dialect.name == "postgresql"
+                        else "ALTER TABLE policies ADD COLUMN redact_classes TEXT"
+                    )
     except Exception as exc:
         logger.warning("lightweight_migration_failed err=%s", exc)
 
@@ -191,13 +200,20 @@ class PolicyCreate(BaseModel):
     description: Optional[str] = None
     tenant_id: str
     enabled: bool = True
-    action: str = "monitor"  # monitor, block, warn, allow
-    scope: str = "general"  # general, proxy, ...
+    action: str = "monitor"  # allow, monitor, warn, redact, block (general scope)
+                              # url-trust-gate scope also accepts: sandbox, isolate
+    scope: str = "general"  # general, proxy, endpoint, identity, url-trust-gate
     priority: int = 100
     conditions: Optional[Dict] = None
     rules: Dict = Field(default_factory=dict)
     compliance_frameworks: Optional[List[str]] = None
     tags: Optional[List[str]] = None
+    # Path B: list of DLP class names to redact when this policy matches and
+    # action="redact". Examples: ["pii.email", "pii.ssn", "secret.api_key"].
+    # Empty list / None means "fall back to whatever the caller already
+    # detected via context.redaction_targets" so legacy URL Trust Gate
+    # behavior is preserved.
+    redact_classes: Optional[List[str]] = None
 
 
 class PolicyUpdate(BaseModel):
@@ -211,6 +227,7 @@ class PolicyUpdate(BaseModel):
     rules: Optional[Dict] = None
     compliance_frameworks: Optional[List[str]] = None
     tags: Optional[List[str]] = None
+    redact_classes: Optional[List[str]] = None
 
 
 class PolicyOut(BaseModel):
@@ -227,6 +244,7 @@ class PolicyOut(BaseModel):
     rules: Dict = Field(default_factory=dict)
     compliance_frameworks: Optional[List[str]] = None
     tags: Optional[List[str]] = None
+    redact_classes: Optional[List[str]] = None
     archived_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
@@ -381,6 +399,7 @@ def _load_active_policies_for_tenant(db: Session, tenant_id: str) -> List[Dict[s
                 "conditions": _coerce_json_field(row.conditions),
                 "rules": _coerce_json_field(row.rules) or {},
                 "compliance_frameworks": _coerce_json_field(row.compliance_frameworks) or [],
+                "redact_classes": _coerce_json_field(getattr(row, "redact_classes", None)) or [],
             }
         )
     return policies
@@ -423,6 +442,14 @@ def _normalize_policy_decision(
         elif action == "monitor":
             decision = "ALLOW_WITH_AUDIT_ONLY"
             reason = "policy_monitor"
+        elif action == "redact":
+            # Path B: policy author asked for redaction. Merge the policy's
+            # redact_classes with any caller-detected classes — callers get
+            # one combined list to act on.
+            policy_classes = getattr(match, "redact_classes", None) or []
+            redaction_targets = list({*redaction_targets, *policy_classes})
+            decision = "ALLOW_WITH_REDACTION"
+            reason = "policy_redact"
         else:
             decision = "ALLOW"
             reason = "policy_allow"
@@ -690,6 +717,7 @@ def upsert_policy(
         record.priority = payload.priority
         record.compliance_frameworks = _encode_json_for_db(payload.compliance_frameworks)
         record.tags = _encode_json_for_db(payload.tags)
+        record.redact_classes = _encode_json_for_db(payload.redact_classes)
         record.version = version
         record.updated_at = datetime.now(timezone.utc)
     else:
@@ -707,6 +735,7 @@ def upsert_policy(
             rules=_encode_json_for_db(payload.rules),
             compliance_frameworks=_encode_json_for_db(payload.compliance_frameworks),
             tags=_encode_json_for_db(payload.tags),
+            redact_classes=_encode_json_for_db(payload.redact_classes),
         )
         db.add(record)
     db.commit()
@@ -715,7 +744,10 @@ def upsert_policy(
     record.rules = _coerce_json_field(record.rules) or {}
     record.compliance_frameworks = _coerce_json_field(record.compliance_frameworks)
     record.tags = _coerce_json_field(record.tags)
-    logger.info("policy upserted tenant=%s name=%s version=%s action=%s", payload.tenant_id, payload.name, version, payload.action)
+    record.redact_classes = _coerce_json_field(record.redact_classes)
+    logger.info("policy upserted tenant=%s name=%s version=%s action=%s redact_classes=%s",
+                payload.tenant_id, payload.name, version, payload.action,
+                payload.redact_classes if payload.action == "redact" else None)
     _opa_sync_policy(record)
     return record
 
@@ -751,6 +783,8 @@ def update_policy(
         record.compliance_frameworks = _encode_json_for_db(payload.compliance_frameworks)
     if payload.tags is not None:
         record.tags = _encode_json_for_db(payload.tags)
+    if payload.redact_classes is not None:
+        record.redact_classes = _encode_json_for_db(payload.redact_classes)
     record.version = f"v{int(datetime.utcnow().timestamp())}"
     record.updated_at = datetime.now(timezone.utc)
     db.commit()
@@ -759,6 +793,7 @@ def update_policy(
     record.rules = _coerce_json_field(record.rules) or {}
     record.compliance_frameworks = _coerce_json_field(record.compliance_frameworks)
     record.tags = _coerce_json_field(record.tags)
+    record.redact_classes = _coerce_json_field(record.redact_classes)
     logger.info("policy updated id=%s name=%s", policy_id, record.name)
     _opa_sync_policy(record)
     return record

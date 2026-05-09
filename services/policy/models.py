@@ -41,6 +41,13 @@ class Policy(Base):
     rules = Column(JSONB().with_variant(Text, "sqlite"), nullable=False)
     compliance_frameworks = Column(JSONB().with_variant(Text, "sqlite"), nullable=True)
     tags = Column(JSONB().with_variant(Text, "sqlite"), nullable=True)
+    # Path B (redact as first-class general action). When `action == "redact"`
+    # and a request matches this policy, the engine returns these DLP class
+    # names in modifiers.redaction_targets so the caller (AI proxy / runtime /
+    # endpoint agent) knows which classes to mask. Distinct from the request-
+    # context redaction_targets, which is a downstream-detected hint.
+    # Examples: ["pii.email", "pii.ssn", "secret.aws_access_key"]
+    redact_classes = Column(JSONB().with_variant(Text, "sqlite"), nullable=True)
     archived_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=now_utc)
     updated_at = Column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
