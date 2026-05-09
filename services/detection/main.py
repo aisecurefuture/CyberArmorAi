@@ -144,6 +144,14 @@ class TextRequest(BaseModel):
     session_id: Optional[str] = None
 
 
+# Path B (Step 2): redact request/response payloads.
+class RedactRequest(BaseModel):
+    text: str
+    targets: List[str] = Field(default_factory=list)
+    tenant_id: str = "default"
+    session_id: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # Adversarial text normalisation
 # ---------------------------------------------------------------------------
@@ -736,6 +744,98 @@ def _scan_sensitive_data(text: str) -> List[Dict[str, Any]]:
     return findings
 
 
+# ---------------------------------------------------------------------------
+# Path B (Step 2): client-facing DLP redaction.
+#
+# Maps the internal regex/entity names to a stable client-facing class
+# vocabulary that policies use in their `redact_classes` field. The
+# Policy Builder UI (step 3) populates its multi-select from this map.
+# ---------------------------------------------------------------------------
+
+# class_name -> list of (internal_name, compiled_pattern, capture_group_or_None)
+# capture_group is the regex group whose span we redact (None = whole match)
+_REDACT_CLASS_MAP: Dict[str, List[tuple]] = {
+    "pii.email":            [("email",          _ENTITY_REGEX_PATTERNS[0][1], None)],
+    "pii.phone":            [("phone",          _ENTITY_REGEX_PATTERNS[1][1], None)],
+    "pii.iban":             [("iban",           _ENTITY_REGEX_PATTERNS[2][1], None)],
+    "pii.ssn":              [
+        ("ssn",             _SENSITIVE_REGEX_PATTERNS[0][1], None),
+        ("ssn",             _CONTEXTUAL_SSN_PATTERNS[0],     1),
+        ("ssn",             _CONTEXTUAL_SSN_PATTERNS[1],     1),
+    ],
+    "pii.credit_card":      [("credit_card",    _SENSITIVE_REGEX_PATTERNS[1][1], None)],
+    "secret.aws_access_key":[("aws_key",        _SENSITIVE_REGEX_PATTERNS[2][1], None)],
+    "secret.gcp_api_key":   [("gcp_api_key",    _SENSITIVE_REGEX_PATTERNS[3][1], None)],
+    "secret.github_token":  [("github_token",   _SENSITIVE_REGEX_PATTERNS[4][1], None)],
+    "secret.openai_key":    [("openai_api_key", _SENSITIVE_REGEX_PATTERNS[5][1], None)],
+    "secret.anthropic_key": [("anthropic_key",  _SENSITIVE_REGEX_PATTERNS[6][1], None)],
+    "secret.slack_token":   [("slack_token",    _SENSITIVE_REGEX_PATTERNS[7][1], None)],
+    "secret.stripe_key":    [("stripe_key",     _SENSITIVE_REGEX_PATTERNS[8][1], None)],
+    "secret.api_key":       [
+        ("generic_api_key", _SENSITIVE_REGEX_PATTERNS[9][1], 1),
+        ("entity_api_key",  _ENTITY_REGEX_PATTERNS[4][1],    None),
+    ],
+    "secret.password":      [("password",       _SENSITIVE_REGEX_PATTERNS[10][1], 1)],
+    "secret.private_key":   [("private_key",    _SENSITIVE_REGEX_PATTERNS[11][1], None)],
+    "secret.jwt":           [("jwt",            _ENTITY_REGEX_PATTERNS[3][1],    None)],
+}
+
+# Public class catalog for the Policy Builder. Keep keys human-orderable.
+REDACT_CLASS_CATALOG = sorted(_REDACT_CLASS_MAP.keys())
+
+
+def _redact_text(text: str, targets: List[str]) -> tuple[str, Dict[str, int]]:
+    """Replace matches of the requested DLP classes with [REDACTED:<class>].
+
+    Returns (redacted_text, class_counts). class_counts is the per-class
+    count of matches replaced — never the matched content itself, so it's
+    safe to log.
+
+    Spans are collected from all requested classes, sorted right-to-left,
+    and replaced in-place. Overlapping spans are deduped (keep the first
+    match by start position; later ones inside it are dropped).
+    """
+    if not text or not targets:
+        return text or "", {}
+
+    # Collect (start, end, class_name) for every match.
+    spans: List[tuple] = []
+    counts: Dict[str, int] = {}
+    for cls in targets:
+        for _internal, pattern, group in _REDACT_CLASS_MAP.get(cls, []):
+            for m in pattern.finditer(text):
+                if group is not None and m.group(group):
+                    s, e = m.span(group)
+                else:
+                    s, e = m.span()
+                if s == e:
+                    continue
+                spans.append((s, e, cls))
+
+    if not spans:
+        return text, {}
+
+    # Sort by start, drop overlaps (keep first), then sort right-to-left
+    # for in-place replacement.
+    spans.sort(key=lambda x: (x[0], -x[1]))
+    deduped: List[tuple] = []
+    last_end = -1
+    for s, e, cls in spans:
+        if s < last_end:
+            continue   # overlaps a span already kept
+        deduped.append((s, e, cls))
+        last_end = e
+
+    deduped.sort(key=lambda x: x[0], reverse=True)
+
+    out = text
+    for s, e, cls in deduped:
+        out = out[:s] + f"[REDACTED:{cls}]" + out[e:]
+        counts[cls] = counts.get(cls, 0) + 1
+
+    return out, counts
+
+
 def _scan_exfil_intent(text: str) -> List[Dict[str, Any]]:
     findings: List[Dict[str, Any]] = []
     t = (text or "").lower()
@@ -1047,6 +1147,47 @@ def scan_sensitive(
     _verify_api_key(x_api_key)
     findings = _scan_sensitive_data(payload.text)
     return {"risk_score": _risk_score(findings), "detections": findings}
+
+
+# ---- Path B (Step 2): client-facing redaction --------------------------
+
+@app.get("/scan/redact/targets")
+def list_redact_targets(
+    x_api_key: Optional[str] = Header(default=None, alias="x-api-key"),
+):
+    """Return the catalog of redaction class names the policy builder can
+    use in `redact_classes`. Stable identifiers, ordered alphabetically."""
+    _verify_api_key(x_api_key)
+    return {"targets": REDACT_CLASS_CATALOG}
+
+
+@app.post("/scan/redact")
+def scan_redact(
+    payload: RedactRequest,
+    x_api_key: Optional[str] = Header(default=None, alias="x-api-key"),
+):
+    """Redact requested DLP classes from `text`.
+
+    Response:
+      {
+        "redacted_text": "...with [REDACTED:pii.email] substitutions...",
+        "class_counts":  {"pii.email": 2, "pii.ssn": 1},
+        "any_redacted":  true
+      }
+
+    The response NEVER contains the original matched values. Callers should
+    log only `class_counts` (and optionally a content HMAC — see the
+    redact-telemetry path for that).
+    """
+    _verify_api_key(x_api_key)
+    if not payload.targets:
+        return {"redacted_text": payload.text, "class_counts": {}, "any_redacted": False}
+    redacted, counts = _redact_text(payload.text, payload.targets)
+    return {
+        "redacted_text": redacted,
+        "class_counts": counts,
+        "any_redacted": bool(counts),
+    }
 
 
 @app.post("/scan/output-safety")
