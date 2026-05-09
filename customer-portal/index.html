@@ -12,13 +12,21 @@
 </head>
 <body class="min-h-screen bg-slate-950 text-slate-100">
   <div class="min-h-screen flex">
-    <aside class="hidden w-72 flex-col border-r border-slate-800 bg-slate-950/90 p-4 md:flex">
-      <div class="mb-8 flex items-center gap-3">
-        <img src="CyberArmorAILogo.png" alt="CyberArmor" class="h-10 w-10 rounded-2xl" />
-        <div>
-          <div class="font-semibold leading-tight">CyberArmor</div>
-          <div class="text-xs text-slate-400">Customer Portal</div>
+    <!-- Mobile backdrop (visible only when sidebar open on small screens) -->
+    <div id="sidebarBackdrop" class="fixed inset-0 z-30 hidden bg-slate-950/70 backdrop-blur-sm md:hidden" aria-hidden="true"></div>
+
+    <aside id="sidebar" class="hidden w-72 flex-col border-r border-slate-800 bg-slate-950/90 p-4 md:flex md:relative fixed inset-y-0 left-0 z-40 overflow-y-auto">
+      <div class="mb-8 flex items-center justify-between gap-3">
+        <div class="flex items-center gap-3">
+          <img src="CyberArmorAILogo.png" alt="CyberArmor" class="h-10 w-10 rounded-2xl" />
+          <div>
+            <div class="font-semibold leading-tight">CyberArmor</div>
+            <div class="text-xs text-slate-400">Customer Portal</div>
+          </div>
         </div>
+        <button id="sidebarClose" class="md:hidden rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-100" aria-label="Close menu">
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 5l10 10M15 5L5 15"/></svg>
+        </button>
       </div>
       <nav id="nav" class="space-y-1"></nav>
       <div class="mt-auto rounded-3xl border border-slate-800 bg-slate-900/60 p-4">
@@ -32,12 +40,17 @@
     </aside>
     <main class="min-w-0 flex-1">
       <header class="sticky top-0 z-10 border-b border-slate-800 bg-slate-950/80 backdrop-blur">
-        <div class="flex items-center justify-between px-4 py-4 md:px-8">
-          <div>
-            <h1 id="pageTitle" class="text-xl font-semibold">Customer Portal</h1>
-            <p id="pageSubtitle" class="text-sm text-slate-400">Tenant-scoped workspace</p>
+        <div class="flex items-center justify-between gap-3 px-4 py-4 md:px-8">
+          <div class="flex items-center gap-3 min-w-0">
+            <button id="sidebarOpen" class="md:hidden flex-shrink-0 rounded-xl border border-slate-800 bg-slate-900 p-2 text-slate-200 hover:bg-slate-800" aria-label="Open menu" aria-controls="sidebar" aria-expanded="false">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16"/></svg>
+            </button>
+            <div class="min-w-0">
+              <h1 id="pageTitle" class="text-lg md:text-xl font-semibold truncate">Customer Portal</h1>
+              <p id="pageSubtitle" class="text-xs md:text-sm text-slate-400 truncate">Tenant-scoped workspace</p>
+            </div>
           </div>
-          <span class="hidden rounded-full border border-emerald-900 bg-emerald-950/40 px-3 py-1 text-[11px] uppercase tracking-[0.18em] text-emerald-100 md:inline-flex">Tenant Scoped</span>
+          <span class="hidden rounded-full border border-emerald-900 bg-emerald-950/40 px-3 py-1 text-[11px] uppercase tracking-[0.18em] text-emerald-100 md:inline-flex flex-shrink-0">Tenant Scoped</span>
         </div>
       </header>
       <div id="app" class="px-4 py-6 md:px-8">

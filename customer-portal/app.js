@@ -2288,8 +2288,59 @@ async function logout() {
   window.location.replace("/login.html");
 }
 
+// Mobile sidebar wiring — slide-in drawer on small screens, hidden on md+.
+function setupMobileSidebar() {
+  const sidebar = $("#sidebar");
+  const backdrop = $("#sidebarBackdrop");
+  const openBtn = $("#sidebarOpen");
+  const closeBtn = $("#sidebarClose");
+  if (!sidebar || !backdrop || !openBtn) return;
+
+  function open() {
+    sidebar.classList.remove("hidden");
+    sidebar.classList.add("flex");
+    backdrop.classList.remove("hidden");
+    openBtn.setAttribute("aria-expanded", "true");
+    document.body.style.overflow = "hidden";
+  }
+  function close() {
+    // Only collapse on mobile widths — md+ keeps the sidebar persistent
+    if (window.matchMedia("(min-width: 768px)").matches) return;
+    sidebar.classList.add("hidden");
+    sidebar.classList.remove("flex");
+    backdrop.classList.add("hidden");
+    openBtn.setAttribute("aria-expanded", "false");
+    document.body.style.overflow = "";
+  }
+
+  openBtn.addEventListener("click", open);
+  if (closeBtn) closeBtn.addEventListener("click", close);
+  backdrop.addEventListener("click", close);
+
+  // Close when a nav link is clicked (mobile UX — they navigated, dismiss the drawer)
+  $("#nav").addEventListener("click", (event) => {
+    if (event.target.closest("[data-nav]")) close();
+  });
+
+  // ESC closes
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !backdrop.classList.contains("hidden")) close();
+  });
+
+  // If the viewport grows past md, reset state so the sidebar shows as a fixed column
+  window.addEventListener("resize", () => {
+    if (window.matchMedia("(min-width: 768px)").matches) {
+      backdrop.classList.add("hidden");
+      sidebar.classList.remove("hidden");
+      sidebar.classList.add("flex");
+      document.body.style.overflow = "";
+    }
+  });
+}
+
 async function init() {
   renderNav();
+  setupMobileSidebar();
   $("#logout").addEventListener("click", logout);
   await hydrateSession();
   window.addEventListener("hashchange", route);
