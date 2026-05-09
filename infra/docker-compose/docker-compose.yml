@@ -152,6 +152,11 @@ services:
   detection:
     security_opt: ["no-new-privileges:true"]
     cap_drop: ["ALL"]
+    # detection's run_detection_service.sh chowns the /models volume at
+    # startup (HuggingFace cache lives there; volume can have arbitrary
+    # ownership) and then `su -s /bin/sh appuser -c '...'` to drop
+    # privileges. Same standard user-switching cap set as postgres.
+    cap_add: ["CHOWN", "FOWNER", "DAC_OVERRIDE", "SETGID", "SETUID"]
     build:
       context: ../../
       dockerfile: services/detection/Dockerfile
