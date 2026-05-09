@@ -138,22 +138,37 @@ class OPABackend:
             logger.warning("OPA returned unexpected type for matches: %s", type(raw))
             return None
 
+        # Build a lookup so we can fall back to DB-source fields when OPA's
+        # compiled module doesn't emit them (older Rego compilers, custom
+        # imported policies, etc). This is defense-in-depth — without it,
+        # any field added to the policy schema after the Rego compiler last
+        # shipped is silently lost on the OPA path.
+        by_id: Dict[str, dict] = {p.get("id"): p for p in policies if isinstance(p, dict)}
+
         results: List[PolicyEvalResult] = []
         for item in raw:
             if not isinstance(item, dict):
                 continue
+            pid = str(item.get("policy_id", ""))
+            src = by_id.get(pid) or {}
             results.append(
                 PolicyEvalResult(
                     matched=True,
-                    policy_id=str(item.get("policy_id", "")),
-                    policy_name=str(item.get("policy_name", "")),
-                    action=str(item.get("action", "monitor")),
+                    policy_id=pid,
+                    policy_name=str(item.get("policy_name", "") or src.get("name", "")),
+                    action=str(item.get("action") or src.get("action") or "monitor"),
                     reason="opa_match",
                     matched_rules=[],
                     compliance_frameworks=list(
-                        item.get("compliance_frameworks") or []
+                        item.get("compliance_frameworks")
+                        or src.get("compliance_frameworks")
+                        or []
                     ),
-                    redact_classes=list(item.get("redact_classes") or []),
+                    redact_classes=list(
+                        item.get("redact_classes")
+                        or src.get("redact_classes")
+                        or []
+                    ),
                 )
             )
 
