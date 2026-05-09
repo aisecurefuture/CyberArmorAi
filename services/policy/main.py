@@ -544,6 +544,7 @@ def _opa_sync_policy(record: Policy) -> None:
     try:
         conditions = _coerce_json_field(record.conditions)
         compliance = _coerce_json_field(record.compliance_frameworks) or []
+        redact_classes = _coerce_json_field(getattr(record, "redact_classes", None)) or []
         rego_text = _rego_compiler.compile(
             policy_id=record.id,
             policy_name=record.name,
@@ -552,6 +553,7 @@ def _opa_sync_policy(record: Policy) -> None:
             conditions=conditions,
             priority=record.priority,
             compliance_frameworks=compliance,
+            redact_classes=redact_classes,
         )
         pushed = opa_client.put_policy(record.id, rego_text)
         if pushed:
