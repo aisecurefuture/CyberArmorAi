@@ -593,15 +593,22 @@ class TransparentProxyAddon:
 
     # ---- mitmproxy hooks --------------------------------------------------
 
-    def request(self, flow: http.HTTPFlow) -> None:
-        """Synchronous request hook -- delegates to async pipeline."""
-        self._inc_stat("total_requests")
-        # Run async inspection in the mitmproxy event loop
-        asyncio.ensure_future(self._inspect_request(flow))
+    async def request(self, flow: http.HTTPFlow) -> None:
+        """Async request hook — mitmproxy awaits this before forwarding upstream.
 
-    def response(self, flow: http.HTTPFlow) -> None:
-        """Synchronous response hook -- delegates to async pipeline."""
-        asyncio.ensure_future(self._inspect_response(flow))
+        Path B (Step 2) requires this to be `async def` (not fire-and-forget
+        with asyncio.ensure_future) so that body modifications from the redact
+        enforcement step actually take effect before the request leaves the
+        proxy. Block worked anyway because flow.response can be set before
+        upstream is contacted, but redact needs the modified flow.request.content
+        to be present when mitmproxy serializes the request.
+        """
+        self._inc_stat("total_requests")
+        await self._inspect_request(flow)
+
+    async def response(self, flow: http.HTTPFlow) -> None:
+        """Async response hook — same rationale as request hook."""
+        await self._inspect_response(flow)
 
     def error(self, flow: http.HTTPFlow) -> None:
         """Handle flow errors (e.g. connection resets)."""
