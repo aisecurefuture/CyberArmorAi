@@ -1,4 +1,10 @@
 import { mountPolicyBuilder } from "/shared/policy-builder.js";
+import { mountListView, openModal } from "/shared/list-view.js";
+import {
+  openPolicyDetailModal,
+  openArtifactDetailModal,
+  openReadOnlyModal,
+} from "/shared/edit-modals.js";
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -1080,6 +1086,11 @@ async function viewArtifacts() {
   await refresh();
 }
 
+function maskApiKey(key) {
+  if (!key || key.length <= 7) return key || "";
+  return "•".repeat(Math.max(8, key.length - 7)) + key.slice(-7);
+}
+
 async function viewApiKeys() {
   $("#pageTitle").textContent = "API Keys";
   $("#pageSubtitle").textContent = "Tenant-scoped API keys";
@@ -1088,15 +1099,7 @@ async function viewApiKeys() {
     return;
   }
   const keys = await api("/api/customer/api-keys");
-  const rows = keys.map((key) => `
-    <tr class="border-t border-slate-800">
-      <td class="px-3 py-3 font-mono text-xs">${esc(key.key)}</td>
-      <td class="px-3 py-3">${esc(key.role || "analyst")}</td>
-      <td class="px-3 py-3">${badge(key.active ? "active" : "disabled", key.active ? "green" : "slate")}</td>
-      <td class="px-3 py-3 text-right">${key.active ? `<button class="disableApiKey rounded-xl border border-amber-900 px-3 py-2 text-xs text-amber-100 hover:bg-amber-950" data-key="${esc(key.key)}">Disable</button>` : ""}</td>
-    </tr>
-  `).join("");
-  $("#app").innerHTML = card(`
+  $("#app").innerHTML = `
     <div class="flex flex-col gap-4 lg:flex-row lg:items-start">
       <form id="apiKeyForm" class="min-w-80 rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
         <div class="font-semibold">Create tenant API key</div>
@@ -1109,16 +1112,47 @@ async function viewApiKeys() {
         <button class="mt-3 w-full rounded-2xl bg-cyan-500 px-4 py-3 font-semibold text-slate-950 hover:bg-cyan-400" type="submit">Create key</button>
         <div id="apiKeyMessage" class="mt-3 text-sm text-slate-400"></div>
       </form>
-      <div class="min-w-0 flex-1 overflow-x-auto">
-        <table class="w-full text-left text-sm">
-          <thead class="text-xs uppercase tracking-[0.18em] text-slate-500">
-            <tr><th class="px-3 py-2">Key</th><th class="px-3 py-2">Role</th><th class="px-3 py-2">Status</th><th class="px-3 py-2"></th></tr>
-          </thead>
-          <tbody>${rows || emptyRow("No tenant API keys yet.", 4)}</tbody>
-        </table>
-      </div>
+      <div id="apiKeysList" class="min-w-0 flex-1"></div>
     </div>
-  `);
+  `;
+
+  const rows = Array.isArray(keys) ? keys : [];
+  mountListView({
+    container: $("#apiKeysList"),
+    rows,
+    filename: `api_keys_${session.tenant_id || "tenant"}`,
+    columns: [
+      { key: "key",    label: "Key (masked)", type: "text",
+        value: (r) => maskApiKey(r.key),
+        render: (r) => `<span class="font-mono text-xs">${esc(maskApiKey(r.key))}</span>`,
+        csv: (r) => maskApiKey(r.key) },
+      { key: "role",   label: "Role",   type: "enum",
+        value: (r) => r.role || "analyst" },
+      { key: "active", label: "Status", type: "enum",
+        value: (r) => r.active ? "active" : "disabled",
+        render: (r) => badge(r.active ? "active" : "disabled", r.active ? "green" : "slate") },
+      { key: "created_at", label: "Created", type: "date",
+        value: (r) => r.created_at || "",
+        render: (r) => `<span class="text-xs text-slate-400">${esc(fmt(r.created_at))}</span>` },
+      { key: "actions", label: "", type: "text", sortable: false, filterable: false,
+        value: () => "",
+        render: (r) => r.active ? `<button class="disableApiKey rounded-xl border border-amber-900 px-2.5 py-1 text-xs text-amber-100 hover:bg-amber-950" data-key="${esc(r.key)}" type="button" onclick="event.stopPropagation()">Disable</button>` : "",
+        csv: () => "" },
+    ],
+    onRowClick: (apiKey) => openReadOnlyModal({
+      title: `API Key — ${maskApiKey(apiKey.key)}`,
+      record: { ...apiKey, key: maskApiKey(apiKey.key) },
+      fields: [
+        { key: "key",        label: "Key (masked)" },
+        { key: "role",       label: "Role" },
+        { key: "active",     label: "Status",  render: (r) => badge(r.active ? "active" : "disabled", r.active ? "green" : "slate") },
+        { key: "tenant_id",  label: "Tenant" },
+        { key: "created_at", label: "Created", render: (r) => esc(fmt(r.created_at)) },
+      ],
+    }),
+    emptyMessage: "No tenant API keys yet.",
+  });
+
   $("#apiKeyForm").addEventListener("submit", async (event) => {
     event.preventDefault();
     $("#apiKeyMessage").className = "mt-3 text-sm text-slate-400";
@@ -1129,15 +1163,16 @@ async function viewApiKeys() {
         body: JSON.stringify({ role: $("#apiKeyRole").value }),
       });
       $("#apiKeyMessage").className = "mt-3 text-sm text-emerald-300";
-      $("#apiKeyMessage").textContent = `Created key ${created.key}`;
-      await viewApiKeys();
+      $("#apiKeyMessage").textContent = `Created key ${created.key} — copy now, it will be masked on reload.`;
+      // Don't refresh immediately — let user copy the unmasked value first.
     } catch (error) {
       $("#apiKeyMessage").className = "mt-3 text-sm text-rose-300";
       $("#apiKeyMessage").textContent = error.message;
     }
   });
   document.querySelectorAll(".disableApiKey").forEach((button) => {
-    button.addEventListener("click", async () => {
+    button.addEventListener("click", async (ev) => {
+      ev.stopPropagation();
       await api(`/api/customer/api-keys/${encodeURIComponent(button.dataset.key)}/disable`, { method: "PATCH" });
       await viewApiKeys();
     });
@@ -1454,15 +1489,47 @@ async function viewPolicies() {
   $("#pageTitle").textContent = "Policies";
   $("#pageSubtitle").textContent = "Tenant-scoped policy rules";
   const policies = await api("/api/customer/policies");
-  const rows = (Array.isArray(policies) ? policies : []).map((p) => `
-    <tr class="border-t border-slate-800">
-      <td class="px-3 py-3 font-mono text-xs">${esc(p.name || p.id || "")}</td>
-      <td class="px-3 py-3">${esc(p.description || "")}</td>
-      <td class="px-3 py-3">${badge(p.action || "monitor", p.action === "block" ? "amber" : "cyan")}</td>
-      <td class="px-3 py-3">${badge(p.enabled === false ? "disabled" : "enabled", p.enabled === false ? "slate" : "green")}</td>
-    </tr>
-  `).join("");
-  $("#app").innerHTML = card(`<table class="w-full text-left text-sm"><thead class="text-xs uppercase tracking-[0.18em] text-slate-500"><tr><th class="px-3 py-2">Name</th><th class="px-3 py-2">Description</th><th class="px-3 py-2">Action</th><th class="px-3 py-2">Status</th></tr></thead><tbody>${rows || emptyRow("No policies found for this tenant.", 4)}</tbody></table>`);
+  const rows = Array.isArray(policies) ? policies : [];
+  $("#app").innerHTML = `<div id="policiesList"></div>`;
+  const canEdit = session.role === "tenant_admin";
+  mountListView({
+    container: $("#policiesList"),
+    rows,
+    filename: `policies_${session.tenant_id || "tenant"}`,
+    columns: [
+      { key: "name",        label: "Name",        type: "text",
+        value: (r) => r.name || r.id || "",
+        render: (r) => `<span class="font-mono text-xs">${esc(r.name || r.id || "")}</span>` },
+      { key: "description", label: "Description", type: "text",
+        value: (r) => r.description || "" },
+      { key: "action",      label: "Action",      type: "enum",
+        enumValues: ["allow","warn","redact","sandbox","block","isolate","route","audit-only","monitor"],
+        value: (r) => r.action || "monitor",
+        render: (r) => badge(r.action || "monitor", r.action === "block" ? "amber" : "cyan") },
+      { key: "priority",    label: "Priority",    type: "number",
+        value: (r) => r.priority ?? 100 },
+      { key: "status",      label: "Status",      type: "enum",
+        enumValues: ["enabled","disabled"],
+        value: (r) => r.enabled === false ? "disabled" : "enabled",
+        render: (r) => badge(r.enabled === false ? "disabled" : "enabled", r.enabled === false ? "slate" : "green") },
+      { key: "updated_at",  label: "Updated",     type: "date",
+        value: (r) => r.updated_at || r.created_at || "",
+        render: (r) => `<span class="text-xs text-slate-400">${esc(fmt(r.updated_at || r.created_at))}</span>` },
+    ],
+    onRowClick: (policy) => openPolicyDetailModal({
+      policy,
+      tenantId: session.tenant_id,
+      fetchJson: api,
+      paths: {
+        artifacts: "/api/customer/artifacts",
+        createPolicy: "/api/customer/policies",
+        updatePolicy: "/api/customer/policies/id/{id}",
+      },
+      canEdit,
+      onSaved: async () => { await viewPolicies(); },
+    }),
+    emptyMessage: "No policies found for this tenant.",
+  });
 }
 
 async function viewEndpoints() {
@@ -1475,17 +1542,8 @@ async function viewEndpoints() {
   const endpointPackages = (Array.isArray(catalog) ? catalog : []).filter((pkg) =>
     ["agent", "extension", "browser_extension"].includes(pkg.category)
   );
-  const rows = agents.map((a) => `
-    <tr class="border-t border-slate-800">
-      <td class="px-3 py-3 font-mono text-xs">${esc(a.agent_id || "")}</td>
-      <td class="px-3 py-3">${esc(a.hostname || "")}</td>
-      <td class="px-3 py-3">${esc(a.username || "")}</td>
-      <td class="px-3 py-3">${badge(a.status || "unknown", a.status === "running" ? "green" : "slate")}</td>
-      <td class="px-3 py-3 text-xs text-slate-400">${esc(fmt(a.last_seen))}</td>
-    </tr>
-  `).join("");
   $("#app").innerHTML = `
-    ${card(`<table class="w-full text-left text-sm"><thead class="text-xs uppercase tracking-[0.18em] text-slate-500"><tr><th class="px-3 py-2">Agent ID</th><th class="px-3 py-2">Hostname</th><th class="px-3 py-2">User</th><th class="px-3 py-2">Status</th><th class="px-3 py-2">Last Seen</th></tr></thead><tbody>${rows || emptyRow("No endpoints found for this tenant.", 5)}</tbody></table>`)}
+    <div id="endpointsList"></div>
     <div class="mt-4"></div>
     ${card(`
       <div class="flex items-center justify-between gap-3">
@@ -1518,6 +1576,49 @@ async function viewEndpoints() {
   `;
   bindCustomerBootstrapButtons();
   bindCustomerBootstrapHelpButtons();
+
+  mountListView({
+    container: $("#endpointsList"),
+    rows: Array.isArray(agents) ? agents : [],
+    filename: `endpoints_${session.tenant_id || "tenant"}`,
+    columns: [
+      { key: "agent_id",  label: "Agent ID", type: "text",
+        value: (r) => r.agent_id || "",
+        render: (r) => `<span class="font-mono text-xs">${esc(r.agent_id || "")}</span>` },
+      { key: "hostname",  label: "Hostname", type: "text",
+        value: (r) => r.hostname || "" },
+      { key: "username",  label: "User",     type: "text",
+        value: (r) => r.username || "" },
+      { key: "platform",  label: "Platform", type: "enum",
+        value: (r) => r.platform || r.os || "" },
+      { key: "status",    label: "Status",   type: "enum",
+        value: (r) => r.status || "unknown",
+        render: (r) => badge(r.status || "unknown", r.status === "running" ? "green" : "slate") },
+      { key: "version",   label: "Version",  type: "text",
+        value: (r) => r.version || "" },
+      { key: "last_seen", label: "Last Seen", type: "date",
+        value: (r) => r.last_seen || "",
+        render: (r) => `<span class="text-xs text-slate-400">${esc(fmt(r.last_seen))}</span>` },
+    ],
+    onRowClick: (agent) => openReadOnlyModal({
+      title: `Endpoint — ${agent.hostname || agent.agent_id || ""}`,
+      record: agent,
+      fields: [
+        { key: "agent_id",  label: "Agent ID" },
+        { key: "hostname",  label: "Hostname" },
+        { key: "username",  label: "User" },
+        { key: "platform",  label: "Platform" },
+        { key: "os",        label: "OS" },
+        { key: "version",   label: "Agent Version" },
+        { key: "status",    label: "Status",  render: (r) => badge(r.status || "unknown", r.status === "running" ? "green" : "slate") },
+        { key: "last_seen", label: "Last Seen", render: (r) => esc(fmt(r.last_seen)) },
+        { key: "registered_at", label: "Registered", render: (r) => esc(fmt(r.registered_at)) },
+        { key: "ip_address", label: "IP" },
+        { key: "tenant_id", label: "Tenant" },
+      ],
+    }),
+    emptyMessage: "No endpoints found for this tenant.",
+  });
 }
 
 async function viewShadowAi() {
@@ -1607,46 +1708,124 @@ async function viewTelemetry() {
   $("#pageTitle").textContent = "Telemetry";
   $("#pageSubtitle").textContent = "Recent tenant-scoped events";
   const events = await api("/api/customer/telemetry?limit=250");
-  const rows = events.map((event) => `
-    <tr class="border-t border-slate-800">
-      <td class="px-3 py-3 text-xs text-slate-400">${esc(fmt(event.occurred_at || event.created_at))}</td>
-      <td class="px-3 py-3">${badge(event.source || "unknown", "slate")}</td>
-      <td class="px-3 py-3">${esc(event.event_type || "")}</td>
-      <td class="px-3 py-3">${esc(event.hostname || event.agent_id || "")}</td>
-      <td class="px-3 py-3 max-w-lg truncate text-xs text-slate-400">${esc(JSON.stringify(event.payload || {}))}</td>
-    </tr>
-  `).join("");
-  $("#app").innerHTML = card(`<table class="w-full text-left text-sm"><thead class="text-xs uppercase tracking-[0.18em] text-slate-500"><tr><th class="px-3 py-2">Time</th><th class="px-3 py-2">Source</th><th class="px-3 py-2">Event</th><th class="px-3 py-2">Asset</th><th class="px-3 py-2">Details</th></tr></thead><tbody>${rows || emptyRow("No telemetry found for this tenant.", 5)}</tbody></table>`);
+  $("#app").innerHTML = `<div id="telemetryList"></div>`;
+  mountListView({
+    container: $("#telemetryList"),
+    rows: Array.isArray(events) ? events : [],
+    filename: `telemetry_${session.tenant_id || "tenant"}`,
+    columns: [
+      { key: "occurred_at", label: "Time",  type: "date",
+        value: (r) => r.occurred_at || r.created_at || "",
+        render: (r) => `<span class="text-xs text-slate-400">${esc(fmt(r.occurred_at || r.created_at))}</span>` },
+      { key: "source",      label: "Source", type: "enum",
+        value: (r) => r.source || "unknown",
+        render: (r) => badge(r.source || "unknown", "slate") },
+      { key: "event_type",  label: "Event", type: "text",
+        value: (r) => r.event_type || "" },
+      { key: "asset",       label: "Asset", type: "text",
+        value: (r) => r.hostname || r.agent_id || "" },
+      { key: "payload",     label: "Payload", type: "number", sortable: false,
+        value: (r) => r.payload ? Object.keys(r.payload).length : 0,
+        render: (r) => r.payload && Object.keys(r.payload).length ? `<span class="text-xs text-slate-400">${Object.keys(r.payload).length} field${Object.keys(r.payload).length === 1 ? "" : "s"}</span>` : `<span class="text-slate-700">—</span>`,
+        csv: (r) => JSON.stringify(r.payload || {}) },
+    ],
+    onRowClick: (event) => openReadOnlyModal({
+      title: `Telemetry Event — ${event.event_type || ""}`,
+      record: event,
+      fields: [
+        { key: "occurred_at", label: "Time",   render: (r) => esc(fmt(r.occurred_at || r.created_at)) },
+        { key: "source",      label: "Source" },
+        { key: "event_type",  label: "Event Type" },
+        { key: "hostname",    label: "Hostname" },
+        { key: "agent_id",    label: "Agent" },
+        { key: "user_id",     label: "User" },
+        { key: "tenant_id",   label: "Tenant" },
+      ],
+    }),
+    emptyMessage: "No telemetry found for this tenant.",
+  });
 }
 
 async function viewAudit() {
   $("#pageTitle").textContent = "Audit Logs";
   $("#pageSubtitle").textContent = "Tenant-scoped audit trail";
   const events = await api("/api/customer/audit?limit=250");
-  const rows = events.map((event) => `
-    <tr class="border-t border-slate-800">
-      <td class="px-3 py-3 text-xs text-slate-400">${esc(fmt(event.created_at))}</td>
-      <td class="px-3 py-3">${esc(event.method || "")} ${esc(event.path || "")}</td>
-      <td class="px-3 py-3">${badge(event.status || "", String(event.status || "").startsWith("2") ? "green" : "amber")}</td>
-      <td class="px-3 py-3 max-w-md truncate text-xs text-slate-400">${esc(JSON.stringify(event.meta || {}))}</td>
-    </tr>
-  `).join("");
-  $("#app").innerHTML = card(`<table class="w-full text-left text-sm"><thead class="text-xs uppercase tracking-[0.18em] text-slate-500"><tr><th class="px-3 py-2">Time</th><th class="px-3 py-2">Action</th><th class="px-3 py-2">Status</th><th class="px-3 py-2">Details</th></tr></thead><tbody>${rows || emptyRow("No audit logs found for this tenant.", 4)}</tbody></table>`);
+  $("#app").innerHTML = `<div id="auditList"></div>`;
+  mountListView({
+    container: $("#auditList"),
+    rows: Array.isArray(events) ? events : [],
+    filename: `audit_${session.tenant_id || "tenant"}`,
+    columns: [
+      { key: "created_at", label: "Time",   type: "date",
+        value: (r) => r.created_at || "",
+        render: (r) => `<span class="text-xs text-slate-400">${esc(fmt(r.created_at))}</span>` },
+      { key: "method",     label: "Method", type: "enum",
+        value: (r) => r.method || "" },
+      { key: "path",       label: "Path",   type: "text",
+        value: (r) => r.path || "" },
+      { key: "status",     label: "Status", type: "enum",
+        value: (r) => String(r.status || ""),
+        render: (r) => badge(String(r.status || ""), String(r.status || "").startsWith("2") ? "green" : "amber") },
+      { key: "meta_size",  label: "Meta",   type: "number", sortable: false,
+        value: (r) => r.meta ? Object.keys(r.meta).length : 0,
+        render: (r) => r.meta && Object.keys(r.meta).length ? `<span class="text-xs text-slate-400">${Object.keys(r.meta).length} field${Object.keys(r.meta).length === 1 ? "" : "s"}</span>` : `<span class="text-slate-700">—</span>`,
+        csv: (r) => JSON.stringify(r.meta || {}) },
+    ],
+    onRowClick: (event) => openReadOnlyModal({
+      title: `Audit Event — ${fmt(event.created_at)}`,
+      record: event,
+      fields: [
+        { key: "created_at", label: "Time",    render: (r) => esc(fmt(r.created_at)) },
+        { key: "method",     label: "Method" },
+        { key: "path",       label: "Path" },
+        { key: "status",     label: "Status",  render: (r) => badge(String(r.status || ""), String(r.status || "").startsWith("2") ? "green" : "amber") },
+        { key: "actor",      label: "Actor" },
+        { key: "tenant_id",  label: "Tenant" },
+        { key: "ip",         label: "IP" },
+      ],
+    }),
+    emptyMessage: "No audit logs found for this tenant.",
+  });
 }
 
 async function viewIncidents() {
   $("#pageTitle").textContent = "Incidents";
   $("#pageSubtitle").textContent = "Tenant-scoped incidents";
   const incidents = await api("/api/customer/incidents?limit=250");
-  const rows = incidents.map((incident) => `
-    <tr class="border-t border-slate-800">
-      <td class="px-3 py-3 font-mono text-xs">${esc(incident.request_id || "")}</td>
-      <td class="px-3 py-3">${esc(incident.event_type || "")}</td>
-      <td class="px-3 py-3">${badge(incident.decision || "unknown", incident.decision === "block" ? "amber" : "cyan")}</td>
-      <td class="px-3 py-3 text-xs text-slate-400">${esc(fmt(incident.received_at))}</td>
-    </tr>
-  `).join("");
-  $("#app").innerHTML = card(`<table class="w-full text-left text-sm"><thead class="text-xs uppercase tracking-[0.18em] text-slate-500"><tr><th class="px-3 py-2">Request</th><th class="px-3 py-2">Type</th><th class="px-3 py-2">Decision</th><th class="px-3 py-2">Received</th></tr></thead><tbody>${rows || emptyRow("No incidents found for this tenant.", 4)}</tbody></table>`);
+  $("#app").innerHTML = `<div id="incidentsList"></div>`;
+  mountListView({
+    container: $("#incidentsList"),
+    rows: Array.isArray(incidents) ? incidents : [],
+    filename: `incidents_${session.tenant_id || "tenant"}`,
+    columns: [
+      { key: "request_id",  label: "Request",  type: "text",
+        value: (r) => r.request_id || "",
+        render: (r) => `<span class="font-mono text-xs">${esc(r.request_id || "")}</span>` },
+      { key: "event_type",  label: "Type",     type: "text",
+        value: (r) => r.event_type || "" },
+      { key: "decision",    label: "Decision", type: "enum",
+        value: (r) => r.decision || "unknown",
+        render: (r) => badge(r.decision || "unknown", r.decision === "block" ? "amber" : "cyan") },
+      { key: "received_at", label: "Received", type: "date",
+        value: (r) => r.received_at || "",
+        render: (r) => `<span class="text-xs text-slate-400">${esc(fmt(r.received_at))}</span>` },
+    ],
+    onRowClick: (incident) => openReadOnlyModal({
+      title: `Incident — ${incident.request_id || ""}`,
+      record: incident,
+      fields: [
+        { key: "request_id", label: "Request ID" },
+        { key: "event_type", label: "Type" },
+        { key: "decision",   label: "Decision",  render: (r) => badge(r.decision || "unknown", r.decision === "block" ? "amber" : "cyan") },
+        { key: "received_at",label: "Received",  render: (r) => esc(fmt(r.received_at)) },
+        { key: "tenant_id",  label: "Tenant" },
+        { key: "user_id",    label: "User" },
+        { key: "agent_id",   label: "Agent" },
+        { key: "source",     label: "Source" },
+      ],
+    }),
+    emptyMessage: "No incidents found for this tenant.",
+  });
 }
 
 async function viewProviders() {

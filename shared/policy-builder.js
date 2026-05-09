@@ -181,6 +181,7 @@ export function mountPolicyBuilder(options) {
   if (!paths || !paths.createPolicy) throw new Error("mountPolicyBuilder: paths.createPolicy required");
 
   const state = {
+    id: initialPolicy?.id || null,
     name: initialPolicy?.name || "",
     description: initialPolicy?.description || "",
     action: initialPolicy?.action || "monitor",
@@ -415,8 +416,13 @@ export function mountPolicyBuilder(options) {
         }
         msg.textContent = "Saving...";
         try {
-          const saved = await fetchJson(paths.createPolicy, {
-            method: "POST",
+          const editingId = state.id || (initialPolicy && initialPolicy.id);
+          const isUpdate = Boolean(editingId && paths.updatePolicy);
+          const url = isUpdate
+            ? paths.updatePolicy.replace("{id}", encodeURIComponent(editingId))
+            : paths.createPolicy;
+          const saved = await fetchJson(url, {
+            method: isUpdate ? "PUT" : "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(json),
           });
@@ -471,6 +477,7 @@ export function mountPolicyBuilder(options) {
     getJson: () => buildPolicyJson(),
     setPolicy: (policy) => {
       Object.assign(state, {
+        id: policy?.id || null,
         name: policy?.name || "",
         description: policy?.description || "",
         action: policy?.action || "monitor",

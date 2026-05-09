@@ -4,6 +4,8 @@
 //   #/incidents, #/telemetry, #/api-keys, #/reports
 
 import { mountPolicyBuilder } from "/shared/policy-builder.js";
+import { mountListView, openModal } from "/shared/list-view.js";
+import { openPolicyDetailModal, openReadOnlyModal } from "/shared/edit-modals.js";
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
@@ -593,28 +595,52 @@ async function viewTenants() {
     const readinessRows = await Promise.all(tenantRows.slice(0, 25).map(async (t) => {
       const id = t.tenant_id || t.id || "";
       const ready = await fetchTenantReadiness(id).catch(() => null);
-      return { tenant: t, ready };
+      return { ...t, _readinessScore: ready?.readiness?.score ?? null, _readinessRaw: ready };
     }));
-    const rows = readinessRows.map(({ tenant: t, ready }) => {
-      const id = t.tenant_id || t.id || "";
-      const score = ready?.readiness?.score ?? null;
-      return `
-        <tr class="hover:bg-slate-900/50">
-          <td class="py-2 px-3 font-mono text-xs">${esc(id)}</td>
-          <td class="py-2 px-3">${esc(t.name||"")}</td>
-          <td class="py-2 px-3">${score === null ? badge("unknown", "slate") : badge(`${score}%`, readinessTone(score))}<div class="mt-1 min-w-28">${score === null ? "" : readinessBar(score)}</div></td>
-          <td class="py-2 px-3">${esc(t.created_at||"")}</td>
-          <td class="py-2 px-3">${badge(t.status||"active","green")}</td>
-        </tr>
-      `;
-    }).join("");
-    app.innerHTML = card(`
+    app.innerHTML = `
       <div class="flex items-center justify-between mb-4">
         <div class="font-semibold">Tenants</div>
         <button onclick="document.dispatchEvent(new Event('createTenant'))" class="text-xs px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500">+ New Tenant</button>
       </div>
-      ${tableWrap(th("Tenant ID")+th("Name")+th("Readiness")+th("Created")+th("Status"), rows || `<tr><td colspan="5">${emptyState("No tenants found")}</td></tr>`)}
-    `);
+      <div id="tenantsList"></div>
+    `;
+    mountListView({
+      container: $("#tenantsList"),
+      rows: readinessRows,
+      filename: "tenants",
+      columns: [
+        { key: "tenant_id", label: "Tenant ID", type: "text",
+          value: (r) => r.tenant_id || r.id || "",
+          render: (r) => `<span class="font-mono text-xs">${esc(r.tenant_id || r.id || "")}</span>` },
+        { key: "name", label: "Name", type: "text",
+          value: (r) => r.name || "" },
+        { key: "readiness", label: "Readiness", type: "number",
+          value: (r) => r._readinessScore ?? -1,
+          render: (r) => r._readinessScore === null
+            ? badge("unknown", "slate")
+            : `${badge(`${r._readinessScore}%`, readinessTone(r._readinessScore))}<div class="mt-1 min-w-28">${readinessBar(r._readinessScore)}</div>`,
+          csv: (r) => r._readinessScore === null ? "" : String(r._readinessScore) },
+        { key: "created_at", label: "Created", type: "date",
+          value: (r) => r.created_at || "" },
+        { key: "status", label: "Status", type: "enum",
+          value: (r) => r.status || "active",
+          render: (r) => badge(r.status || "active", "green") },
+      ],
+      onRowClick: (t) => openReadOnlyModal({
+        title: `Tenant — ${t.name || t.tenant_id || ""}`,
+        record: t,
+        fields: [
+          { key: "tenant_id", label: "Tenant ID" },
+          { key: "name", label: "Name" },
+          { key: "status", label: "Status", render: (r) => badge(r.status || "active", "green") },
+          { key: "_readinessScore", label: "Readiness", render: (r) => r._readinessScore === null ? badge("unknown", "slate") : badge(`${r._readinessScore}%`, readinessTone(r._readinessScore)) },
+          { key: "created_at", label: "Created" },
+          { key: "billing_plan", label: "Billing Plan" },
+          { key: "primary_contact", label: "Primary Contact" },
+        ],
+      }),
+      emptyMessage: "No tenants found",
+    });
   } catch (e) { app.innerHTML = card(`<div class="text-rose-400">Error: ${esc(e.message)}</div>`); }
 }
 
@@ -639,21 +665,9 @@ async function viewPolicies() {
       ? `<span class="text-xs px-2 py-1 rounded-lg bg-emerald-900/40 text-emerald-200 border border-emerald-900" title="OPA is active — policies evaluated via Rego">OPA</span>`
       : `<span class="text-xs px-2 py-1 rounded-lg bg-amber-900/40 text-amber-200 border border-amber-900" title="OPA unreachable — falling back to Python engine">Python fallback</span>`;
 
-    const rows = (Array.isArray(policies) ? policies : []).map(p => {
-      const enabled = p.enabled !== false;
-      const action = p.action || "monitor";
-      const actionBadge = action === "block" ? badge(action,"red") : action === "warn" ? badge(action,"amber") : badge(action,"green");
-      return `<tr class="hover:bg-slate-900/50">
-        <td class="py-2 px-3 font-mono text-xs">${esc(p.name||p.id||"")}</td>
-        <td class="py-2 px-3 text-xs">${esc(p.description||"")}</td>
-        <td class="py-2 px-3">${actionBadge}</td>
-        <td class="py-2 px-3">${badge(String(p.priority||0),"slate")}</td>
-        <td class="py-2 px-3"><button class="text-xs px-2 py-1 rounded-lg ${enabled?"bg-emerald-900/40 text-emerald-200 border border-emerald-900":"bg-slate-800 text-slate-400 border border-slate-700"}" data-toggle-policy="${esc(p.name||p.id)}">${enabled?"Enabled":"Disabled"}</button></td>
-        <td class="py-2 px-3">${(p.compliance_frameworks||[]).map(f=>badge(f,"cyan")).join(" ")}</td>
-      </tr>`;
-    }).join("");
+    const polRows = Array.isArray(policies) ? policies : [];
 
-    app.innerHTML = card(`
+    app.innerHTML = `
       <div class="flex items-center justify-between mb-4">
         <div class="flex items-center gap-3">
           <div class="font-semibold">Policies for ${esc(tenant)}</div>
@@ -665,12 +679,57 @@ async function viewPolicies() {
           <button id="exportPolicies" class="text-xs px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700">Export JSON</button>
         </div>
       </div>
-      ${tableWrap(th("Name")+th("Description")+th("Action")+th("Priority")+th("Status")+th("Frameworks"), rows || `<tr><td colspan="6">${emptyState("No policies")}</td></tr>`)}
-    `);
+      <div id="adminPoliciesList"></div>
+    `;
+
+    const polFetchJson = (url, init) => apiFetch(url, { ...(init || {}), headers: { ...(init?.headers || {}), ...polHdrs } });
+
+    mountListView({
+      container: $("#adminPoliciesList"),
+      rows: polRows,
+      filename: `policies_${tenant}`,
+      columns: [
+        { key: "name", label: "Name", type: "text",
+          value: (p) => p.name || p.id || "",
+          render: (p) => `<span class="font-mono text-xs">${esc(p.name || p.id || "")}</span>` },
+        { key: "description", label: "Description", type: "text",
+          value: (p) => p.description || "" },
+        { key: "action", label: "Action", type: "enum",
+          enumValues: ["allow","warn","redact","sandbox","block","isolate","route","audit-only","monitor"],
+          value: (p) => p.action || "monitor",
+          render: (p) => { const a = p.action || "monitor"; return a === "block" ? badge(a,"red") : a === "warn" ? badge(a,"amber") : badge(a,"green"); } },
+        { key: "priority", label: "Priority", type: "number",
+          value: (p) => p.priority ?? 0 },
+        { key: "enabled", label: "Status", type: "enum",
+          enumValues: ["enabled","disabled"],
+          value: (p) => p.enabled !== false ? "enabled" : "disabled",
+          render: (p) => {
+            const enabled = p.enabled !== false;
+            return `<button class="text-xs px-2 py-1 rounded-lg ${enabled?"bg-emerald-900/40 text-emerald-200 border border-emerald-900":"bg-slate-800 text-slate-400 border border-slate-700"}" data-toggle-policy="${esc(p.name||p.id)}" onclick="event.stopPropagation()">${enabled?"Enabled":"Disabled"}</button>`;
+          } },
+        { key: "frameworks", label: "Frameworks", type: "text", sortable: false,
+          value: (p) => (p.compliance_frameworks || []).join(","),
+          render: (p) => (p.compliance_frameworks || []).map(f => badge(f,"cyan")).join(" ") },
+      ],
+      onRowClick: (policy) => openPolicyDetailModal({
+        policy,
+        tenantId: tenant,
+        fetchJson: polFetchJson,
+        paths: {
+          artifacts: `${polBase}/artifacts/${tenant}`,
+          createPolicy: `${polBase}/policies`,
+          updatePolicy: `${polBase}/policies/id/{id}`,
+        },
+        canEdit: true,
+        onSaved: () => viewPolicies(),
+      }),
+      emptyMessage: "No policies",
+    });
 
     // Toggle handlers — policy_id is the policy name (no tenant in path)
     $$("[data-toggle-policy]").forEach(btn => {
-      btn.onclick = async () => {
+      btn.onclick = async (ev) => {
+        ev.stopPropagation();
         const name = btn.dataset.togglePolicy;
         try {
           await apiFetch(`${polBase}/policies/${name}/toggle`, { method: "PATCH", headers: polHdrs });
@@ -1469,30 +1528,16 @@ async function viewEndpoints() {
     return os !== "";
   }).length;
 
-  const rows = agents.map(a => {
-    const ls = a.last_seen ? new Date(a.last_seen) : null;
-    const lastSeenStr = ls
-      ? ls.toLocaleDateString() + " " + ls.toLocaleTimeString()
-      : "—";
+  // Decorate agents with normalized fields for sort/filter
+  const decorated = agents.map(a => {
     const online = isOnline(a);
-    // platform may be a flat string (from heartbeat) or a nested dict (from register)
-    const tenant = a.tenant_id || "—";
-    const osStr   = a.os || (a.platform && typeof a.platform === "object" ? a.platform.os : a.platform) || "—";
+    const tenant = a.tenant_id || "";
+    const osStr = a.os || (a.platform && typeof a.platform === "object" ? a.platform.os : a.platform) || "";
     const hostname = a.hostname || (a.platform && typeof a.platform === "object" ? a.platform.hostname : "") || "";
-    const username = a.username || (a.platform && typeof a.platform === "object" ? a.platform.username : "") || a.user_id || "—";
-    const version  = a.version || a.agent_version || "—";
-    return `<tr>
-      <td class="py-2 px-3 font-mono text-xs" title="${esc(hostname)}">${esc(a.agent_id||a.id||"")}</td>
-      <td class="py-2 px-3 text-xs">${esc(tenant)}</td>
-      <td class="py-2 px-3 text-xs">Desktop Agent</td>
-      <td class="py-2 px-3 text-xs">${esc(hostname || "—")}</td>
-      <td class="py-2 px-3 text-xs">${esc(username)}</td>
-      <td class="py-2 px-3 text-xs">${esc(osStr)}</td>
-      <td class="py-2 px-3 text-xs font-mono">${esc(version)}</td>
-      <td class="py-2 px-3 text-xs">${esc(lastSeenStr)}</td>
-      <td class="py-2 px-3">${badge(online ? "online" : "offline", online ? "green" : "rose")}</td>
-    </tr>`;
-  }).join("");
+    const username = a.username || (a.platform && typeof a.platform === "object" ? a.platform.username : "") || a.user_id || "";
+    const version = a.version || a.agent_version || "";
+    return { ...a, _online: online, _tenant: tenant, _os: osStr, _hostname: hostname, _username: username, _version: version };
+  });
 
   app.innerHTML = `
     ${card(`
@@ -1507,10 +1552,7 @@ async function viewEndpoints() {
         ${metricCard("Total Registered", agents.length,              "cyan",   "all tenants")}
         ${metricCard("Offline",          agents.length - onlineCount,"rose",   "no recent heartbeat")}
       </div>
-      ${tableWrap(
-        th("Agent ID") + th("Tenant") + th("Type") + th("Hostname") + th("Username") + th("Platform") + th("Agent Version") + th("Last Seen") + th("Status"),
-        rows || `<tr><td colspan="9">${emptyState("No endpoints registered yet. Deploy the agent installer and point it at this control plane.")}</td></tr>`
-      )}
+      <div id="adminEndpointsList"></div>
     `)}
     <div class="mt-4"></div>
     ${card(`
@@ -1544,6 +1586,47 @@ async function viewEndpoints() {
   $("#endpointRefreshBtn")?.addEventListener("click", viewEndpoints);
   bindAdminBootstrapButtons();
   bindAdminBootstrapHelpButtons();
+
+  mountListView({
+    container: $("#adminEndpointsList"),
+    rows: decorated,
+    filename: "endpoints",
+    columns: [
+      { key: "agent_id", label: "Agent ID", type: "text",
+        value: (a) => a.agent_id || a.id || "",
+        render: (a) => `<span class="font-mono text-xs">${esc(a.agent_id || a.id || "")}</span>` },
+      { key: "_tenant",   label: "Tenant",   type: "text" },
+      { key: "_hostname", label: "Hostname", type: "text" },
+      { key: "_username", label: "Username", type: "text" },
+      { key: "_os",       label: "Platform", type: "enum" },
+      { key: "_version",  label: "Version",  type: "text",
+        render: (a) => `<span class="font-mono text-xs">${esc(a._version || "—")}</span>` },
+      { key: "last_seen", label: "Last Seen", type: "date",
+        value: (a) => a.last_seen || "",
+        render: (a) => esc(a.last_seen ? new Date(a.last_seen).toLocaleString() : "—") },
+      { key: "_online",   label: "Status",   type: "enum",
+        enumValues: ["online","offline"],
+        value: (a) => a._online ? "online" : "offline",
+        render: (a) => badge(a._online ? "online" : "offline", a._online ? "green" : "rose") },
+    ],
+    onRowClick: (a) => openReadOnlyModal({
+      title: `Endpoint — ${a._hostname || a.agent_id || ""}`,
+      record: a,
+      fields: [
+        { key: "agent_id", label: "Agent ID" },
+        { key: "_tenant",  label: "Tenant" },
+        { key: "_hostname", label: "Hostname" },
+        { key: "_username", label: "Username" },
+        { key: "_os",       label: "OS / Platform" },
+        { key: "_version",  label: "Agent Version" },
+        { key: "_online",   label: "Status",   render: (r) => badge(r._online ? "online" : "offline", r._online ? "green" : "rose") },
+        { key: "last_seen", label: "Last Seen", render: (r) => esc(r.last_seen ? new Date(r.last_seen).toLocaleString() : "—") },
+        { key: "registered_at", label: "Registered" },
+        { key: "ip_address", label: "IP" },
+      ],
+    }),
+    emptyMessage: "No endpoints registered yet. Deploy the agent installer and point it at this control plane.",
+  });
 }
 
 // ---------- Shadow AI ----------
@@ -1942,21 +2025,50 @@ async function viewIncidents() {
   app.innerHTML = loading();
   try {
     const incidents = await apiFetch(`${svcUrl("cp")}/incidents/${getTenant()}`, { headers: svcHeaders("cp") });
-    const rows = (Array.isArray(incidents) ? incidents : []).map(i => {
-      const sev = i.severity || "medium";
-      const sevBadge = sev === "critical" ? badge(sev,"red") : sev === "high" ? badge(sev,"amber") : badge(sev,"slate");
-      return `<tr class="hover:bg-slate-900/50">
-        <td class="py-2 px-3 font-mono text-xs">${esc(i.id||i.request_id||"")}</td>
-        <td class="py-2 px-3">${esc(i.type||i.event_type||i.title||"")}</td>
-        <td class="py-2 px-3">${sevBadge}</td>
-        <td class="py-2 px-3">${badge(i.status||"open", i.status==="resolved"?"green":"amber")}</td>
-        <td class="py-2 px-3 text-xs">${esc(i.created_at||i.received_at||"")}</td>
-      </tr>`;
-    }).join("");
-    app.innerHTML = card(`
+    const rows = Array.isArray(incidents) ? incidents : [];
+    app.innerHTML = `
       <div class="font-semibold mb-4">Incidents</div>
-      ${tableWrap(th("ID")+th("Type")+th("Severity")+th("Status")+th("Created"), rows || `<tr><td colspan="5">${emptyState("No incidents")}</td></tr>`)}
-    `);
+      <div id="adminIncidentsList"></div>
+    `;
+    mountListView({
+      container: $("#adminIncidentsList"),
+      rows,
+      filename: `incidents_${getTenant()}`,
+      columns: [
+        { key: "id",       label: "ID",        type: "text",
+          value: (i) => i.id || i.request_id || "",
+          render: (i) => `<span class="font-mono text-xs">${esc(i.id || i.request_id || "")}</span>` },
+        { key: "type",     label: "Type",      type: "text",
+          value: (i) => i.type || i.event_type || i.title || "" },
+        { key: "severity", label: "Severity",  type: "enum",
+          enumValues: ["critical","high","medium","low"],
+          value: (i) => i.severity || "medium",
+          render: (i) => { const s = i.severity || "medium"; return s === "critical" ? badge(s,"red") : s === "high" ? badge(s,"amber") : badge(s,"slate"); } },
+        { key: "status",   label: "Status",    type: "enum",
+          value: (i) => i.status || "open",
+          render: (i) => badge(i.status || "open", i.status === "resolved" ? "green" : "amber") },
+        { key: "created_at", label: "Created", type: "date",
+          value: (i) => i.created_at || i.received_at || "",
+          render: (i) => `<span class="text-xs">${esc(i.created_at || i.received_at || "")}</span>` },
+      ],
+      onRowClick: (incident) => openReadOnlyModal({
+        title: `Incident — ${incident.id || incident.request_id || ""}`,
+        record: incident,
+        fields: [
+          { key: "id", label: "ID" },
+          { key: "request_id", label: "Request ID" },
+          { key: "type", label: "Type" },
+          { key: "severity", label: "Severity" },
+          { key: "status", label: "Status" },
+          { key: "created_at", label: "Created" },
+          { key: "tenant_id", label: "Tenant" },
+          { key: "user_id", label: "User" },
+          { key: "agent_id", label: "Agent" },
+          { key: "decision", label: "Decision" },
+        ],
+      }),
+      emptyMessage: "No incidents",
+    });
   } catch (e) { app.innerHTML = card(`<div class="text-rose-400">Error: ${esc(e.message)}</div>`); }
 }
 
@@ -2112,24 +2224,50 @@ async function viewAudit() {
   app.innerHTML = loading();
   try {
     const logs = await apiFetch(`${svcUrl("cp")}/audit?limit=100`, { headers: svcHeaders("cp") });
-    const rows = (Array.isArray(logs) ? logs : []).map(l => `
-      <tr class="hover:bg-slate-900/50">
-        <td class="py-2 px-3 text-xs">${esc(l.timestamp||l.created_at||"")}</td>
-        <td class="py-2 px-3">${esc(l.tenant_id||"")}</td>
-        <td class="py-2 px-3">${esc(l.action||l.event||(l.method&&l.path?`${l.method} ${l.path}${l.status?" → "+l.status:""}`:""))}</td>
-        <td class="py-2 px-3 text-xs max-w-xs truncate">${esc(JSON.stringify(l.details||l.metadata||l.meta||""))}</td>
-        <td class="py-2 px-3">${esc(l.user||l.actor||l.principal||"")}</td>
-      </tr>
-    `).join("");
-    app.innerHTML = card(`
+    const rows = Array.isArray(logs) ? logs : [];
+    app.innerHTML = `
       <div class="flex items-center justify-between mb-4">
         <div class="font-semibold">Audit Logs</div>
         <button id="refreshAudit" class="text-xs px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700">Refresh</button>
       </div>
-      ${tableWrap(th("Timestamp")+th("Tenant")+th("Action")+th("Details")+th("Actor"), rows || `<tr><td colspan="5">${emptyState("No audit logs")}</td></tr>`)}
-    `);
-    const refreshBtn = $("#refreshAudit");
-    if (refreshBtn) refreshBtn.onclick = viewAudit;
+      <div id="adminAuditList"></div>
+    `;
+    $("#refreshAudit").onclick = viewAudit;
+    mountListView({
+      container: $("#adminAuditList"),
+      rows,
+      filename: "audit_logs",
+      columns: [
+        { key: "timestamp", label: "Timestamp", type: "date",
+          value: (l) => l.timestamp || l.created_at || "",
+          render: (l) => `<span class="text-xs">${esc(l.timestamp || l.created_at || "")}</span>` },
+        { key: "tenant_id", label: "Tenant", type: "text" },
+        { key: "action", label: "Action", type: "text",
+          value: (l) => l.action || l.event || (l.method && l.path ? `${l.method} ${l.path}${l.status ? " → " + l.status : ""}` : "") },
+        { key: "actor", label: "Actor", type: "text",
+          value: (l) => l.user || l.actor || l.principal || "" },
+        { key: "details_size", label: "Details", type: "number", sortable: false,
+          value: (l) => { const d = l.details || l.metadata || l.meta; return d ? Object.keys(d).length : 0; },
+          render: (l) => { const d = l.details || l.metadata || l.meta; const n = d ? Object.keys(d).length : 0; return n ? `<span class="text-xs text-slate-400">${n} field${n === 1 ? "" : "s"}</span>` : `<span class="text-slate-700">—</span>`; },
+          csv: (l) => JSON.stringify(l.details || l.metadata || l.meta || "") },
+      ],
+      onRowClick: (log) => openReadOnlyModal({
+        title: `Audit Log — ${log.timestamp || log.created_at || ""}`,
+        record: log,
+        fields: [
+          { key: "timestamp", label: "Timestamp" },
+          { key: "tenant_id", label: "Tenant" },
+          { key: "action",    label: "Action" },
+          { key: "method",    label: "Method" },
+          { key: "path",      label: "Path" },
+          { key: "status",    label: "Status" },
+          { key: "actor",     label: "Actor" },
+          { key: "user",      label: "User" },
+          { key: "ip",        label: "IP" },
+        ],
+      }),
+      emptyMessage: "No audit logs",
+    });
   } catch (e) { app.innerHTML = card(`<div class="text-rose-400">Error: ${esc(e.message)}</div>`); }
 }
 
@@ -2180,54 +2318,63 @@ async function viewAgents() {
     const resp = await apiFetch(`${base}/agents?tenant_id=${getTenant()}&limit=100`, { headers: hdrs });
     const list = Array.isArray(resp) ? resp : (resp.agents || []);
 
-    const rows = list.map(a => {
-      const statusBadge = a.status === "active" ? badge("active","green") : badge(a.status||"unknown","slate");
-      const caps = a.capabilities || a.allowed_tools || [];
-      const capsBadges  = caps.slice(0,3).map(c => badge(c,"indigo")).join(" ");
-      const displayName = a.display_name || a.name || "—";
-      return `<tr class="hover:bg-slate-900/50">
-        <td class="py-2 px-3 font-mono text-xs">${esc(a.agent_id||a.id||"")}</td>
-        <td class="py-2 px-3 font-medium">${esc(displayName)}</td>
-        <td class="py-2 px-3">${statusBadge}</td>
-        <td class="py-2 px-3">${badge(a.trust_level||"standard","amber")}</td>
-        <td class="py-2 px-3">${capsBadges}</td>
-        <td class="py-2 px-3 text-xs text-slate-400">${a.created_at ? new Date(a.created_at).toLocaleString() : ""}</td>
-        <td class="py-2 px-3">
-          <div class="flex gap-1">
-            <button class="text-xs px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700" data-agent-token="${esc(a.agent_id||a.id)}">Token</button>
-            <button class="text-xs px-2 py-1 rounded-lg bg-rose-900/40 text-rose-200 border border-rose-900" data-agent-delete="${esc(a.agent_id||a.id)}">Revoke</button>
-          </div>
-        </td>
-      </tr>`;
-    }).join("");
-
     app.innerHTML = `
       <div class="flex items-center justify-between mb-4">
         <div class="text-sm text-slate-400">${list.length} agent${list.length !== 1 ? "s" : ""} registered</div>
         <div class="flex gap-2">
-          <input id="agentSearch" placeholder="Search agents..." class="text-sm px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 w-48 focus:outline-none focus:ring-2 focus:ring-indigo-600" />
           <button id="registerAgent" class="text-sm px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500">+ Register Agent</button>
         </div>
       </div>
-      ${card(`
-        <div class="font-semibold mb-3">Agent Registry</div>
-        ${tableWrap(
-          th("Agent ID")+th("Name")+th("Status")+th("Trust Level")+th("Capabilities")+th("Created")+th("Actions"),
-          rows || `<tr><td colspan="7">${emptyState("No agents registered yet")}</td></tr>`
-        )}
-      `)}
+      <div id="adminAgentsList"></div>
       <div id="agentPanel" class="mt-4"></div>
     `;
 
-    // Live search
-    const si = $("#agentSearch");
-    if (si) si.oninput = () => {
-      const q = si.value.toLowerCase();
-      $$("[data-agent-token]").forEach(btn => {
-        const row = btn.closest("tr");
-        if (row) row.style.display = row.textContent.toLowerCase().includes(q) ? "" : "none";
-      });
-    };
+    mountListView({
+      container: $("#adminAgentsList"),
+      rows: list,
+      filename: "agents",
+      columns: [
+        { key: "agent_id", label: "Agent ID", type: "text",
+          value: (a) => a.agent_id || a.id || "",
+          render: (a) => `<span class="font-mono text-xs">${esc(a.agent_id || a.id || "")}</span>` },
+        { key: "display_name", label: "Name", type: "text",
+          value: (a) => a.display_name || a.name || "" },
+        { key: "status", label: "Status", type: "enum",
+          value: (a) => a.status || "unknown",
+          render: (a) => a.status === "active" ? badge("active","green") : badge(a.status || "unknown","slate") },
+        { key: "trust_level", label: "Trust", type: "enum",
+          value: (a) => a.trust_level || "standard",
+          render: (a) => badge(a.trust_level || "standard","amber") },
+        { key: "capabilities", label: "Capabilities", type: "text", sortable: false,
+          value: (a) => (a.capabilities || a.allowed_tools || []).join(","),
+          render: (a) => (a.capabilities || a.allowed_tools || []).slice(0,3).map(c => badge(c,"indigo")).join(" ") },
+        { key: "created_at", label: "Created", type: "date",
+          value: (a) => a.created_at || "",
+          render: (a) => `<span class="text-xs text-slate-400">${esc(a.created_at ? new Date(a.created_at).toLocaleString() : "")}</span>` },
+        { key: "actions", label: "Actions", type: "text", sortable: false, filterable: false,
+          value: () => "",
+          render: (a) => `<div class="flex gap-1">
+            <button class="text-xs px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700" data-agent-token="${esc(a.agent_id||a.id)}" onclick="event.stopPropagation()">Token</button>
+            <button class="text-xs px-2 py-1 rounded-lg bg-rose-900/40 text-rose-200 border border-rose-900" data-agent-delete="${esc(a.agent_id||a.id)}" onclick="event.stopPropagation()">Revoke</button>
+          </div>`,
+          csv: () => "" },
+      ],
+      onRowClick: (a) => openReadOnlyModal({
+        title: `Agent — ${a.display_name || a.name || a.agent_id || ""}`,
+        record: a,
+        fields: [
+          { key: "agent_id", label: "Agent ID" },
+          { key: "display_name", label: "Display Name" },
+          { key: "status", label: "Status" },
+          { key: "trust_level", label: "Trust Level" },
+          { key: "capabilities", label: "Capabilities", render: (r) => (r.capabilities || r.allowed_tools || []).map(c => badge(c,"indigo")).join(" ") },
+          { key: "tenant_id", label: "Tenant" },
+          { key: "created_at", label: "Created", render: (r) => esc(r.created_at ? new Date(r.created_at).toLocaleString() : "") },
+          { key: "owner", label: "Owner" },
+        ],
+      }),
+      emptyMessage: "No agents registered yet",
+    });
 
     // Issue token
     $$("[data-agent-token]").forEach(btn => {
