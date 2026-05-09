@@ -1183,11 +1183,19 @@ def evaluate_policy(
     _: Annotated[None, Depends(verify_api_key)],
 ):
     # Backward-compatible endpoint preserved for existing clients.
+    # Path B: legacy_action maps ALLOW_WITH_REDACTION → "redact" so the
+    # runtime can branch on it. The full `modifiers` dict is now passed
+    # through verbatim so callers see redaction_targets, matched_rules,
+    # limits, and compliance_frameworks without us having to whitelist
+    # each field as the schema grows.
     decision = _evaluate_policy_decision(db, body)
     legacy_action = {
         "DENY": "block",
         "REQUIRE_APPROVAL": "warn",
         "QUARANTINE": "block",
+        "ALLOW_WITH_REDACTION": "redact",
+        "ALLOW_WITH_LIMITS": "allow",
+        "ALLOW_WITH_AUDIT_ONLY": "allow",
     }.get(decision.decision, "allow")
     return {
         "action": legacy_action,
@@ -1196,6 +1204,8 @@ def evaluate_policy(
         "policy_name": decision.policy_name,
         "matched_rules": decision.modifiers.get("matched_rules", []),
         "compliance_frameworks": decision.modifiers.get("compliance_frameworks", []),
+        "redaction_targets": decision.modifiers.get("redaction_targets", []),
+        "modifiers": decision.modifiers,
         "decision": decision.decision,
         "req_id": decision.req_id,
         "risk_score": decision.risk_score,
