@@ -3,6 +3,8 @@ services:
   # Open Policy Agent: evaluates Rego policies pushed by the policy service.
   # API: http://opa:8181/v1/  (internal only; not exposed to host by default)
   opa:
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     image: openpolicyagent/opa:latest-static
     command:
       - "run"
@@ -32,6 +34,8 @@ services:
   #             count: all
   #             capabilities: [gpu]
   ollama:
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     image: ollama/ollama:latest
     ports: ["${HOST_BIND:-0.0.0.0}:11434:11434"]
     volumes:
@@ -50,6 +54,8 @@ services:
 
   # --- Data Stores ---
   postgres:
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     image: postgres:15-alpine
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cyberarmor}
@@ -63,6 +69,8 @@ services:
       retries: 5
 
   redis:
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     image: redis:7-alpine
     ports: ["${HOST_BIND:-0.0.0.0}:${REDIS_HOST_PORT:-6379}:6379"]
     healthcheck:
@@ -71,6 +79,8 @@ services:
       retries: 5
 
   openbao:
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     image: openbao/openbao-ubi:latest
     command: ["server", "-dev", "-dev-root-token-id=${OPENBAO_DEV_ROOT_TOKEN}"]
     environment:
@@ -88,6 +98,8 @@ services:
 
   # --- Core Services ---
   control-plane:
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     build:
       context: ../../
       dockerfile: services/control-plane/Dockerfile
@@ -107,6 +119,8 @@ services:
       retries: 3
 
   policy:
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     build:
       context: ../../
       dockerfile: services/policy/Dockerfile
@@ -127,6 +141,8 @@ services:
       retries: 3
 
   detection:
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     build:
       context: ../../
       dockerfile: services/detection/Dockerfile
@@ -160,6 +176,8 @@ services:
       retries: 3
 
   response:
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     build:
       context: ../../
       dockerfile: services/response/Dockerfile
@@ -172,6 +190,8 @@ services:
       retries: 3
 
   url-trust-gate:
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     build:
       context: ../../
       dockerfile: services/url-trust-gate/Dockerfile
@@ -207,6 +227,8 @@ services:
     # the default network. The worker has the egress-out role.
 
   detonation-worker:
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     build:
       context: ../../
       dockerfile: services/detonation-worker/Dockerfile
@@ -241,6 +263,8 @@ services:
           cpus: "1.5"
 
   identity:
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     build:
       context: ../../
       dockerfile: services/identity/Dockerfile
@@ -252,6 +276,8 @@ services:
       retries: 3
 
   siem-connector:
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     build:
       context: ../../
       dockerfile: services/siem-connector/Dockerfile
@@ -263,6 +289,8 @@ services:
       retries: 3
 
   compliance:
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     build:
       context: ../../
       dockerfile: services/compliance/Dockerfile
@@ -275,6 +303,8 @@ services:
 
   # --- AISR Runtime (single decision endpoint) ---
   runtime:
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     build:
       context: ../../
       dockerfile: services/runtime/Dockerfile
@@ -295,6 +325,8 @@ services:
 
   # --- Agents ---
   proxy-agent:
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     build:
       context: ../../
       dockerfile: agents/proxy-agent/Dockerfile
@@ -311,6 +343,8 @@ services:
 
   # --- Transparent Proxy ---
   transparent-proxy:
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     build:
       context: ../../
       dockerfile: services/proxy/Dockerfile
@@ -333,6 +367,8 @@ services:
 
   # --- Demo Target (mock LLM endpoint) ---
   llm-mock:
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     build:
       context: ../../
       dockerfile: services/llm-mock/Dockerfile
@@ -344,6 +380,8 @@ services:
 
   # --- Demo Client (run via: docker compose --profile demo run --rm demo-client) ---
   demo-client:
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     build:
       context: ../../
       dockerfile: clients/demo-client/Dockerfile
@@ -359,6 +397,8 @@ services:
 
   # --- Demo Web Page (sales-friendly: open in browser) ---
   demo-web:
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     build:
       context: ../../
       dockerfile: clients/demo-web/Dockerfile
@@ -377,6 +417,8 @@ services:
 
   # --- AI Identity Control Plane Services ---
   agent-identity:
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     build:
       context: ../../
       dockerfile: services/agent-identity/Dockerfile
@@ -393,6 +435,8 @@ services:
       retries: 3
 
   ai-router:
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     build:
       context: ../../
       dockerfile: services/ai-router/Dockerfile
@@ -410,6 +454,8 @@ services:
       retries: 3
 
   audit:
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     build:
       context: ../../
       dockerfile: services/audit/Dockerfile
@@ -426,6 +472,8 @@ services:
       retries: 3
 
   integration-control:
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     build:
       context: ../../
       dockerfile: services/integration-control/Dockerfile
@@ -437,6 +485,8 @@ services:
       retries: 3
 
   secrets-service:
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     build:
       context: ../../
       dockerfile: services/secrets-service/Dockerfile
@@ -455,6 +505,8 @@ services:
 
   # --- Dashboard ---
   dashboard-auth:
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     build:
       context: ../../
       dockerfile: services/dashboard-auth/Dockerfile
@@ -484,6 +536,8 @@ services:
       retries: 3
 
   dashboard:
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     image: nginx:alpine
     depends_on: [dashboard-auth, control-plane, policy, proxy-agent, identity, siem-connector, compliance, agent-identity, ai-router, audit, secrets-service]
     ports: ["${HOST_BIND:-0.0.0.0}:3000:80"]
@@ -493,6 +547,8 @@ services:
       - ./nginx.dashboard.conf:/etc/nginx/conf.d/default.conf:ro
 
   customer-portal:
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     image: nginx:alpine
     depends_on: [control-plane]
     ports: ["${HOST_BIND:-0.0.0.0}:${CUSTOMER_PORTAL_HOST_PORT:-3001}:80"]
@@ -502,6 +558,8 @@ services:
       - ./nginx.customer-portal.conf:/etc/nginx/conf.d/default.conf:ro
 
   marketing:
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     build:
       context: ../../marketing
       dockerfile: Dockerfile
@@ -519,6 +577,8 @@ services:
       retries: 3
 
   docs:
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     build:
       context: ../../docs-site
       dockerfile: Dockerfile
@@ -529,6 +589,9 @@ services:
       retries: 3
 
   caddy:
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    cap_add: ["NET_BIND_SERVICE"]
     image: caddy:2-alpine
     profiles: ["prod"]
     depends_on:
