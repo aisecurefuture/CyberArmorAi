@@ -1189,10 +1189,52 @@ app.add_middleware(
 )
 
 
+def _preflight_upstream_dns() -> None:
+    """Resolve every upstream service hostname at boot.
+
+    Logs a summary line per dependency. Resolution failures are logged at
+    ERROR but do NOT abort startup — that would create a chicken-and-egg
+    problem with compose ordering. The point is to surface env-var typos
+    (e.g. ``http://policy-service:8001`` when the actual hostname is
+    ``policy``) immediately at boot instead of having every downstream
+    request silently fail until someone correlates "0 policies" with a
+    proxy warning buried in the logs.
+    """
+    import socket
+    from urllib.parse import urlsplit
+
+    deps = [
+        ("POLICY_SERVICE_URL",      os.getenv("POLICY_SERVICE_URL", "http://policy:8001")),
+        ("DETECTION_SERVICE_URL",   os.getenv("DETECTION_SERVICE_URL", "http://detection:8002")),
+        ("RESPONSE_SERVICE_URL",    os.getenv("RESPONSE_SERVICE_URL", "http://response:8003")),
+        ("AUDIT_SERVICE_URL",       os.getenv("AUDIT_SERVICE_URL", "http://audit:8011")),
+        ("SECRETS_SERVICE_URL",     os.getenv("SECRETS_SERVICE_URL", "http://secrets-service:8013")),
+        ("COMPLIANCE_URL",          COMPLIANCE_URL),
+        ("INTEGRATION_CONTROL_URL", INTEGRATION_CONTROL_URL),
+    ]
+    failures: List[str] = []
+    for name, url in deps:
+        host = urlsplit(url).hostname or "?"
+        try:
+            ip = socket.gethostbyname(host)
+            logger.info("preflight_dns_ok %s host=%s ip=%s", name, host, ip)
+        except Exception as exc:
+            failures.append(f"{name}={url} ({exc})")
+            logger.error("preflight_dns_fail %s host=%s err=%s", name, host, exc)
+    if failures:
+        logger.error(
+            "preflight_dns_summary FAILED count=%d deps=%s — these calls will fail at runtime; check the env file and compose service names",
+            len(failures), failures,
+        )
+    else:
+        logger.info("preflight_dns_summary OK count=%d", len(deps))
+
+
 @app.on_event("startup")
 def on_startup():
     wait_for_db()
     init_db()
+    _preflight_upstream_dns()
 
 
 @app.middleware("http")
@@ -2723,6 +2765,12 @@ def proxy_policies_for_tenant(
     The endpoint agent is configured with a single control_plane_url and calls
     GET /policies/{tenant_id} to sync its local policy cache.  The actual
     policies are stored in the Policy Service (port 8001), so we proxy here.
+
+    Returns 502 on upstream failure rather than swallowing errors as an empty
+    list — silent success on failure caused agents to see "0 policies" while
+    real policies existed in the database (see commit history for prior bug).
+    Successful proxy calls log the policy count at INFO so operators can
+    tell from one log line whether the chain is healthy end-to-end.
     """
     _dev_or_key_ok(x_api_key)
     policy_url = os.getenv("POLICY_SERVICE_URL", "http://policy:8001")
@@ -2733,13 +2781,23 @@ def proxy_policies_for_tenant(
             headers=build_auth_headers(policy_url, policy_key),
             timeout=5.0,
         )
-        if resp.status_code == 200:
-            return resp.json()
-        logger.warning("policy_proxy status=%s tenant=%s", resp.status_code, tenant_id)
-        return []
     except Exception as exc:
         logger.warning("policy_proxy_error tenant=%s err=%s", tenant_id, exc)
-        return []
+        raise HTTPException(status_code=502, detail="policy service unavailable")
+    if resp.status_code != 200:
+        logger.warning(
+            "policy_proxy_upstream_error status=%s tenant=%s body=%s",
+            resp.status_code, tenant_id, resp.text[:200],
+        )
+        raise HTTPException(status_code=502, detail=f"policy service returned {resp.status_code}")
+    try:
+        data = resp.json()
+    except Exception as exc:
+        logger.warning("policy_proxy_decode_error tenant=%s err=%s", tenant_id, exc)
+        raise HTTPException(status_code=502, detail="policy service returned invalid JSON")
+    count = len(data) if isinstance(data, list) else "?"
+    logger.info("policy_proxy_ok tenant=%s count=%s", tenant_id, count)
+    return data
 
 
 class IncidentIngest(BaseModel):
