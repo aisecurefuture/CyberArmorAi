@@ -485,7 +485,7 @@ def _build_admin_proxy_targets() -> dict[str, AdminProxyTarget]:
             key="auditGraph",
             service="audit",
             name="Audit Graph",
-            url=_target_env_url("AUDIT_URL", "http://audit:8011"),
+            url=_target_env_url("AUDIT_SERVICE_URL", "http://audit:8011"),
             api_key=_target_env_secret("AUDIT_API_SECRET", "change-me-audit"),
         ),
         AdminProxyTarget(
