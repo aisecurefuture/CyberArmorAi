@@ -33,6 +33,41 @@ const OPERATORS = [
   "is_empty", "is_not_empty",
 ];
 
+// Scope-aware action vocabulary. Each scope only offers actions that the
+// matching enforcer actually honours today — preventing the silent-failure
+// trap where a customer authors `redact` but the agent quietly downgrades
+// to `allow` because its enforcer doesn't know what redact means.
+//
+// Keep this in sync with:
+//   - services/policy/main.py            (general/proxy/endpoint/identity)
+//   - agents/endpoint-agent/policy_enforcer.py
+//   - services/url-trust-gate/main.py    (url-trust-gate scope)
+const SCOPES = ["general", "proxy", "endpoint", "identity", "url-trust-gate"];
+
+const ACTIONS_BY_SCOPE = {
+  // General-engine enforcers (policy service + endpoint agent + proxy)
+  // currently only honour these four. Adding redact/sandbox/isolate here
+  // without backend support would silently downgrade to allow.
+  general:          ["allow", "monitor", "warn", "block"],
+  proxy:            ["allow", "monitor", "warn", "block"],
+  endpoint:         ["allow", "monitor", "warn", "block"],
+  identity:         ["allow", "monitor", "warn", "block"],
+  // URL Trust Gate has its own enforcement pipeline that natively supports
+  // these six actions (regex pattern in services/url-trust-gate/main.py).
+  "url-trust-gate": ["allow", "warn", "redact", "sandbox", "block", "isolate"],
+};
+
+function actionsForScope(scope) {
+  return ACTIONS_BY_SCOPE[scope] || ACTIONS_BY_SCOPE.general;
+}
+
+function _scopeHint(scope) {
+  if (scope === "url-trust-gate") {
+    return "URL Trust Gate enforces six actions: allow, warn, redact, sandbox, block, isolate.";
+  }
+  return "Enforced actions today: allow, monitor, warn, block. Redact/sandbox/isolate are URL-Trust-Gate scope only.";
+}
+
 // Fields that the proxy/ext-authz integrations actually emit, grouped
 // for the dropdown. Operators can still enter a custom field if their
 // context carries something unusual.
@@ -277,15 +312,16 @@ export function mountPolicyBuilder(options) {
             <input id="cpb_description" class="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-sm" placeholder="What this policy does" value="${esc(state.description)}" ${readOnly ? "disabled" : ""} />
           </div>
           <div class="space-y-1">
-            <label class="text-xs text-slate-300">Action</label>
-            <select id="cpb_action" class="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-sm" ${readOnly ? "disabled" : ""}>
-              ${["monitor", "warn", "block", "allow"].map((a) => `<option value="${a}" ${state.action === a ? "selected" : ""}>${a}</option>`).join("")}
-            </select>
-          </div>
-          <div class="space-y-1">
             <label class="text-xs text-slate-300">Scope</label>
             <select id="cpb_scope" class="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-sm" ${readOnly ? "disabled" : ""}>
-              ${["general", "proxy", "endpoint", "identity"].map((s) => `<option value="${s}" ${state.scope === s ? "selected" : ""}>${s}</option>`).join("")}
+              ${SCOPES.map((s) => `<option value="${s}" ${state.scope === s ? "selected" : ""}>${s}</option>`).join("")}
+            </select>
+            <div class="text-[11px] text-slate-500" id="cpb_scope_hint">${esc(_scopeHint(state.scope))}</div>
+          </div>
+          <div class="space-y-1">
+            <label class="text-xs text-slate-300">Action</label>
+            <select id="cpb_action" class="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-sm" ${readOnly ? "disabled" : ""}>
+              ${actionsForScope(state.scope).map((a) => `<option value="${a}" ${state.action === a ? "selected" : ""}>${a}</option>`).join("")}
             </select>
           </div>
           <div class="space-y-1">
@@ -383,7 +419,24 @@ export function mountPolicyBuilder(options) {
     const actionSel = container.querySelector("#cpb_action");
     if (actionSel) actionSel.addEventListener("change", (event) => { state.action = event.target.value; });
     const scopeSel = container.querySelector("#cpb_scope");
-    if (scopeSel) scopeSel.addEventListener("change", (event) => { state.scope = event.target.value; });
+    if (scopeSel) scopeSel.addEventListener("change", (event) => {
+      state.scope = event.target.value;
+      // Rebuild the action options for the new scope. If the previously
+      // selected action isn't valid for this scope, snap to the first
+      // option so we never persist an unenforceable action.
+      const validActions = actionsForScope(state.scope);
+      if (!validActions.includes(state.action)) {
+        state.action = validActions[0];
+      }
+      const actSel = container.querySelector("#cpb_action");
+      if (actSel) {
+        actSel.innerHTML = validActions
+          .map((a) => `<option value="${a}" ${state.action === a ? "selected" : ""}>${a}</option>`)
+          .join("");
+      }
+      const hint = container.querySelector("#cpb_scope_hint");
+      if (hint) hint.textContent = _scopeHint(state.scope);
+    });
     const priorityInput = container.querySelector("#cpb_priority");
     if (priorityInput) priorityInput.addEventListener("input", (event) => { state.priority = parseInt(event.target.value || "100", 10); });
     const frameworksInput = container.querySelector("#cpb_frameworks");
