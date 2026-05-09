@@ -56,6 +56,13 @@ services:
   postgres:
     security_opt: ["no-new-privileges:true"]
     cap_drop: ["ALL"]
+    # Postgres entrypoint runs as root to chown/chmod the data dir, then
+    # drops to the postgres user via gosu. Five caps are the minimum set:
+    #   CHOWN          chown data dir to postgres user
+    #   FOWNER         chmod the data dir
+    #   DAC_OVERRIDE   read existing files owned by other users during init
+    #   SETGID/SETUID  drop privileges via gosu
+    cap_add: ["CHOWN", "FOWNER", "DAC_OVERRIDE", "SETGID", "SETUID"]
     image: postgres:15-alpine
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cyberarmor}
@@ -71,6 +78,8 @@ services:
   redis:
     security_opt: ["no-new-privileges:true"]
     cap_drop: ["ALL"]
+    # Redis entrypoint switches from root to the redis user via su-exec.
+    cap_add: ["SETGID", "SETUID"]
     image: redis:7-alpine
     ports: ["${HOST_BIND:-0.0.0.0}:${REDIS_HOST_PORT:-6379}:6379"]
     healthcheck:
