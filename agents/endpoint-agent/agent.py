@@ -66,6 +66,36 @@ logger = logging.getLogger("cyberarmor.endpoint_agent")
 # Constants
 # ---------------------------------------------------------------------------
 AGENT_VERSION = "1.0.0"
+
+
+def _read_build_info() -> Dict[str, str]:
+    """Read BUILD_INFO.json shipped alongside this agent (written by the
+    control-plane package builder). Returns {sha, built_at, package_key}
+    when available, empty values otherwise. Used to surface the install
+    SHA in heartbeats so the dashboard can show per-endpoint version
+    drift without operator detective work.
+    """
+    info: Dict[str, str] = {"sha": "unknown", "built_at": "", "package_key": ""}
+    try:
+        # BUILD_INFO.json sits next to agent.py in the installed package
+        candidates = [
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "BUILD_INFO.json"),
+            os.path.join(os.getcwd(), "BUILD_INFO.json"),
+        ]
+        for path in candidates:
+            if os.path.isfile(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    info["sha"] = str(data.get("sha") or "unknown")
+                    info["built_at"] = str(data.get("built_at") or "")
+                    info["package_key"] = str(data.get("package_key") or "")
+                    break
+    except Exception:
+        pass
+    return info
+
+
+AGENT_BUILD = _read_build_info()
 HEARTBEAT_INTERVAL_SECONDS = 30
 POLICY_SYNC_INTERVAL_SECONDS = 300
 TELEMETRY_FLUSH_INTERVAL_SECONDS = 10
@@ -484,6 +514,12 @@ class EndpointAgent:
             "username": self._platform_info.get("username", ""),
             "os": self._platform_info.get("os", ""),
             "version": AGENT_VERSION,
+            # Build SHA from BUILD_INFO.json (written by the control-plane
+            # package builder). Lets the dashboard show per-endpoint version
+            # drift — "this fleet of 47 endpoints is on sha=a5b3136 but
+            # endpoint-X is still on sha=b83087b, suggest re-download".
+            "build_sha": AGENT_BUILD.get("sha", "unknown"),
+            "build_at": AGENT_BUILD.get("built_at", ""),
         }
         try:
             client = await self._ensure_http_client()

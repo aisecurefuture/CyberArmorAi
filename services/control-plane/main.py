@@ -677,6 +677,37 @@ def _issue_bootstrap_token(
     return row, plaintext_token
 
 
+_BUILD_INFO_CACHE: Optional[Dict[str, str]] = None
+
+
+def _build_info() -> Dict[str, str]:
+    """Return cached {sha, built_at} identifying the source tree the
+    control-plane is serving packages from. Used to stamp downloaded
+    agent ZIPs so support can correlate "what version is this customer
+    running?" without operator detective work.
+
+    Cached at process start — `git rev-parse` doesn't change without a
+    container restart since the bind-mount tracks the host repo.
+    """
+    global _BUILD_INFO_CACHE
+    if _BUILD_INFO_CACHE is not None:
+        return _BUILD_INFO_CACHE
+    sha = "unknown"
+    try:
+        import subprocess
+        sha = subprocess.check_output(
+            ["git", "-C", str(CYBERARMOR_DISTRIBUTION_ROOT), "rev-parse", "--short", "HEAD"],
+            text=True, stderr=subprocess.DEVNULL, timeout=2.0,
+        ).strip() or "unknown"
+    except Exception:
+        pass
+    _BUILD_INFO_CACHE = {
+        "sha": sha,
+        "built_at": datetime.now(timezone.utc).isoformat(),
+    }
+    return _BUILD_INFO_CACHE
+
+
 def _zip_directory_response(spec: Dict[str, Any], tenant_id: str) -> StreamingResponse:
     package_path: Path = spec["package_path"]
     archive_name = spec["filename"]
@@ -684,11 +715,14 @@ def _zip_directory_response(spec: Dict[str, Any], tenant_id: str) -> StreamingRe
     root_prefix = f"{package_path.name}/"
     ignore_dirs = {"node_modules", ".git", "__pycache__", ".pytest_cache", "dist", "build"}
     ignore_suffixes = {".pyc", ".pyo"}
+    build = _build_info()
 
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         readme = "\n".join([
             f"CyberArmor package: {spec['title']}",
             f"Tenant: {tenant_id}",
+            f"Build SHA: {build['sha']}",
+            f"Built at:  {build['built_at']}",
             "",
             "This package intentionally does not contain a long-lived API key.",
             "Generate a one-time bootstrap token from the customer portal or admin dashboard",
@@ -700,6 +734,19 @@ def _zip_directory_response(spec: Dict[str, Any], tenant_id: str) -> StreamingRe
             *[f"  - {name}" for name in spec.get("bootstrap_env", [])],
         ]) + "\n"
         archive.writestr(f"{root_prefix}BOOTSTRAP_README.txt", readme)
+        # Machine-readable build info — agents read this on boot and include
+        # the SHA in their heartbeats so the dashboard can show per-endpoint
+        # version drift at a glance.
+        archive.writestr(
+            f"{root_prefix}BUILD_INFO.json",
+            json.dumps({
+                "package_key": spec.get("package_key", ""),
+                "title": spec.get("title", ""),
+                "tenant_id": tenant_id,
+                "sha": build["sha"],
+                "built_at": build["built_at"],
+            }, indent=2) + "\n",
+        )
         for file_path in package_path.rglob("*"):
             if not file_path.is_file():
                 continue
