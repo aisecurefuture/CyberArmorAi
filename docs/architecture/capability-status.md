@@ -1,6 +1,6 @@
 # CyberArmor Platform — Capability Status
 
-> Last updated: 2026-05-07. This table is the authoritative, buyer-facing
+> Last updated: 2026-05-10. This table is the authoritative, buyer-facing
 > statement of what works, what requires configuration, and what is on the
 > roadmap. Update it whenever a capability ships or its status changes.
 
@@ -53,6 +53,10 @@
 | Policy evaluation engine (OPA-backed, Python fallback) | **Working** | `services/policy/` |
 | Tenant-scoped policy rules, artifacts, API-key flows | **Working** | |
 | Detection service — prompt injection, sensitive data, toxicity | **Working** | `services/detection/` |
+| PII detection — 16-class regex catalog + 6-class NER | **Working** | Regex catalog (SSN, credit card, email, phone, etc.) + NER (`person_name`, `location`, `organization`, `ip_address`, `url`, `crypto_address`) |
+| Redact action enforcement (general policy engine) | **Working** | AI proxy + endpoint agent (`process_monitor`, `network_monitor`, `file_monitor`); previously URL-Trust-Gate-only |
+| HMAC content-hash pseudonymization (GDPR / HIPAA) | **Configurable** | Set `CYBERARMOR_HMAC_KEY`; deterministic per-tenant tokens replace redacted values |
+| Tenant-specific NER fine-tuning pipeline | **Roadmap** | Reduces false positives (e.g. SSN classified as organization); training corpus + offline trainer not yet built |
 | AI provider routing and resolution | **Working** | `services/response/` |
 | Agent identity registration and delegation chains | **Working** | |
 | Audit logs, telemetry, incidents, evidence capture | **Working** | `services/audit/` |

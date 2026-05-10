@@ -184,6 +184,26 @@ const sections: Section[] = [
         notes: "services/detection/",
       },
       {
+        capability: "PII detection — 16-class regex catalog + 6-class NER",
+        status: "production",
+        notes: "Regex (SSN, credit card, email, phone, etc.) plus NER for person_name, location, organization, ip_address, url, crypto_address.",
+      },
+      {
+        capability: "Redact action enforcement (general policy engine)",
+        status: "production",
+        notes: "Enforced in AI proxy and endpoint agent (process, network, file monitors). Previously URL-Trust-Gate-only.",
+      },
+      {
+        capability: "HMAC content-hash pseudonymization (GDPR / HIPAA)",
+        status: "poc",
+        notes: "Set CYBERARMOR_HMAC_KEY. Deterministic per-tenant tokens replace redacted values for audit correlation without exposing raw PII.",
+      },
+      {
+        capability: "Tenant-specific NER fine-tuning pipeline",
+        status: "roadmap",
+        notes: "Reduces false positives (e.g. SSN classified as organization). Training corpus and offline trainer not yet built.",
+      },
+      {
         capability: "AI provider routing and resolution",
         status: "production",
         notes: "services/response/",
