@@ -79,6 +79,57 @@ TLS_CA_FILE = os.getenv("CYBERARMOR_TLS_CA_FILE")
 TLS_CERT_FILE = os.getenv("CYBERARMOR_TLS_CERT_FILE")
 TLS_KEY_FILE = os.getenv("CYBERARMOR_TLS_KEY_FILE")
 
+# Path B (Step 2d) — optional content-hash telemetry on redact events.
+#
+# Logging the raw redacted content would be unsafe (audit logs become a
+# secrets store). Logging just class counts (the default) loses the
+# correlation property — auditors can't tell "we saw this same secret
+# 47 times across 12 requests". The HMAC compromise:
+#   content_hmac = HMAC-SHA256( derive_tenant_key(master, tenant_id), content )[:16]
+# - per-tenant: same content + different tenant produces different hash
+#   so cross-tenant correlation attacks are blocked even if log access leaks
+# - stable within a tenant: same content + same tenant → same hash, so an
+#   auditor can group occurrences
+# - not brute-forceable without the master key (16 hex chars = 64 bits;
+#   credit-card-sized search spaces are infeasible to enumerate without it)
+# Off by default. Operators set CYBERARMOR_REDACT_LOG_CONTENT_HASH=true
+# AND provide CYBERARMOR_REDACT_HASH_MASTER_KEY (≥ 32 chars).
+REDACT_LOG_CONTENT_HASH = os.getenv(
+    "CYBERARMOR_REDACT_LOG_CONTENT_HASH", "false"
+).strip().lower() in {"1", "true", "yes", "on"}
+REDACT_HASH_MASTER_KEY = os.getenv("CYBERARMOR_REDACT_HASH_MASTER_KEY", "")
+if REDACT_LOG_CONTENT_HASH and (not REDACT_HASH_MASTER_KEY or len(REDACT_HASH_MASTER_KEY) < 32):
+    # Don't fail open with a constant hash — disable the feature loudly.
+    logger.error(
+        "redact_log_content_hash_disabled reason=master_key_missing_or_short "
+        "set CYBERARMOR_REDACT_HASH_MASTER_KEY to a value >= 32 chars to enable"
+    )
+    REDACT_LOG_CONTENT_HASH = False
+
+
+def _redact_content_hmac(tenant_id: str, content: str) -> str:
+    """Per-tenant HMAC of content for audit correlation.
+
+    Returns "" when the feature is disabled (no master key, flag off, or
+    empty content) so callers can drop the field from their log line.
+    Truncated to 16 hex chars (64 bits) — enough to prevent collisions in
+    practice while keeping log volume tight.
+    """
+    if not (REDACT_LOG_CONTENT_HASH and REDACT_HASH_MASTER_KEY and content):
+        return ""
+    import hmac as _hmac
+    import hashlib
+    # Derive per-tenant key: HKDF-style HMAC of (master, tenant_id).
+    # Different tenants get different keys so hashes can't cross-correlate.
+    tenant_key = _hmac.new(
+        REDACT_HASH_MASTER_KEY.encode("utf-8"),
+        tenant_id.encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+    return _hmac.new(
+        tenant_key, content.encode("utf-8"), hashlib.sha256
+    ).hexdigest()[:16]
+
 
 def _pick(*vals: Optional[str]) -> Optional[str]:
     for v in vals:
@@ -832,14 +883,24 @@ class TransparentProxyAddon:
                     flow.request.headers["x-cyberarmor-redacted"] = ",".join(
                         sorted(inspection.redact_class_counts.keys())
                     )
-                    logger.info(
-                        "request_redacted request_id=%s url=%s policy=%s class_counts=%s",
-                        request_id,
-                        url,
-                        inspection.policy_name,
-                        # Counts only — never the redacted values themselves.
-                        inspection.redact_class_counts,
-                    )
+                    # Path B (Step 2d): optional content HMAC for audit
+                    # correlation. Computed over the ORIGINAL pre-redact body
+                    # so the same secret produces the same hash next time it
+                    # appears (within this tenant). Empty string when the
+                    # feature is disabled — kwarg-style log line drops it.
+                    content_hmac = _redact_content_hmac(tenant_id, body_text)
+                    if content_hmac:
+                        logger.info(
+                            "request_redacted request_id=%s url=%s policy=%s class_counts=%s content_hmac=%s",
+                            request_id, url, inspection.policy_name,
+                            inspection.redact_class_counts, content_hmac,
+                        )
+                    else:
+                        logger.info(
+                            "request_redacted request_id=%s url=%s policy=%s class_counts=%s",
+                            request_id, url, inspection.policy_name,
+                            inspection.redact_class_counts,
+                        )
                 else:
                     # No matches in the body; nothing to redact, request goes through unchanged.
                     logger.info(
