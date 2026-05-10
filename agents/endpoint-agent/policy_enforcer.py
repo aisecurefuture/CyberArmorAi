@@ -75,6 +75,26 @@ TENANT_ID = os.getenv("TENANT_ID", "demo")
 SYNC_INTERVAL_S = int(os.getenv("POLICY_SYNC_INTERVAL", "60"))
 CACHE_DIR = Path(os.getenv("CYBERARMOR_CACHE_DIR", os.path.expanduser("~/.cyberarmor")))
 
+# Path B (Step 2d, agent-side) — optional content-hash telemetry on redact
+# events. Mirrors services/proxy/transparent_proxy.py to give a single
+# operator-controlled flag (CYBERARMOR_REDACT_LOG_CONTENT_HASH=true plus
+# a >= 32 char CYBERARMOR_REDACT_HASH_MASTER_KEY) that takes effect across
+# every layer that masks data — proxy, runtime, every agent monitor.
+#
+# Pattern: pseudonymize, don't delete (GDPR Article 4(5), HIPAA Safe
+# Harbor §164.514(b)(2)). Auditors can count occurrences and correlate
+# patterns without recovering the original value.
+REDACT_LOG_CONTENT_HASH = os.getenv(
+    "CYBERARMOR_REDACT_LOG_CONTENT_HASH", "false"
+).strip().lower() in {"1", "true", "yes", "on"}
+REDACT_HASH_MASTER_KEY = os.getenv("CYBERARMOR_REDACT_HASH_MASTER_KEY", "")
+if REDACT_LOG_CONTENT_HASH and (not REDACT_HASH_MASTER_KEY or len(REDACT_HASH_MASTER_KEY) < 32):
+    logger.error(
+        "redact_log_content_hash_disabled reason=master_key_missing_or_short "
+        "set CYBERARMOR_REDACT_HASH_MASTER_KEY to a value >= 32 chars to enable"
+    )
+    REDACT_LOG_CONTENT_HASH = False
+
 
 @dataclass
 class PolicyAction:
@@ -366,6 +386,39 @@ class PolicyEnforcer:
             redacted, counts = self.redact_text(text, res.redact_classes)
             return res, redacted, counts
         return res, text, {}
+
+    @staticmethod
+    def redact_content_hmac(tenant_id: str, content: str) -> str:
+        """Per-tenant HMAC of original content for audit correlation.
+
+        Returns "" when the feature is disabled (flag off, no master key,
+        or empty content) so callers can drop the field from the emitted
+        event. Truncated to 16 hex chars (64 bits).
+
+        Use case: monitors emit `field_hmac` companion fields next to
+        each redacted field so auditors/forensics can prove patterns
+        ("this same value showed up 47 times across 12 events from
+        process_monitor and network_monitor") without ever recovering
+        the original data. GDPR/HIPAA-friendly pseudonymization.
+
+        Same env-var contract as the proxy:
+          CYBERARMOR_REDACT_LOG_CONTENT_HASH=true
+          CYBERARMOR_REDACT_HASH_MASTER_KEY=<32+ char secret>
+        """
+        if not (REDACT_LOG_CONTENT_HASH and REDACT_HASH_MASTER_KEY and content):
+            return ""
+        import hmac as _hmac
+        import hashlib
+        # HKDF-style: derive per-tenant subkey from master + tenant_id.
+        # Different tenants → different keys → no cross-tenant correlation.
+        tenant_key = _hmac.new(
+            REDACT_HASH_MASTER_KEY.encode("utf-8"),
+            tenant_id.encode("utf-8"),
+            hashlib.sha256,
+        ).digest()
+        return _hmac.new(
+            tenant_key, content.encode("utf-8"), hashlib.sha256
+        ).hexdigest()[:16]
 
     def _eval_group(self, cond: dict, flat: dict) -> tuple:
         op = cond.get("operator", "AND").upper()

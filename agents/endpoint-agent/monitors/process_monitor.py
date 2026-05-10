@@ -206,12 +206,20 @@ class ProcessMonitor:
             try:
                 res = enforcer.evaluate(ctx)
                 if res.highest_action == "redact" and res.redact_classes:
+                    tenant_for_hmac = ctx.get("tenant_id") or data.get("tenant_id") or ""
                     for field_name in ("cmdline_preview", "command_line", "exe"):
                         original = data.get(field_name)
                         if isinstance(original, str) and original:
                             redacted, counts = enforcer.redact_text(original, res.redact_classes)
                             if counts:
                                 data[field_name] = redacted
+                                # Pseudonymize: optional HMAC companion lets
+                                # auditors correlate without recovering value
+                                content_hmac = PolicyEnforcer.redact_content_hmac(
+                                    tenant_for_hmac, original,
+                                )
+                                if content_hmac:
+                                    data[f"{field_name}_hmac"] = content_hmac
                                 logger.info(
                                     "redacted_telemetry_field source=process_monitor "
                                     "event=%s field=%s class_counts=%s",
