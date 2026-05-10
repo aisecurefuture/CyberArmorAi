@@ -286,6 +286,69 @@ class FileMonitor:
     # ------------------------------------------------------------------
 
     async def _emit_event(self, event_type: str, data: Dict[str, Any]) -> None:
+        """Emit a telemetry event with optional policy-driven redaction.
+
+        Path B / compliance pass: file paths frequently encode user-
+        identifiable info (`/Users/john.smith/...`) and customer/employee
+        names in filenames (`Q4_review_alice.docx`). When a tenant policy
+        with action="redact" matches, those values are masked here, at the
+        agent, before any telemetry leaves the endpoint.
+
+        Pseudonymization companion fields (when CYBERARMOR_REDACT_LOG_CONTENT_HASH
+        is enabled): each redacted field gets a `{field}_hmac` companion
+        with a per-tenant HMAC of the original value, so audit/forensics
+        can correlate occurrences without recovering the raw path.
+        """
+        try:
+            from policy_enforcer import PolicyEnforcer
+            enforcer = PolicyEnforcer.instance()
+        except Exception:
+            enforcer = None
+
+        if enforcer is not None:
+            ctx = {
+                "source": {"name": "file_monitor"},
+                "event": {"type": event_type},
+                "file": {
+                    "path": str(data.get("path") or data.get("file_path") or ""),
+                    "size_bytes": data.get("size_bytes", 0),
+                },
+            }
+            try:
+                res = enforcer.evaluate(ctx)
+                if res.highest_action == "redact" and res.redact_classes:
+                    tenant_for_hmac = ctx.get("tenant_id") or data.get("tenant_id") or ""
+                    # Path/filename text fields that may carry employee or
+                    # customer identifiers. archive_contents could contain
+                    # nested paths (also worth scrubbing if present).
+                    for field_name in (
+                        "path", "file_path", "src_path", "dest_path",
+                        "dirname", "filename", "archive_contents",
+                    ):
+                        original = data.get(field_name)
+                        if isinstance(original, str) and original:
+                            redacted, counts = enforcer.redact_text(original, res.redact_classes)
+                            if counts:
+                                data[field_name] = redacted
+                                content_hmac = PolicyEnforcer.redact_content_hmac(
+                                    tenant_for_hmac, original,
+                                )
+                                if content_hmac:
+                                    data[f"{field_name}_hmac"] = content_hmac
+                                logger.info(
+                                    "redacted_telemetry_field source=file_monitor "
+                                    "event=%s field=%s class_counts=%s",
+                                    event_type, field_name, counts,
+                                )
+                elif res.highest_action == "block":
+                    logger.info(
+                        "policy_blocked_telemetry source=file_monitor event=%s",
+                        event_type,
+                    )
+                    return
+            except Exception as exc:
+                logger.warning("file_monitor enforce error: %s", exc)
+
         event = {
             "source": "file_monitor",
             "event_type": event_type,
