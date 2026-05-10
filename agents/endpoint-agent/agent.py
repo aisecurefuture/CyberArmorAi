@@ -47,6 +47,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+# Set the kernel process title BEFORE any heavy imports / forks so the agent
+# shows up as "cyberarmor-agent" everywhere (ps, top, Activity Monitor, SIEM
+# forwards). Also stops the agent's own process_monitor from accidentally
+# classifying itself as an external Python process. Graceful no-op when the
+# package isn't installed (e.g. dev-from-source on a system without pip
+# install -r requirements.txt).
+try:
+    import setproctitle as _setproctitle
+    _setproctitle.setproctitle("cyberarmor-agent")
+except ImportError:
+    pass
+
 import httpx
 from crypto.pqc import PQCKeyTransport
 
