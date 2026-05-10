@@ -826,7 +826,10 @@ class TransparentProxyAddon:
                     flow.request.set_content(new_body.encode("utf-8"))
                     # Update Content-Length so upstream parses the new body
                     flow.request.headers["content-length"] = str(len(new_body.encode("utf-8")))
-                    flow.request.headers["X-CyberArmor-Redacted"] = ",".join(
+                    # Header name lowercased — HTTP/2 requires lowercase, and
+                    # mitmproxy auto-lowercases mixed-case headers anyway with a
+                    # noisy warning. Set it lowercase from the source.
+                    flow.request.headers["x-cyberarmor-redacted"] = ",".join(
                         sorted(inspection.redact_class_counts.keys())
                     )
                     logger.info(

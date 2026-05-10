@@ -91,15 +91,25 @@ export function openPolicyDetailModal({
 
   function renderViewMode() {
     const conditionsHtml = `<pre class="max-h-64 overflow-auto rounded-xl bg-slate-950 p-3 text-xs text-slate-300">${esc(JSON.stringify(policy.conditions || {}, null, 2))}</pre>`;
+    // Path B (Step 3): show redact_classes as cyan chips when present.
+    // Hidden when the policy isn't a redact policy or has no classes.
+    const redactClasses = Array.isArray(policy.redact_classes) ? policy.redact_classes : [];
+    const redactRow = (policy.action === "redact" || redactClasses.length)
+      ? [["Redact classes", redactClasses.length
+            ? redactClasses.map((c) => `<span class="inline-flex items-center rounded-md border border-cyan-700 bg-cyan-900/40 px-1.5 py-0.5 mr-1 mb-1 font-mono text-[11px] text-cyan-100">${esc(c)}</span>`).join("")
+            : `<span class="text-[11px] text-amber-300">none — falls back to caller-detected classes</span>`]]
+      : [];
+
     const fieldsHtml = [
       ["ID", esc(policy.id || "")],
       ["Name", esc(policy.name || "")],
       ["Description", esc(policy.description || "")],
-      ["Action", badge(policy.action || "monitor", policy.action === "block" ? "amber" : "cyan")],
+      ["Action", badge(policy.action || "monitor", policy.action === "block" ? "amber" : policy.action === "redact" ? "cyan" : "cyan")],
       ["Scope", esc(policy.scope || "")],
       ["Priority", esc(String(policy.priority ?? 100))],
       ["Status", badge(policy.enabled === false ? "disabled" : "enabled", policy.enabled === false ? "slate" : "green")],
       ["Frameworks", Array.isArray(policy.compliance_frameworks) ? policy.compliance_frameworks.map((f) => badge(f, "slate")).join(" ") : esc(policy.compliance_frameworks || "")],
+      ...redactRow,
       ["Tenant", esc(policy.tenant_id || tenantId || "")],
       ["Created", esc(fmt(policy.created_at))],
       ["Updated", esc(fmt(policy.updated_at))],

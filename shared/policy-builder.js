@@ -45,13 +45,15 @@ const OPERATORS = [
 const SCOPES = ["general", "proxy", "endpoint", "identity", "url-trust-gate"];
 
 const ACTIONS_BY_SCOPE = {
-  // General-engine enforcers (policy service + endpoint agent + proxy)
-  // currently only honour these four. Adding redact/sandbox/isolate here
-  // without backend support would silently downgrade to allow.
-  general:          ["allow", "monitor", "warn", "block"],
-  proxy:            ["allow", "monitor", "warn", "block"],
-  endpoint:         ["allow", "monitor", "warn", "block"],
-  identity:         ["allow", "monitor", "warn", "block"],
+  // Path B (Step 2): redact is now enforced by the AI proxy + runtime
+  // (services/proxy/transparent_proxy.py + services/runtime/main.py) and
+  // the endpoint agent (agents/endpoint-agent/policy_enforcer.py).
+  // sandbox/isolate remain url-trust-gate-only — those have no enforcement
+  // outside the gate's pipeline.
+  general:          ["allow", "monitor", "warn", "redact", "block"],
+  proxy:            ["allow", "monitor", "warn", "redact", "block"],
+  endpoint:         ["allow", "monitor", "warn", "redact", "block"],
+  identity:         ["allow", "monitor", "warn", "redact", "block"],
   // URL Trust Gate has its own enforcement pipeline that natively supports
   // these six actions (regex pattern in services/url-trust-gate/main.py).
   "url-trust-gate": ["allow", "warn", "redact", "sandbox", "block", "isolate"],
@@ -65,7 +67,7 @@ function _scopeHint(scope) {
   if (scope === "url-trust-gate") {
     return "URL Trust Gate enforces six actions: allow, warn, redact, sandbox, block, isolate.";
   }
-  return "Enforced actions today: allow, monitor, warn, block. Redact/sandbox/isolate are URL-Trust-Gate scope only.";
+  return "Enforced actions: allow, monitor, warn, redact, block. Sandbox/isolate are URL-Trust-Gate scope only.";
 }
 
 // Fields that the proxy/ext-authz integrations actually emit, grouped
@@ -228,6 +230,13 @@ export function mountPolicyBuilder(options) {
       : (initialPolicy?.compliance_frameworks || ""),
     tree: initialPolicy?.conditions ? fromEngineTree(initialPolicy.conditions) : emptyGroup(),
     artifacts: [],
+    // Path B (Step 3): DLP class names to mask when this policy matches
+    // and action="redact". Populated from the detection service catalog
+    // (GET /scan/redact/targets) on first render.
+    redactClasses: Array.isArray(initialPolicy?.redact_classes)
+      ? initialPolicy.redact_classes.slice()
+      : [],
+    redactCatalog: [],   // populated async from detection
   };
 
   function buildFieldDatalist() {
@@ -334,6 +343,31 @@ export function mountPolicyBuilder(options) {
           </div>
         </div>
 
+        <!-- Path B (Step 3): redact-classes selector — visible only when action=redact -->
+        <div id="cpb_redact_block" class="${state.action === "redact" ? "" : "hidden"} mb-4 rounded-2xl border border-cyan-900/60 bg-cyan-950/20 p-4">
+          <div class="flex items-baseline justify-between mb-2">
+            <label class="text-sm font-semibold text-cyan-100">DLP classes to redact</label>
+            <span class="text-[11px] text-cyan-300/70">${state.redactClasses.length} selected</span>
+          </div>
+          <p class="text-[11px] text-slate-400 mb-3">
+            When this policy matches, the AI proxy and endpoint agent will mask these
+            classes in the request/response body. Counts are logged; raw values never are.
+          </p>
+          <div id="cpb_redact_classes" class="flex flex-wrap gap-2">
+            ${(state.redactCatalog.length ? state.redactCatalog : []).map((cls) => {
+              const checked = state.redactClasses.includes(cls);
+              return `<label class="inline-flex items-center gap-1.5 rounded-lg border ${checked ? "border-cyan-600 bg-cyan-900/40 text-cyan-100" : "border-slate-700 bg-slate-900 text-slate-300"} px-2.5 py-1 text-xs cursor-pointer hover:border-cyan-700">
+                <input type="checkbox" data-redact-class="${esc(cls)}" ${checked ? "checked" : ""} ${readOnly ? "disabled" : ""} class="hidden" />
+                <span class="font-mono">${esc(cls)}</span>
+              </label>`;
+            }).join("") || `<span class="text-xs text-slate-500">Loading DLP class catalog…</span>`}
+          </div>
+          ${state.redactClasses.length === 0 ? `
+            <div class="mt-3 text-[11px] text-amber-300">
+              No classes selected — the policy will fall back to whatever the caller's scanner already detected (URL Trust Gate compatibility mode).
+            </div>` : ""}
+        </div>
+
         <div class="flex items-center justify-between mb-2">
           <div class="text-sm font-semibold text-slate-200">Conditions</div>
           <div class="text-xs text-slate-500">
@@ -417,7 +451,12 @@ export function mountPolicyBuilder(options) {
     const descInput = container.querySelector("#cpb_description");
     if (descInput) descInput.addEventListener("input", (event) => { state.description = event.target.value; });
     const actionSel = container.querySelector("#cpb_action");
-    if (actionSel) actionSel.addEventListener("change", (event) => { state.action = event.target.value; });
+    if (actionSel) actionSel.addEventListener("change", (event) => {
+      state.action = event.target.value;
+      // Path B (Step 3): show/hide the redact-classes block based on action.
+      const block = container.querySelector("#cpb_redact_block");
+      if (block) block.classList.toggle("hidden", state.action !== "redact");
+    });
     const scopeSel = container.querySelector("#cpb_scope");
     if (scopeSel) scopeSel.addEventListener("change", (event) => {
       state.scope = event.target.value;
@@ -436,6 +475,36 @@ export function mountPolicyBuilder(options) {
       }
       const hint = container.querySelector("#cpb_scope_hint");
       if (hint) hint.textContent = _scopeHint(state.scope);
+      // Re-evaluate redact block visibility — scope change may have
+      // pushed action away from "redact".
+      const block = container.querySelector("#cpb_redact_block");
+      if (block) block.classList.toggle("hidden", state.action !== "redact");
+    });
+
+    // Path B (Step 3): redact-classes checkbox handlers. The visible chip
+    // is a label; clicking flips the hidden checkbox, which we observe.
+    container.querySelectorAll("[data-redact-class]").forEach((cb) => {
+      cb.addEventListener("change", (event) => {
+        const cls = event.target.getAttribute("data-redact-class");
+        const checked = event.target.checked;
+        if (checked && !state.redactClasses.includes(cls)) {
+          state.redactClasses.push(cls);
+        } else if (!checked) {
+          state.redactClasses = state.redactClasses.filter((c) => c !== cls);
+        }
+        // Light-weight update: re-style this label and update the count.
+        // Avoids a full render() that would reset condition-tree input focus.
+        const label = event.target.closest("label");
+        if (label) {
+          label.className = checked
+            ? "inline-flex items-center gap-1.5 rounded-lg border border-cyan-600 bg-cyan-900/40 text-cyan-100 px-2.5 py-1 text-xs cursor-pointer hover:border-cyan-700"
+            : "inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 text-slate-300 px-2.5 py-1 text-xs cursor-pointer hover:border-cyan-700";
+          const inner = label.querySelector("input");
+          if (inner) inner.classList.add("hidden");
+        }
+        const counter = container.querySelector("#cpb_redact_block .text-cyan-300\\/70");
+        if (counter) counter.textContent = `${state.redactClasses.length} selected`;
+      });
     });
     const priorityInput = container.querySelector("#cpb_priority");
     if (priorityInput) priorityInput.addEventListener("input", (event) => { state.priority = parseInt(event.target.value || "100", 10); });
@@ -506,6 +575,10 @@ export function mountPolicyBuilder(options) {
         .split(",")
         .map((s) => s.trim())
         .filter(Boolean),
+      // Path B: only emit redact_classes when action is redact. The
+      // policy service tolerates an empty list either way, but keeping
+      // the JSON tight makes diffs and audit logs cleaner.
+      redact_classes: state.action === "redact" ? state.redactClasses.slice() : [],
       rules: {},
     };
   }
@@ -521,8 +594,34 @@ export function mountPolicyBuilder(options) {
     }
   }
 
+  // Path B (Step 3): pull the DLP class catalog from the detection service.
+  // Falls back to the built-in list if the call fails so the multi-select
+  // is still usable when offline (the same classes are emitted by the
+  // detection service today).
+  const _BUILTIN_REDACT_CATALOG = [
+    "pii.email", "pii.phone", "pii.iban", "pii.ssn", "pii.credit_card",
+    "secret.aws_access_key", "secret.gcp_api_key", "secret.github_token",
+    "secret.openai_key", "secret.anthropic_key", "secret.slack_token",
+    "secret.stripe_key", "secret.api_key", "secret.password",
+    "secret.private_key", "secret.jwt",
+  ];
+
+  async function loadRedactCatalog() {
+    if (!paths.redactTargets) {
+      state.redactCatalog = _BUILTIN_REDACT_CATALOG.slice();
+      return;
+    }
+    try {
+      const resp = await fetchJson(paths.redactTargets);
+      const targets = Array.isArray(resp) ? resp : (resp && resp.targets) || [];
+      state.redactCatalog = targets.length ? targets : _BUILTIN_REDACT_CATALOG.slice();
+    } catch {
+      state.redactCatalog = _BUILTIN_REDACT_CATALOG.slice();
+    }
+  }
+
   (async () => {
-    await loadArtifacts();
+    await Promise.all([loadArtifacts(), loadRedactCatalog()]);
     render();
   })();
 
@@ -538,6 +637,7 @@ export function mountPolicyBuilder(options) {
         priority: policy?.priority ?? 100,
         frameworks: Array.isArray(policy?.compliance_frameworks) ? policy.compliance_frameworks.join(", ") : "",
         tree: policy?.conditions ? fromEngineTree(policy.conditions) : emptyGroup(),
+        redactClasses: Array.isArray(policy?.redact_classes) ? policy.redact_classes.slice() : [],
       });
       render();
     },
