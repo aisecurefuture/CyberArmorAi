@@ -219,6 +219,75 @@ class NetworkMonitor:
     # ------------------------------------------------------------------
 
     async def _emit_event(self, event_type: str, data: Dict[str, Any]) -> None:
+        """Emit a telemetry event with optional policy-driven redaction.
+
+        Path B / compliance pass: when a tenant policy with action="redact"
+        matches the event context, IP addresses, domains, and URL fields
+        are masked here — at the agent — before any telemetry leaves the
+        endpoint. This is the GDPR-friendly path for cross-border audit
+        forwarding (Article 44): IPv4/IPv6 addresses are personal data
+        under EU law, and scrubbing them at the source means downstream
+        SIEMs in other regions never see the raw values.
+
+        Pseudonymization companion fields (when CYBERARMOR_REDACT_LOG_CONTENT_HASH
+        is enabled): each redacted field gets a `{field}_hmac` companion
+        with a per-tenant HMAC of the original value, so auditors retain
+        forensic correlation without recovering raw data.
+        """
+        try:
+            from policy_enforcer import PolicyEnforcer
+            enforcer = PolicyEnforcer.instance()
+        except Exception:
+            enforcer = None
+
+        if enforcer is not None:
+            ctx = {
+                "source": {"name": "network_monitor"},
+                "event": {"type": event_type},
+                "network": {
+                    "remote_ip": str(data.get("remote_ip") or ""),
+                    "remote_port": data.get("remote_port", 0),
+                    "domain": str(data.get("domain") or ""),
+                    "service": str(data.get("service") or ""),
+                    "process_name": str(data.get("process_name") or ""),
+                },
+            }
+            try:
+                res = enforcer.evaluate(ctx)
+                if res.highest_action == "redact" and res.redact_classes:
+                    tenant_for_hmac = ctx.get("tenant_id") or data.get("tenant_id") or ""
+                    # Network-relevant text fields. IP addresses are the
+                    # GDPR-critical ones; domains/URLs cover internal-host leak
+                    # surface; process_name covers user-identifiable processes.
+                    for field_name in (
+                        "remote_ip", "source_ip", "destination_ip",
+                        "domain", "url", "dns_query",
+                        "process_name", "service",
+                    ):
+                        original = data.get(field_name)
+                        if isinstance(original, str) and original:
+                            redacted, counts = enforcer.redact_text(original, res.redact_classes)
+                            if counts:
+                                data[field_name] = redacted
+                                content_hmac = PolicyEnforcer.redact_content_hmac(
+                                    tenant_for_hmac, original,
+                                )
+                                if content_hmac:
+                                    data[f"{field_name}_hmac"] = content_hmac
+                                logger.info(
+                                    "redacted_telemetry_field source=network_monitor "
+                                    "event=%s field=%s class_counts=%s",
+                                    event_type, field_name, counts,
+                                )
+                elif res.highest_action == "block":
+                    logger.info(
+                        "policy_blocked_telemetry source=network_monitor event=%s",
+                        event_type,
+                    )
+                    return
+            except Exception as exc:
+                logger.warning("network_monitor enforce error: %s", exc)
+
         event = {
             "source": "network_monitor",
             "event_type": event_type,
