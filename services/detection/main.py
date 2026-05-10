@@ -780,6 +780,17 @@ _REDACT_CLASS_MAP: Dict[str, List[tuple]] = {
     "secret.jwt":           [("jwt",            _ENTITY_REGEX_PATTERNS[3][1],    None)],
 }
 
+# Path B follow-up: NER-only classes (no regex patterns; spans come from
+# the dslim/bert-base-NER model via NERPIIDetector.redact_spans). Listed
+# in the catalog so the Policy Builder can offer them, with empty regex
+# lists so the regex pass yields nothing — NER does the work.
+_NER_ONLY_CLASSES = [
+    "pii.person_name", "pii.location", "pii.organization",
+    "pii.ip_address", "pii.url", "pii.crypto_address",
+]
+for _cls in _NER_ONLY_CLASSES:
+    _REDACT_CLASS_MAP.setdefault(_cls, [])
+
 # Public class catalog for the Policy Builder. Keep keys human-orderable.
 REDACT_CLASS_CATALOG = sorted(_REDACT_CLASS_MAP.keys())
 
@@ -791,9 +802,12 @@ def _redact_text(text: str, targets: List[str]) -> tuple[str, Dict[str, int]]:
     count of matches replaced — never the matched content itself, so it's
     safe to log.
 
-    Spans are collected from all requested classes, sorted right-to-left,
-    and replaced in-place. Overlapping spans are deduped (keep the first
-    match by start position; later ones inside it are dropped).
+    Spans are collected from regex patterns AND the NER detector (for
+    pii.person_name / pii.location / pii.organization / pii.ip_address /
+    pii.url / pii.crypto_address — entities the regex catalog can't
+    catch). Both span sources are merged, sorted, deduped (keep the
+    first match by start position; later overlapping ones are dropped),
+    and replaced right-to-left to preserve indices.
     """
     if not text or not targets:
         return text or "", {}
@@ -811,6 +825,14 @@ def _redact_text(text: str, targets: List[str]) -> tuple[str, Dict[str, int]]:
                 if s == e:
                     continue
                 spans.append((s, e, cls))
+
+    # Path B follow-up: NER-derived spans for unstructured PII.
+    try:
+        ner_spans = ner_pii_detector.redact_spans(text, targets)
+        spans.extend(ner_spans)
+    except Exception as exc:
+        # Non-fatal — regex catalog still applies. NER is additive.
+        logger.warning("ner_redact_spans_error err=%s", exc)
 
     if not spans:
         return text, {}

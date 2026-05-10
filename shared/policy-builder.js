@@ -599,11 +599,15 @@ export function mountPolicyBuilder(options) {
   // is still usable when offline (the same classes are emitted by the
   // detection service today).
   const _BUILTIN_REDACT_CATALOG = [
+    // Regex-backed (precise structured patterns)
     "pii.email", "pii.phone", "pii.iban", "pii.ssn", "pii.credit_card",
     "secret.aws_access_key", "secret.gcp_api_key", "secret.github_token",
     "secret.openai_key", "secret.anthropic_key", "secret.slack_token",
     "secret.stripe_key", "secret.api_key", "secret.password",
     "secret.private_key", "secret.jwt",
+    // NER-backed (unstructured PII via dslim/bert-base-NER)
+    "pii.person_name", "pii.location", "pii.organization",
+    "pii.ip_address", "pii.url", "pii.crypto_address",
   ];
 
   async function loadRedactCatalog() {

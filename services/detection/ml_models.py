@@ -243,6 +243,36 @@ _NER_SENSITIVE_GROUPS: Dict[str, str] = {
     "URL": "url",
 }
 
+# Path B (Step 2 follow-up): NER groups → redact-catalog class names. The
+# regex catalog in services/detection/main.py covers structured patterns
+# (emails, SSNs, credit cards, etc) precisely. NER catches the unstructured
+# variants the regex misses — person names, organization names, geographic
+# locations, free-form addresses. Redact policies opt in by listing these
+# classes in `redact_classes`.
+NER_GROUP_TO_REDACT_CLASS: Dict[str, str] = {
+    "PER":          "pii.person_name",
+    "PERSON":       "pii.person_name",
+    "LOC":          "pii.location",
+    "LOCATION":     "pii.location",
+    "GPE":          "pii.location",
+    "ORG":          "pii.organization",
+    "ORGANIZATION": "pii.organization",
+    "IP_ADDRESS":   "pii.ip_address",
+    "URL":          "pii.url",
+    "CRYPTO":       "pii.crypto_address",
+}
+
+# Inverse — redact_class → list of NER groups that produce it. Used by the
+# redact pipeline to know which entities to extract for each requested class.
+REDACT_CLASS_TO_NER_GROUPS: Dict[str, List[str]] = {}
+for _g, _c in NER_GROUP_TO_REDACT_CLASS.items():
+    REDACT_CLASS_TO_NER_GROUPS.setdefault(_c, []).append(_g)
+
+# Cap NER input size for redaction calls. The pipeline truncates at the
+# model's max_position_embeddings (typically 512 tokens ≈ 2048 chars)
+# anyway. Going past that wastes time and may raise tokenizer warnings.
+MAX_NER_INPUT_CHARS = 2048
+
 
 class NERPIIDetector:
     """Token-classification NER model for PII entity extraction.
@@ -296,6 +326,55 @@ class NERPIIDetector:
         except Exception as exc:
             logger.warning("NER PII detection error: %s", exc)
             return []
+
+    def redact_spans(
+        self, text: str, requested_classes: List[str]
+    ) -> List[tuple]:
+        """Return (start, end, redact_class) tuples for NER entities matching
+        the requested redact classes.
+
+        Used by the /scan/redact pipeline to mask NER-detected PII (person
+        names, locations, organizations, etc.) that the regex catalog can't
+        catch. The aggregation_strategy="simple" config used by the NER
+        pipeline gives us per-entity character offsets directly.
+        """
+        if not text or not requested_classes:
+            return []
+
+        # Which NER groups do we need to extract for these classes?
+        wanted_groups: set = set()
+        for cls in requested_classes:
+            for g in REDACT_CLASS_TO_NER_GROUPS.get(cls, []):
+                wanted_groups.add(g)
+        if not wanted_groups:
+            return []
+
+        pipe = _registry.ner_pipeline()
+        if pipe is None:
+            return []
+
+        spans: List[tuple] = []
+        try:
+            entities = pipe(text[:MAX_NER_INPUT_CHARS] or "")
+            for ent in entities or []:
+                group = str(
+                    ent.get("entity_group", ent.get("entity", ""))
+                ).upper()
+                if group not in wanted_groups:
+                    continue
+                score = float(ent.get("score", 0.0))
+                if score < NER_PII_CONFIDENCE_THRESHOLD:
+                    continue
+                start = ent.get("start")
+                end = ent.get("end")
+                if start is None or end is None or start >= end:
+                    continue
+                cls = NER_GROUP_TO_REDACT_CLASS.get(group)
+                if cls and cls in requested_classes:
+                    spans.append((int(start), int(end), cls))
+        except Exception as exc:
+            logger.warning("NER redact_spans error: %s", exc)
+        return spans
 
 
 # ---------------------------------------------------------------------------

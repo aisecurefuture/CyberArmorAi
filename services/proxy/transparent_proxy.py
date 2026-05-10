@@ -70,6 +70,13 @@ CA_CERT_PATH = os.getenv("CA_CERT_PATH", "/etc/cyberarmor/ca/ca-cert.pem")
 CA_KEY_PATH = os.getenv("CA_KEY_PATH", "/etc/cyberarmor/ca/ca-key.pem")
 MAX_BODY_SIZE = int(os.getenv("MAX_BODY_SIZE", str(10 * 1024 * 1024)))  # 10 MB
 INSPECTION_TIMEOUT = float(os.getenv("INSPECTION_TIMEOUT", "5.0"))
+# Response-side detection runs the heavier ML pipeline (toxicity, output
+# safety, zero-shot, NER) over potentially-large generated outputs. Default
+# to 3x the request timeout so we don't drop response scans on legitimate
+# slow inferences. Tunable via env.
+RESPONSE_INSPECTION_TIMEOUT = float(
+    os.getenv("RESPONSE_INSPECTION_TIMEOUT", str(INSPECTION_TIMEOUT * 3.0))
+)
 # Action on policy/detection service failure: "allow" or "block"
 FAIL_OPEN = os.getenv("FAIL_OPEN", "true").lower() == "true"
 DEFAULT_PROXY_RUNTIME_MODE = os.getenv("DEFAULT_PROXY_RUNTIME_MODE", "mitm").lower()
@@ -392,6 +399,13 @@ async def scan_content(
         "source_url": request_url,
         "tenant_id": tenant_id,
     }
+    # Per-call timeout: response scans get the longer
+    # RESPONSE_INSPECTION_TIMEOUT (default 15s) because they run the heavier
+    # ML pipeline over generated outputs. Request scans keep INSPECTION_TIMEOUT
+    # (default 5s) to stay snappy. Both override the shared client's default.
+    per_call_timeout = (
+        RESPONSE_INSPECTION_TIMEOUT if direction == "response" else INSPECTION_TIMEOUT
+    )
     try:
         resp = await client.post(
             f"{DETECTION_SERVICE_URL}/scan",
@@ -401,6 +415,7 @@ async def scan_content(
                 DETECTION_SECRET or "",
                 {"Content-Type": "application/json"},
             ),
+            timeout=per_call_timeout,
         )
         if resp.status_code == 200:
             return resp.json()
@@ -410,7 +425,10 @@ async def scan_content(
             resp.text[:256],
         )
     except httpx.TimeoutException:
-        logger.error("detection_service_timeout url=%s", request_url)
+        logger.error(
+            "detection_service_timeout url=%s direction=%s timeout_s=%.1f",
+            request_url, direction, per_call_timeout,
+        )
     except Exception as exc:
         logger.error("detection_service_exception err=%s", exc)
     return None

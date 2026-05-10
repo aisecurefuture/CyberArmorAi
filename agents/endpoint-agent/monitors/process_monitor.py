@@ -173,7 +173,60 @@ class ProcessMonitor:
     # ------------------------------------------------------------------
 
     async def _emit_event(self, event_type: str, data: Dict[str, Any]) -> None:
-        """Send a telemetry event through the parent agent."""
+        """Send a telemetry event through the parent agent.
+
+        Path B (Step 2c wiring): if a tenant policy with action="redact"
+        matches the event context, mask DLP classes in any text-bearing
+        fields (cmdline_preview, command_line, exe path) before forwarding.
+        Process command lines often contain secrets passed inline (env-style
+        password=foo, AWS access keys, etc.) — masking them here prevents
+        the agent from being the leak vector even when control-plane is
+        offline.
+        """
+        # Lazy import to avoid a hard dependency cycle (enforcer imports
+        # crypto modules that may be slow to load on agent boot).
+        try:
+            from policy_enforcer import PolicyEnforcer
+            enforcer = PolicyEnforcer.instance()
+        except Exception:
+            enforcer = None
+
+        if enforcer is not None:
+            ctx = {
+                "source": {"name": "process_monitor"},
+                "event": {"type": event_type},
+                "process": {
+                    "name": data.get("process_name", ""),
+                    "tool_name": data.get("tool_name", ""),
+                    "exe": data.get("exe", ""),
+                    "username": data.get("username", ""),
+                    "pid": data.get("pid", 0),
+                },
+            }
+            try:
+                res = enforcer.evaluate(ctx)
+                if res.highest_action == "redact" and res.redact_classes:
+                    for field_name in ("cmdline_preview", "command_line", "exe"):
+                        original = data.get(field_name)
+                        if isinstance(original, str) and original:
+                            redacted, counts = enforcer.redact_text(original, res.redact_classes)
+                            if counts:
+                                data[field_name] = redacted
+                                logger.info(
+                                    "redacted_telemetry_field source=process_monitor "
+                                    "event=%s field=%s class_counts=%s",
+                                    event_type, field_name, counts,
+                                )
+                elif res.highest_action == "block":
+                    logger.info(
+                        "policy_blocked_telemetry source=process_monitor event=%s",
+                        event_type,
+                    )
+                    return  # Don't forward blocked events
+            except Exception as exc:
+                # Never let enforcement failures suppress telemetry — log and continue.
+                logger.warning("process_monitor enforce error: %s", exc)
+
         event = {
             "source": "process_monitor",
             "event_type": event_type,
