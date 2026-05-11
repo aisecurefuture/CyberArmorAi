@@ -313,7 +313,7 @@ async function sendTelemetry(event) {
       },
     });
     recordAuthStatus(auth.authInfo, "telemetry");
-    await fetch(url, {
+    const resp = await fetch(url, {
       method: "POST",
       headers: auth.headers,
       body: JSON.stringify({
@@ -324,6 +324,10 @@ async function sendTelemetry(event) {
         occurred_at: new Date().toISOString(),
       }),
     });
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => "");
+      console.warn(`[CyberArmor] Telemetry rejected: HTTP ${resp.status} ${resp.statusText} ${body.slice(0, 160)}`);
+    }
   } catch (err) {
     console.warn("[CyberArmor] Telemetry send failed:", err.message);
   }

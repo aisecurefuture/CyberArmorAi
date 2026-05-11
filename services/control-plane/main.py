@@ -1224,6 +1224,23 @@ def require_role(required: str):
     return checker
 
 
+def require_any_role(*allowed: str):
+    """Dependency that admits any caller whose role is in *allowed* (admin always allowed).
+
+    Use for endpoints where multiple identity kinds are legitimate — e.g.
+    /telemetry/ingest accepts both human analysts and the "service" role
+    used by browser extensions, proxy agents, and endpoint agents.
+    """
+    allowed_set = set(allowed) | {"admin"}
+
+    def checker(ctx: Annotated[AuthContext, Depends(get_auth_context)]) -> AuthContext:
+        if ctx.role not in allowed_set:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        return ctx
+
+    return checker
+
+
 app = FastAPI(title="CyberArmor Control Plane", version="0.1.1")
 
 # Allow browser extension and local agents to POST telemetry with preflight.
@@ -2600,7 +2617,7 @@ def bootstrap_redeem_token(
 
 
 @app.post("/telemetry/ingest")
-def ingest_event(event: TelemetryEvent, ctx: Annotated[AuthContext, Depends(require_role("analyst"))]):
+def ingest_event(event: TelemetryEvent, ctx: Annotated[AuthContext, Depends(require_any_role("analyst", "service"))]):
     if ctx.tenant_id and ctx.tenant_id != event.tenant_id:
         raise HTTPException(status_code=403, detail="Tenant scope mismatch")
     stored_event = {
