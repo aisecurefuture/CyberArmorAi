@@ -46,19 +46,23 @@ mkdir -p "${USER_CONFIG_DIR}" "${LAUNCH_AGENT_DIR}" "${LOG_DIR}"
 
 echo "→ Generating ${USER_CONFIG} from system agent.json (sudo required)"
 sudo /usr/local/cyberarmor/.venv/bin/python3 - <<PY
-import json, pathlib, os, pwd
+import json, pathlib, os, pwd, sys
 agent = json.loads(pathlib.Path("${AGENT_JSON}").read_text())
+# Field name varies: agent.json uses "api_key" but the bootstrap response
+# uses "service_api_key". Accept either.
+api_key = agent.get("api_key") or agent.get("service_api_key") or agent.get("agent_api_key")
+if not api_key:
+    sys.exit("no api_key found in /etc/cyberarmor/agent.json — has the agent been bootstrapped?")
 helper = {
     "control_plane_url": agent.get("control_plane_url", "https://app.cyberarmor.ai"),
     "tenant_id": agent.get("tenant_id", "default"),
-    "service_api_key": agent["service_api_key"],
+    "service_api_key": api_key,
     "poll_interval_s": 3,
     "clipboard_action": os.environ.get("CYBERARMOR_CLIPBOARD_ACTION", "monitor"),
 }
 target = pathlib.Path("${USER_CONFIG}")
 target.write_text(json.dumps(helper, indent=2))
 target.chmod(0o600)
-import shutil
 user = pwd.getpwnam("${USER}")
 os.chown(target, user.pw_uid, user.pw_gid)
 os.chown(target.parent, user.pw_uid, user.pw_gid)
