@@ -675,6 +675,36 @@ def get_policies_for_tenant(
     return rows
 
 
+@app.get("/policies/{tenant_id}/export")
+def export_policies(
+    tenant_id: str,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[None, Depends(verify_api_key)],
+):
+    """Export all policies for a tenant (for sync to agents/extensions).
+
+    Must be declared before /policies/{tenant_id}/{name} — FastAPI matches
+    routes in registration order, so the {name} route would otherwise
+    capture "export" as a policy name and return 404.
+    """
+    rows = db.query(Policy).filter(Policy.tenant_id == tenant_id).order_by(Policy.priority.asc()).all()
+    return [
+        {
+            "id": r.id,
+            "name": r.name,
+            "enabled": r.enabled,
+            "action": r.action,
+            "priority": r.priority,
+            "conditions": _coerce_json_field(r.conditions),
+            "rules": _coerce_json_field(r.rules) or {},
+            "compliance_frameworks": _coerce_json_field(r.compliance_frameworks),
+            "tags": _coerce_json_field(r.tags),
+            "version": r.version,
+        }
+        for r in rows
+    ]
+
+
 @app.get("/policies/{tenant_id}/{name}", response_model=PolicyOut)
 def get_policy(
     tenant_id: str,
@@ -1149,31 +1179,6 @@ def delete_policy(
     logger.info("policy deleted id=%s name=%s", policy_id, record.name)
     _opa_delete_policy(policy_id)
     return {"status": "deleted", "id": policy_id}
-
-
-@app.get("/policies/{tenant_id}/export")
-def export_policies(
-    tenant_id: str,
-    db: Annotated[Session, Depends(get_db)],
-    _: Annotated[None, Depends(verify_api_key)],
-):
-    """Export all policies for a tenant (for sync to agents/extensions)."""
-    rows = db.query(Policy).filter(Policy.tenant_id == tenant_id).order_by(Policy.priority.asc()).all()
-    return [
-        {
-            "id": r.id,
-            "name": r.name,
-            "enabled": r.enabled,
-            "action": r.action,
-            "priority": r.priority,
-            "conditions": _coerce_json_field(r.conditions),
-            "rules": _coerce_json_field(r.rules) or {},
-            "compliance_frameworks": _coerce_json_field(r.compliance_frameworks),
-            "tags": _coerce_json_field(r.tags),
-            "version": r.version,
-        }
-        for r in rows
-    ]
 
 
 @app.post("/evaluate")
