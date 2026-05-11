@@ -372,7 +372,12 @@ function evaluatePolicy(context) {
   const enabledPolicies = cachedPolicies.filter((p) => p.enabled);
   for (const policy of enabledPolicies) {
     if (policy.conditions && evaluateConditions(policy.conditions, context)) {
-      return { matched: true, policy: policy.name, action: policy.action };
+      return {
+        matched: true,
+        policy: policy.name,
+        action: policy.action,
+        redact_classes: Array.isArray(policy.redact_classes) ? policy.redact_classes : [],
+      };
     }
   }
   return { matched: false };

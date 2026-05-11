@@ -697,6 +697,7 @@ def export_policies(
             "priority": r.priority,
             "conditions": _coerce_json_field(r.conditions),
             "rules": _coerce_json_field(r.rules) or {},
+            "redact_classes": _coerce_json_field(r.redact_classes) or [],
             "compliance_frameworks": _coerce_json_field(r.compliance_frameworks),
             "tags": _coerce_json_field(r.tags),
             "version": r.version,

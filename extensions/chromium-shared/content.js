@@ -87,6 +87,7 @@
     generateUserId();
     setupInputListeners();
     setupPasteInterception();
+    setupSubmitInterception();
     scanQueryStrings();
     setupMutationObserver();
     scanPageForPromptware();
@@ -294,6 +295,99 @@
         });
       }
     }, true);
+  }
+
+  // --- Form Submit Interception ---
+  //
+  // Enforcement choke-point for redact/block on PII. Listens at the document
+  // level in capture phase so we run before any page-installed handlers.
+  // Strategy:
+  //   1. Pre-scan every form field for PII synchronously. If nothing
+  //      sensitive, return immediately and let the browser submit normally.
+  //   2. If there IS PII, preventDefault to halt the submission, send the
+  //      policy context to the background script, and decide once the reply
+  //      comes back: block → drop + banner; redact → rewrite matching fields
+  //      then form.submit(); other → resubmit unchanged.
+  // form.submit() bypasses the submit event so we won't recurse; an internal
+  // flag is also set as belt-and-braces.
+
+  function setupSubmitInterception() {
+    document.addEventListener("submit", handleSubmit, true);
+  }
+
+  function handleSubmit(event) {
+    const form = event.target;
+    if (!form || form.tagName !== "FORM" || form.__cyberarmor_decided) return;
+    if (typeof chrome === "undefined" || !chrome.runtime) return;
+
+    const fields = form.querySelectorAll("input, textarea, select");
+    const detected = [];
+    for (const field of fields) {
+      const v = field.value;
+      if (!v || typeof v !== "string") continue;
+      const findings = detectPII(v);
+      if (findings.length) detected.push({ field, findings });
+    }
+    if (detected.length === 0) return; // no PII, no work
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    let actionUrl = form.action || window.location.href;
+    try { actionUrl = new URL(actionUrl, window.location.href).href; } catch {}
+    const piiClasses = [...new Set(detected.flatMap((d) => d.findings.map((f) => "pii." + f.label)))];
+
+    chrome.runtime.sendMessage({
+      type: "evaluate_policy",
+      context: {
+        request: { url: actionUrl, type: "form_submit", method: (form.method || "get").toLowerCase() },
+        content: { pii_classes: piiClasses, has_pii: true },
+      },
+    }, (resp) => {
+      const result = resp && resp.result;
+      const resubmit = () => { form.__cyberarmor_decided = true; form.submit(); };
+
+      if (!result || !result.matched) { resubmit(); return; }
+
+      if (result.action === "block") {
+        sendTelemetry("policy_block_form_submit", {
+          url: actionUrl, policy: result.policy, pii_classes: piiClasses,
+        });
+        showWarningBanner(`Form submission blocked by policy "${result.policy}". Sensitive data detected: ${piiClasses.join(", ")}.`);
+        return; // do not resubmit
+      }
+
+      if (result.action === "redact") {
+        const redactSet = new Set(result.redact_classes || []);
+        const redactAll = redactSet.size === 0;
+        let redactedFields = 0;
+        for (const { field, findings } of detected) {
+          const labels = findings.map((f) => f.label).filter((label) => redactAll || redactSet.has("pii." + label));
+          if (!labels.length) continue;
+          let v = field.value;
+          for (const { label, pattern } of PII_PATTERNS) {
+            if (!labels.includes(label)) continue;
+            v = v.replace(new RegExp(pattern.source, pattern.flags), `[REDACTED-${label}]`);
+          }
+          if (v !== field.value) { field.value = v; redactedFields++; }
+        }
+        sendTelemetry("policy_redact_form_submit", {
+          url: actionUrl, policy: result.policy, pii_classes: piiClasses, redacted_fields: redactedFields,
+        });
+        showWarningBanner(`Redacted ${redactedFields} field(s) per policy "${result.policy}" before submission.`);
+        resubmit();
+        return;
+      }
+
+      // warn / monitor / allow → let it through unchanged
+      if (result.action === "warn") {
+        sendTelemetry("policy_warn_form_submit", {
+          url: actionUrl, policy: result.policy, pii_classes: piiClasses,
+        });
+        showWarningBanner(`Warning: policy "${result.policy}" matched sensitive data on submit.`);
+      }
+      resubmit();
+    });
   }
 
   // --- Query String Scanning ---
