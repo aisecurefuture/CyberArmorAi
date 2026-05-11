@@ -557,6 +557,19 @@ chrome.webNavigation.onBeforeNavigate.addListener(async (details) => {
     content: { pii_classes: piiClasses, has_pii: piiClasses.length > 0 },
   });
 
+  // Temporary diagnostic — surfaces what the navigation listener sees so
+  // misconfigured policies are debuggable from the service-worker console.
+  if (piiClasses.length > 0 || policyResult.matched) {
+    console.log("[CyberArmor nav]", {
+      host: parsed.hostname,
+      path: parsed.pathname,
+      pii: piiClasses,
+      policy: policyResult.policy || null,
+      action: policyResult.action || null,
+      redact_classes: policyResult.redact_classes || null,
+    });
+  }
+
   if (policyResult.matched && policyResult.action === "block") {
     chrome.tabs.update(details.tabId, {
       url: chrome.runtime.getURL("phishing_warning.html") +
