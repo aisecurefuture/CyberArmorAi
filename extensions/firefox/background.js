@@ -91,46 +91,168 @@ function startPolicySync() {
 }
 
 async function syncPolicies() {
+  if (!config.controlPlaneUrl || !config.apiKey) {
+    return { ok: false, count: 0, error: "missing controlPlaneUrl or apiKey" };
+  }
+  const url = `${config.controlPlaneUrl.replace(/\/$/, '')}/policies/${config.tenantId || 'default'}/export`;
   try {
     const auth = await CyberArmorPQCAuth.buildHeaders({
       baseUrl: config.controlPlaneUrl,
       apiKey: config.apiKey,
       pqcEnabled: config.pqcAuthEnabled !== false,
       strict: config.pqcAuthStrict === true,
+      headers: { "x-tenant-id": config.tenantId || "" },
     });
     recordAuthStatus(auth.authInfo, "policy_sync");
-    const resp = await fetch(`${config.controlPlaneUrl}/policies/${config.tenantId || 'default'}`, {
-      headers: auth.headers
-    });
+    const resp = await fetch(url, { headers: auth.headers });
     if (resp.ok) {
       policies = await resp.json();
       browser.storage.local.set({ cyberarmor_policies: policies });
+      console.log(`[CyberArmor] Synced ${policies.length} policies`);
+      return { ok: true, count: policies.length };
     }
-  } catch (e) { console.debug('[CyberArmor] Policy sync failed:', e.message); }
+    const body = await resp.text().catch(() => '');
+    const error = `HTTP ${resp.status} ${resp.statusText}: ${body.slice(0, 200)}`;
+    console.warn(`[CyberArmor] Policy sync failed: ${error} (${url})`);
+    return { ok: false, count: policies.length, error };
+  } catch (e) {
+    console.warn('[CyberArmor] Policy sync failed:', e.message);
+    return { ok: false, count: policies.length, error: e.message };
+  }
 }
 
-// Intercept AI API requests
+// --- Telemetry ---
+
+async function sendTelemetry(event) {
+  if (!config.controlPlaneUrl || !config.apiKey) return;
+  try {
+    const url = `${config.controlPlaneUrl.replace(/\/$/, '')}/telemetry/ingest`;
+    const auth = await CyberArmorPQCAuth.buildHeaders({
+      baseUrl: config.controlPlaneUrl,
+      apiKey: config.apiKey,
+      pqcEnabled: config.pqcAuthEnabled !== false,
+      strict: config.pqcAuthStrict === true,
+      headers: {
+        "Content-Type": "application/json",
+        "x-tenant-id": config.tenantId || "",
+      },
+    });
+    recordAuthStatus(auth.authInfo, "telemetry");
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: auth.headers,
+      keepalive: true,
+      body: JSON.stringify({
+        tenant_id: config.tenantId,
+        event_type: event.type,
+        payload: event.payload,
+        source: 'browser_extension',
+        occurred_at: new Date().toISOString(),
+      }),
+    });
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => '');
+      console.warn(`[CyberArmor] Telemetry rejected: HTTP ${resp.status} ${resp.statusText} ${body.slice(0, 160)}`);
+    } else {
+      console.log(`[CyberArmor] Telemetry sent: ${event.type}`);
+    }
+  } catch (err) {
+    console.warn('[CyberArmor] Telemetry send failed:', err.message);
+  }
+}
+
+// --- Policy evaluation ---
+//
+// Mirrors the chromium-shared evaluator so tenant policies behave identically
+// in Firefox. Returns { matched, policy, action } on first match.
+function evaluatePolicy(context) {
+  for (const policy of policies) {
+    if (!policy || !policy.enabled) continue;
+    if (policy.conditions && evaluateConditions(policy.conditions, context)) {
+      return { matched: true, policy: policy.name, action: policy.action };
+    }
+  }
+  return { matched: false };
+}
+
+function evaluateConditions(conditions, context) {
+  const op = (conditions.operator || 'AND').toUpperCase();
+  const rules = conditions.rules || [];
+  if (!rules.length) return true;
+  const results = rules.map((rule) => (rule.rules ? evaluateConditions(rule, context) : evaluateLeafRule(rule, context)));
+  return op === 'OR' ? results.some(Boolean) : results.every(Boolean);
+}
+
+function evaluateLeafRule(rule, context) {
+  const actual = (rule.field || '').split('.').reduce((o, k) => (o && typeof o === 'object' ? o[k] : undefined), context);
+  const expected = rule.value;
+  switch (rule.operator) {
+    case 'equals':       return actual === expected;
+    case 'not_equals':   return actual !== expected;
+    case 'contains':     return String(actual || '').includes(String(expected));
+    case 'not_contains': return !String(actual || '').includes(String(expected));
+    case 'matches':      return new RegExp(String(expected).replace(/\*/g, '.*')).test(String(actual || ''));
+    case 'in':           return Array.isArray(expected) ? expected.includes(actual) : actual === expected;
+    case 'starts_with':  return String(actual || '').startsWith(String(expected));
+    case 'ends_with':    return String(actual || '').endsWith(String(expected));
+    case 'exists':       return actual != null;
+    case 'not_exists':   return actual == null;
+    default: return false;
+  }
+}
+
+// Intercept every outgoing request:
+//   1. If a tenant policy with action=block matches the URL, cancel the
+//      request at the network layer (Firefox's blocking webRequest is the
+//      Chrome-MV3 DNR equivalent — but synchronous and stronger).
+//   2. If the URL is in AI_DOMAINS and the body matches a prompt-injection
+//      pattern, cancel it (legacy behaviour preserved).
+// Telemetry is emitted on every block so the dashboard sees Firefox events.
 browser.webRequest.onBeforeRequest.addListener(
   (details) => {
+    let parsedUrl;
+    try { parsedUrl = new URL(details.url); } catch { return {}; }
+    if (parsedUrl.protocol === 'chrome-extension:' || parsedUrl.protocol === 'moz-extension:') return {};
+
+    // --- General tenant policy evaluation ---
     try {
-      const url = new URL(details.url);
-      if (!AI_DOMAINS.has(url.hostname)) return {};
+      const policyResult = evaluatePolicy({
+        request: {
+          url: details.url,
+          hostname: parsedUrl.hostname,
+          path: parsedUrl.pathname,
+          method: details.method,
+          type: AI_DOMAINS.has(parsedUrl.hostname) ? 'ai_service_access' : 'navigation',
+        },
+        content: {},
+      });
+      if (policyResult.matched && policyResult.action === 'block') {
+        console.warn(`[CyberArmor] policy_block "${policyResult.policy}" → ${details.url}`);
+        // Fire-and-forget; keepalive lets the POST survive the event-page idle.
+        sendTelemetry({
+          type: 'policy_block',
+          payload: { url: details.url, tabId: details.tabId, policy: policyResult.policy },
+        });
+        return { cancel: true };
+      }
+    } catch (e) { console.debug('[CyberArmor] Policy evaluation error:', e); }
 
-      // Log AI request
-      console.log(`[CyberArmor] AI request: ${details.method} ${url.hostname}${url.pathname}`);
-
-      // Check request body for prompt injection
+    // --- AI-domain prompt injection (legacy path, AI domains only) ---
+    if (!AI_DOMAINS.has(parsedUrl.hostname)) return {};
+    console.log(`[CyberArmor] AI request: ${details.method} ${parsedUrl.hostname}${parsedUrl.pathname}`);
+    try {
       if (details.requestBody && details.requestBody.raw) {
         const decoder = new TextDecoder();
         const bodyText = details.requestBody.raw.map(r => decoder.decode(r.bytes)).join('');
         for (const pat of PROMPT_INJECTION_PATTERNS) {
           if (pat.test(bodyText)) {
-            console.warn('[CyberArmor] Prompt injection detected in request to', url.hostname);
-            // In block mode, cancel the request
+            console.warn('[CyberArmor] Prompt injection detected in request to', parsedUrl.hostname);
+            sendTelemetry({
+              type: 'prompt_injection_blocked',
+              payload: { url: details.url, hostname: parsedUrl.hostname, pattern: pat.source },
+            });
             const blockPolicy = policies.find(p => p.action === 'block' && p.enabled);
-            if (blockPolicy) {
-              return { cancel: true };
-            }
+            if (blockPolicy) return { cancel: true };
             break;
           }
         }
@@ -146,10 +268,17 @@ browser.webRequest.onBeforeRequest.addListener(
 browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'getStatus') {
     sendResponse({ active: true, policies: policies.length, config, lastAuthStatus });
-  } else if (msg.type === 'getPolicies') {
-    sendResponse({ policies });
+    return false;
   }
-  return true;
+  if (msg.type === 'getPolicies') {
+    sendResponse({ policies });
+    return false;
+  }
+  if (msg.type === 'force_policy_sync' || msg.type === 'forcePolicySync') {
+    syncPolicies().then((result) => sendResponse({ ...result, policies }));
+    return true; // keep the message channel open for the async response
+  }
+  return false;
 });
 
 console.log('[CyberArmor Protect] Firefox extension loaded');
