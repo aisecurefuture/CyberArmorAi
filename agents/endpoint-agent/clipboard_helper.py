@@ -14,11 +14,22 @@ the helper inherits the same tenant and credentials.
 
 from __future__ import annotations
 
-import json
 import os
+import sys
+
+# /usr/local/cyberarmor contains a "platform/" sub-package that the endpoint
+# agent uses for OS-specific code. Python automatically prepends the script
+# directory to sys.path, which shadows the stdlib `platform` module. pyperclip
+# lazily imports `platform.system()`; without this scrub it explodes with
+# AttributeError("module 'platform' has no attribute 'system'") on first
+# pyperclip.paste(). Must happen before any 3rd-party import that touches
+# the stdlib platform module.
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path = [p for p in sys.path if os.path.abspath(p) != _SCRIPT_DIR]
+
+import json
 import re
 import signal
-import sys
 import time
 import urllib.error
 import urllib.request
