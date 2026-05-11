@@ -88,10 +88,26 @@
     setupInputListeners();
     setupPasteInterception();
     setupSubmitInterception();
+    setupRuntimeMessageHandler();
     scanQueryStrings();
     setupMutationObserver();
     scanPageForPromptware();
     sendTelemetry("page_visit", { url: window.location.href, title: document.title });
+  }
+
+  // Listen for messages from the background service worker. Today this is
+  // only used by show_warning, dispatched after URL-level redact or any
+  // policy match the user should know about (the banner is the user's
+  // confirmation that enforcement fired — without it the URL change is
+  // easy to miss).
+  function setupRuntimeMessageHandler() {
+    if (typeof chrome === "undefined" || !chrome.runtime || !chrome.runtime.onMessage) return;
+    chrome.runtime.onMessage.addListener((msg) => {
+      if (!msg || typeof msg !== "object") return;
+      if (msg.type === "show_warning" && msg.message) {
+        showWarningBanner(msg.message);
+      }
+    });
   }
 
   function loadConfig() {
