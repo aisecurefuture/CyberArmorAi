@@ -446,15 +446,27 @@
       font-size: 14px; text-align: center; box-shadow: 0 2px 10px rgba(0,0,0,0.3);
       display: flex; align-items: center; justify-content: center; gap: 10px;
     `;
-    banner.innerHTML = `
-      <span style="font-size:18px">&#x1f6e1;</span>
-      <span>${escapeHtml(message)}</span>
-      <button onclick="this.parentElement.remove()" style="
-        background: rgba(255,255,255,0.2); border: 1px solid rgba(255,255,255,0.4);
-        color: white; padding: 4px 12px; border-radius: 4px; cursor: pointer;
-        font-size: 12px; margin-left: 10px;
-      ">Dismiss</button>
+
+    const icon = document.createElement("span");
+    icon.style.fontSize = "18px";
+    icon.textContent = "\u{1f6e1}";
+
+    const text = document.createElement("span");
+    text.textContent = message;
+
+    // Inline onclick="…" doesn't fire on sites with strict CSP. Build the
+    // button via DOM APIs and attach a real listener so Dismiss always works.
+    const dismiss = document.createElement("button");
+    dismiss.type = "button";
+    dismiss.textContent = "Dismiss";
+    dismiss.style.cssText = `
+      background: rgba(255,255,255,0.2); border: 1px solid rgba(255,255,255,0.4);
+      color: white; padding: 4px 12px; border-radius: 4px; cursor: pointer;
+      font-size: 12px; margin-left: 10px;
     `;
+    dismiss.addEventListener("click", () => banner.remove());
+
+    banner.append(icon, text, dismiss);
     document.body.prepend(banner);
     setTimeout(() => banner.remove(), 15000);
   }
