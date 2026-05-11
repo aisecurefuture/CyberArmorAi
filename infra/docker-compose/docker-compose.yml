@@ -105,6 +105,31 @@ services:
       interval: 10s
       retries: 5
 
+  # One-shot init: mount KV-v2 + transit and create the transit keys that
+  # the secrets-service / control-plane / audit / ai-router expect. Idempotent —
+  # `bao secrets enable` on an existing mount exits non-zero, swallowed by `|| true`.
+  # `bao write -f` on transit keys is naturally idempotent.
+  openbao-init:
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    image: openbao/openbao-ubi:latest
+    restart: "no"
+    depends_on:
+      openbao: { condition: service_healthy }
+    environment:
+      BAO_ADDR: http://openbao:8200
+      BAO_TOKEN: ${OPENBAO_DEV_ROOT_TOKEN}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        bao secrets enable -path=cyberarmor-kv -version=2 kv 2>&1 || true
+        bao secrets enable -path=cyberarmor-transit transit 2>&1 || true
+        for k in router-master audit-signing tenant-default-provider-creds; do
+          bao write -f cyberarmor-transit/keys/$$k type=aes256-gcm96 >/dev/null
+        done
+        echo "openbao-init OK"
+
   # --- Core Services ---
   control-plane:
     security_opt: ["no-new-privileges:true"]
@@ -121,6 +146,7 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
+      response: { condition: service_healthy }
     ports: ["${HOST_BIND:-0.0.0.0}:8000:8000"]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
@@ -511,6 +537,7 @@ services:
       - certs:/etc/cyberarmor/tls:ro
     depends_on:
       openbao: { condition: service_healthy }
+      openbao-init: { condition: service_completed_successfully }
     ports: ["${HOST_BIND:-0.0.0.0}:${SECRETS_SERVICE_HOST_PORT:-8013}:8013"]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8013/health')"]
