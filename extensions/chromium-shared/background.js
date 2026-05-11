@@ -52,6 +52,62 @@ const AI_SERVICE_DOMAINS = [
   "x.ai", "api.x.ai",
 ];
 
+// PII regex catalog — must stay in sync with content.js PII_PATTERNS.
+// Used by the navigation listener to detect/redact PII embedded in query
+// strings on direct GET navigations (Google Search and similar — where the
+// content-script's form-submit interceptor never fires because the page
+// navigates via location-change rather than dispatching a submit event).
+const PII_PATTERNS = [
+  { label: "ssn", pattern: /\b\d{3}-\d{2}-\d{4}\b/g },
+  { label: "phone", pattern: /\b\d{10}\b/g },
+  { label: "email", pattern: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/gi },
+  { label: "credit_card", pattern: /\b(?:\d{4}[-\s]?){3}\d{4}\b/g },
+  { label: "bank_account", pattern: /\b\d{9,12}\b/g },
+  { label: "drivers_license", pattern: /\b[A-Z]{1,2}\d{4,8}\b/g },
+  { label: "iban", pattern: /\b[A-Z]{2}\d{2}[A-Za-z0-9]{4}\d{14}\b/g },
+  { label: "api_key", pattern: /\b(?:sk-|pk_|api[_-]?key)[A-Za-z0-9]{16,}\b/gi },
+  { label: "aws_key", pattern: /\bAKIA[0-9A-Z]{16}\b/g },
+  { label: "jwt", pattern: /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g },
+  { label: "private_key", pattern: /-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----/g },
+  { label: "password_field", pattern: /(?:password|passwd|pwd)\s*[:=]\s*\S+/gi },
+];
+
+function detectPIILabels(text) {
+  const labels = [];
+  for (const { label, pattern } of PII_PATTERNS) {
+    if (new RegExp(pattern.source, pattern.flags).test(text)) labels.push(label);
+  }
+  return labels;
+}
+
+// Redact a URL: scan the search + hash for any PII matching the allowed
+// class set (or all detected, if the set is empty) and replace inline.
+// Returns the redacted URL string, or null if nothing changed.
+function redactURL(urlStr, allowedClasses) {
+  let parsed;
+  try { parsed = new URL(urlStr); } catch { return null; }
+  const allowAll = !allowedClasses || allowedClasses.size === 0;
+  let changed = false;
+
+  const redactPart = (part) => {
+    if (!part) return part;
+    let out = decodeURIComponent(part);
+    for (const { label, pattern } of PII_PATTERNS) {
+      if (!(allowAll || allowedClasses.has("pii." + label))) continue;
+      const re = new RegExp(pattern.source, pattern.flags);
+      if (re.test(out)) {
+        out = out.replace(new RegExp(pattern.source, pattern.flags), `[REDACTED-${label}]`);
+        changed = true;
+      }
+    }
+    return out;
+  };
+
+  if (parsed.search) parsed.search = "?" + redactPart(parsed.search.slice(1));
+  if (parsed.hash)   parsed.hash   = "#" + redactPart(parsed.hash.slice(1));
+  return changed ? parsed.toString() : null;
+}
+
 // Prompt injection patterns
 const INJECTION_PATTERNS = [
   /ignore\s+(all\s+)?previous\s+instructions/i,
@@ -479,6 +535,18 @@ chrome.webNavigation.onBeforeNavigate.addListener(async (details) => {
   let parsed;
   try { parsed = new URL(url); } catch { return; }
 
+  // Detect PII embedded in query string / hash. SPA-driven submits like
+  // Google Search bypass the content-script submit interceptor because the
+  // page navigates via location-change rather than dispatching a submit
+  // event — the PII lands here instead.
+  const queryPart = (parsed.search || "") + (parsed.hash || "");
+  let piiLabels = [];
+  if (queryPart.length > 1) {
+    try { piiLabels = detectPIILabels(decodeURIComponent(queryPart)); }
+    catch { piiLabels = detectPIILabels(queryPart); }
+  }
+  const piiClasses = piiLabels.map((l) => "pii." + l);
+
   const policyResult = evaluatePolicy({
     request: {
       url,
@@ -486,7 +554,7 @@ chrome.webNavigation.onBeforeNavigate.addListener(async (details) => {
       path: parsed.pathname,
       type: isAIServiceUrl(url) ? "ai_service_access" : "navigation",
     },
-    content: {},
+    content: { pii_classes: piiClasses, has_pii: piiClasses.length > 0 },
   });
 
   if (policyResult.matched && policyResult.action === "block") {
@@ -498,9 +566,26 @@ chrome.webNavigation.onBeforeNavigate.addListener(async (details) => {
     });
     await sendTelemetry({
       type: "policy_block",
-      payload: { url, tabId: details.tabId, policy: policyResult.policy },
+      payload: { url, tabId: details.tabId, policy: policyResult.policy, pii_classes: piiClasses },
     });
     return;
+  }
+
+  if (policyResult.matched && policyResult.action === "redact" && piiClasses.length > 0) {
+    const allowed = new Set(policyResult.redact_classes || []);
+    const redacted = redactURL(url, allowed);
+    if (redacted && redacted !== url) {
+      chrome.tabs.update(details.tabId, { url: redacted });
+      await sendTelemetry({
+        type: "policy_redact_navigation",
+        payload: { url, redacted_url: redacted, tabId: details.tabId, policy: policyResult.policy, pii_classes: piiClasses },
+      });
+      chrome.tabs.sendMessage(details.tabId, {
+        type: "show_warning",
+        message: `Redacted PII in URL per policy "${policyResult.policy}".`,
+      }).catch(() => {});
+      return;
+    }
   }
 
   if (policyResult.matched && policyResult.action === "warn") {
