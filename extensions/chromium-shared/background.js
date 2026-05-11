@@ -315,9 +315,14 @@ async function sendTelemetry(event) {
       },
     });
     recordAuthStatus(auth.authInfo, "telemetry");
+    // keepalive: true is the critical bit for MV3 service workers. The
+    // navigation listener fires sendTelemetry without awaiting the result;
+    // without keepalive, the worker can be torn down before the fetch
+    // completes and the request is silently aborted.
     const resp = await fetch(url, {
       method: "POST",
       headers: auth.headers,
+      keepalive: true,
       body: JSON.stringify({
         tenant_id: cachedConfig.tenantId,
         event_type: event.type,
@@ -329,6 +334,8 @@ async function sendTelemetry(event) {
     if (!resp.ok) {
       const body = await resp.text().catch(() => "");
       console.warn(`[CyberArmor] Telemetry rejected: HTTP ${resp.status} ${resp.statusText} ${body.slice(0, 160)}`);
+    } else {
+      console.log(`[CyberArmor] Telemetry sent: ${event.type}`);
     }
   } catch (err) {
     console.warn("[CyberArmor] Telemetry send failed:", err.message);
@@ -369,7 +376,7 @@ chrome.webNavigation.onBeforeNavigate.addListener(async (details) => {
         "&reason=policy_block" +
         "&policy=" + encodeURIComponent(policyResult.policy || ""),
     });
-    sendTelemetry({
+    await sendTelemetry({
       type: "policy_block",
       payload: { url, tabId: details.tabId, policy: policyResult.policy },
     });
