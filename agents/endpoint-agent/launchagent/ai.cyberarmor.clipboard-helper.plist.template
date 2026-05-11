@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+    Template for the clipboard helper LaunchAgent. The install_clipboard_helper.sh
+    script substitutes __HOME__ with the running user's home directory and writes
+    the resulting plist to ~/Library/LaunchAgents/.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ai.cyberarmor.clipboard-helper</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/cyberarmor/.venv/bin/python3</string>
+        <string>/usr/local/cyberarmor/clipboard_helper.py</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/Library/Logs/cyberarmor-clipboard-helper.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Library/Logs/cyberarmor-clipboard-helper.err</string>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>ProcessType</key>
+    <string>Interactive</string>
+</dict>
+</plist>

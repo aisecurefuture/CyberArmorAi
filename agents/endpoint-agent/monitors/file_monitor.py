@@ -454,6 +454,7 @@ class FileMonitor:
         last_content = ""
         consecutive_errors = 0
         poll_count = 0
+        empty_streak = 0
         while True:
             try:
                 await asyncio.sleep(3)
@@ -467,6 +468,24 @@ class FileMonitor:
                     preview = (content or "")[:24]
                     logger.info("Clipboard poll #%d len=%d preview=%r",
                                 poll_count, len(content or ""), preview)
+                # macOS LaunchDaemons run outside the user's pasteboard
+                # session, so pyperclip.paste() reliably returns "". If we
+                # see 10 empty polls in a row, the daemon is the wrong place
+                # for clipboard work — stop polling and point the operator at
+                # the user-session helper. The clipboard_helper.py LaunchAgent
+                # covers this gap.
+                if not content:
+                    empty_streak += 1
+                    if empty_streak == 10:
+                        logger.warning(
+                            "Clipboard polling returned empty 10 times in a row "
+                            "(typical for system LaunchDaemons on macOS). Stopping "
+                            "daemon-side clipboard monitor. Install the user-session "
+                            "helper via agents/endpoint-agent/install_clipboard_helper.sh."
+                        )
+                        return
+                    continue
+                empty_streak = 0
                 if content and content != last_content:
                     last_content = content
                     redaction_action = self._clipboard_action()
