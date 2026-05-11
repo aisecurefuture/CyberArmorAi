@@ -425,18 +425,40 @@ function checkPromptInjection(text) {
 // --- Policy Evaluation (client-side) ---
 
 function evaluatePolicy(context) {
+  // First-match wins on action — same as before — but when the winning action
+  // is "redact" we union redact_classes across every matching redact policy.
+  // This lets authors stack "narrow redaction here + broad redaction
+  // everywhere" without the narrow policy short-circuiting the broad one
+  // and silently letting unlisted PII through.
   const enabledPolicies = cachedPolicies.filter((p) => p.enabled);
+  let winner = null;
+  const redactUnion = new Set();
+  const stackedPolicies = [];
+
   for (const policy of enabledPolicies) {
-    if (policy.conditions && evaluateConditions(policy.conditions, context)) {
-      return {
+    if (!policy.conditions || !evaluateConditions(policy.conditions, context)) continue;
+    if (!winner) {
+      winner = {
         matched: true,
         policy: policy.name,
         action: policy.action,
         redact_classes: Array.isArray(policy.redact_classes) ? policy.redact_classes : [],
       };
     }
+    if (policy.action === "redact") {
+      stackedPolicies.push(policy.name);
+      for (const c of (policy.redact_classes || [])) redactUnion.add(c);
+    }
   }
-  return { matched: false };
+
+  if (!winner) return { matched: false };
+  if (winner.action === "redact") {
+    winner.redact_classes = [...redactUnion];
+    if (stackedPolicies.length > 1) {
+      winner.policy = stackedPolicies.join("+");
+    }
+  }
+  return winner;
 }
 
 function evaluateConditions(conditions, context) {

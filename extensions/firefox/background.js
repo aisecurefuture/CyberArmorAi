@@ -166,13 +166,33 @@ async function sendTelemetry(event) {
 // Mirrors the chromium-shared evaluator so tenant policies behave identically
 // in Firefox. Returns { matched, policy, action } on first match.
 function evaluatePolicy(context) {
+  // First-match wins on action; redact_classes union across matching redact
+  // policies so layered policies stack. Mirrors chromium-shared.
+  let winner = null;
+  const redactUnion = new Set();
+  const stacked = [];
   for (const policy of policies) {
     if (!policy || !policy.enabled) continue;
-    if (policy.conditions && evaluateConditions(policy.conditions, context)) {
-      return { matched: true, policy: policy.name, action: policy.action };
+    if (!policy.conditions || !evaluateConditions(policy.conditions, context)) continue;
+    if (!winner) {
+      winner = {
+        matched: true,
+        policy: policy.name,
+        action: policy.action,
+        redact_classes: Array.isArray(policy.redact_classes) ? policy.redact_classes : [],
+      };
+    }
+    if (policy.action === 'redact') {
+      stacked.push(policy.name);
+      for (const c of (policy.redact_classes || [])) redactUnion.add(c);
     }
   }
-  return { matched: false };
+  if (!winner) return { matched: false };
+  if (winner.action === 'redact') {
+    winner.redact_classes = [...redactUnion];
+    if (stacked.length > 1) winner.policy = stacked.join('+');
+  }
+  return winner;
 }
 
 function evaluateConditions(conditions, context) {
