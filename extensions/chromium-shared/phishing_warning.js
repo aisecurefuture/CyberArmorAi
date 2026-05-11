@@ -12,6 +12,7 @@
   const params = new URLSearchParams(window.location.search);
   const blockedUrl = params.get("u") || params.get("url") || "Unknown URL";
   const reason = params.get("reason") || "phishing_detected";
+  const policyName = params.get("policy") || "";
 
   // --- Reason Descriptions ---
 
@@ -72,6 +73,8 @@
     blockedUrl: document.getElementById("blocked-url"),
     blockReason: document.getElementById("block-reason"),
     warningReasons: document.getElementById("warning-reasons"),
+    policyDetail: document.getElementById("policy-detail"),
+    policyName: document.getElementById("policy-name"),
     btnGoBack: document.getElementById("btn-go-back"),
     btnReport: document.getElementById("btn-report"),
     btnProceed: document.getElementById("btn-proceed"),
@@ -89,10 +92,18 @@
 
     // Display reason
     const reasonInfo = REASON_MAP[reason] || REASON_MAP.phishing_detected;
-    els.blockReason.textContent = reasonInfo.title;
+    els.blockReason.textContent = reason === "policy_block" && policyName
+      ? `Blocked by policy: ${policyName}`
+      : reasonInfo.title;
     els.warningReasons.innerHTML = reasonInfo.reasons
       .map((r) => `<li>${escapeHtml(r)}</li>`)
       .join("");
+
+    // Matched policy row (only for policy_block reason)
+    if (reason === "policy_block" && policyName && els.policyDetail && els.policyName) {
+      els.policyName.textContent = policyName;
+      els.policyDetail.hidden = false;
+    }
 
     // Timestamp
     els.timestamp.textContent = new Date().toLocaleString();
@@ -101,6 +112,7 @@
     sendTelemetry("phishing_warning_shown", {
       blockedUrl,
       reason,
+      policy: policyName || undefined,
     });
 
     setupEventListeners();
