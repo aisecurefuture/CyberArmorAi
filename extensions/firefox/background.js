@@ -183,12 +183,18 @@ function evaluateConditions(conditions, context) {
   return op === 'OR' ? results.some(Boolean) : results.every(Boolean);
 }
 
+function equalsLoose(actual, expected) {
+  if (actual === expected) return true;
+  if (actual == null || expected == null) return false;
+  return String(actual) === String(expected);
+}
+
 function evaluateLeafRule(rule, context) {
   const actual = (rule.field || '').split('.').reduce((o, k) => (o && typeof o === 'object' ? o[k] : undefined), context);
   const expected = rule.value;
   switch (rule.operator) {
-    case 'equals':       return actual === expected;
-    case 'not_equals':   return actual !== expected;
+    case 'equals':       return equalsLoose(actual, expected);
+    case 'not_equals':   return !equalsLoose(actual, expected);
     case 'contains':     return String(actual || '').includes(String(expected));
     case 'not_contains': return !String(actual || '').includes(String(expected));
     case 'matches':      return new RegExp(String(expected).replace(/\*/g, '.*')).test(String(actual || ''));

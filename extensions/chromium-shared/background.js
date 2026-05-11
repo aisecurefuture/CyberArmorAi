@@ -456,8 +456,8 @@ function evaluateLeafRule(rule, context) {
   const actual = getNestedValue(context, rule.field || "");
   const expected = rule.value;
   switch (rule.operator) {
-    case "equals": return actual === expected;
-    case "not_equals": return actual !== expected;
+    case "equals": return equalsLoose(actual, expected);
+    case "not_equals": return !equalsLoose(actual, expected);
     case "contains": return String(actual || "").includes(String(expected));
     case "not_contains": return !String(actual || "").includes(String(expected));
     case "matches": return new RegExp(String(expected).replace(/\*/g, ".*")).test(String(actual || ""));
@@ -472,6 +472,17 @@ function evaluateLeafRule(rule, context) {
 
 function getNestedValue(obj, path) {
   return path.split(".").reduce((o, k) => (o && typeof o === "object" ? o[k] : undefined), obj);
+}
+
+// Loose equality for policy "equals" / "not_equals" operators. Policy values
+// authored via the dashboard arrive as JSON strings (e.g. "true"), but the
+// runtime context populates native types (booleans, numbers). Strict `===`
+// would silently fail those policies. This compares as native first and falls
+// back to a string-coerced comparison, which is what authors expect.
+function equalsLoose(actual, expected) {
+  if (actual === expected) return true;
+  if (actual == null || expected == null) return false;
+  return String(actual) === String(expected);
 }
 
 // --- Telemetry ---
@@ -557,18 +568,6 @@ chrome.webNavigation.onBeforeNavigate.addListener(async (details) => {
     content: { pii_classes: piiClasses, has_pii: piiClasses.length > 0 },
   });
 
-  // Temporary diagnostic — surfaces what the navigation listener sees so
-  // misconfigured policies are debuggable from the service-worker console.
-  if (piiClasses.length > 0 || policyResult.matched) {
-    console.log("[CyberArmor nav]", {
-      host: parsed.hostname,
-      path: parsed.pathname,
-      pii: piiClasses,
-      policy: policyResult.policy || null,
-      action: policyResult.action || null,
-      redact_classes: policyResult.redact_classes || null,
-    });
-  }
 
   if (policyResult.matched && policyResult.action === "block") {
     chrome.tabs.update(details.tabId, {
