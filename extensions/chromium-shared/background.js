@@ -159,6 +159,7 @@ async function syncPolicies() {
       strict: cachedConfig.pqcAuthStrict === true,
       headers: {
         "Content-Type": "application/json",
+        "x-tenant-id": cachedConfig.tenantId || "",
       },
     });
     recordAuthStatus(auth.authInfo, "policy_sync");
@@ -310,6 +311,7 @@ async function sendTelemetry(event) {
       strict: cachedConfig.pqcAuthStrict === true,
       headers: {
         "Content-Type": "application/json",
+        "x-tenant-id": cachedConfig.tenantId || "",
       },
     });
     recordAuthStatus(auth.authInfo, "telemetry");

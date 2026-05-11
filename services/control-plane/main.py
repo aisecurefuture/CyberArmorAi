@@ -12,7 +12,7 @@ import base64
 from datetime import datetime, timezone, timedelta
 from email.message import EmailMessage
 from pathlib import Path
-from typing import Annotated, Dict, Optional, Any, List
+from typing import Annotated, Dict, Optional, Any, List, Tuple
 from urllib.parse import urlencode
 import zipfile
 
@@ -1180,13 +1180,21 @@ def require_customer_role(*allowed_roles: str):
 def verify_api_key(
     db: Annotated[Session, Depends(get_db)],
     api_key: Annotated[Optional[str], Header(alias="x-api-key")] = None,
-) -> Optional[str]:
+) -> Optional[Tuple[str, Optional[str]]]:
+    """Resolve x-api-key (PQC-wrapped or plaintext) to (role, tenant_id).
+
+    Returning the tenant alongside the role lets get_auth_context bind the
+    tenant onto request.state without forcing every client to also send
+    x-tenant-id. The audit middleware reads request.state.tenant_id after
+    the route handler runs, so this is what causes audit rows to land for
+    extension/agent calls that previously came in "tenant-less".
+    """
     if not api_key:
         return None
     resolved = resolve_api_key_header(api_key, service_name="control-plane")
     record = db.query(ApiKey).filter(ApiKey.key == resolved.plaintext_key, ApiKey.active.is_(True)).first()
     if record:
-        return record.role
+        return (record.role, record.tenant_id)
     return None
 
 
@@ -1202,17 +1210,29 @@ def verify_bearer_token(authorization: Annotated[Optional[str], Header()] = None
 
 
 def get_auth_context(
-    api_key_role: Annotated[Optional[str], Depends(verify_api_key)],
+    request: Request,
+    api_key_identity: Annotated[Optional[Tuple[str, Optional[str]]], Depends(verify_api_key)],
     bearer_identity: Annotated[Optional[Dict], Depends(verify_bearer_token)],
     tenant_header_id: Annotated[Optional[str], Header(alias="x-tenant-id")] = None,
     role: Annotated[Optional[str], Header(alias="x-role")] = None,
 ) -> AuthContext:
+    api_key_role = api_key_identity[0] if api_key_identity else None
+    api_key_tenant = api_key_identity[1] if api_key_identity else None
     identity = bearer_identity or api_key_role
     if not identity:
         raise HTTPException(status_code=401, detail="Unauthorized")
     resolved_role = role or api_key_role or (bearer_identity.get("role") if bearer_identity else None) or "analyst"
-    tenant_header = tenant_header_id or (bearer_identity.get("tenant") if bearer_identity else None)
-    return AuthContext(principal="api-key" if api_key_role else "jwt-user", role=resolved_role, tenant_id=tenant_header)
+    resolved_tenant = (
+        tenant_header_id
+        or api_key_tenant
+        or (bearer_identity.get("tenant") if bearer_identity else None)
+    )
+    # Bind tenant onto request.state so the audit middleware (which reads
+    # this after call_next) writes an audit row even when the caller didn't
+    # send x-tenant-id explicitly.
+    if resolved_tenant:
+        request.state.tenant_id = resolved_tenant
+    return AuthContext(principal="api-key" if api_key_role else "jwt-user", role=resolved_role, tenant_id=resolved_tenant)
 
 
 def require_role(required: str):
@@ -1337,13 +1357,16 @@ async def audit_middleware(request: Request, call_next):
     start = datetime.now(timezone.utc)
     client_ip = request.headers.get("x-forwarded-for", request.client.host if request.client else "unknown")
     principal = request.headers.get("authorization") or request.headers.get("x-api-key", "anonymous")
-    # Prefer explicit header; fall back to state set by auth handlers; last resort is None.
+    response = await call_next(request)
+    # Read tenant AFTER call_next so request.state.tenant_id bound by auth
+    # dependencies (get_auth_context, get_customer_context) is visible. Prior
+    # ordering read state before the handler ran and missed every call that
+    # didn't also send an explicit x-tenant-id header.
     tenant = (
         request.headers.get("x-tenant-id")
         or getattr(request.state, "tenant_id", None)
         or None
     )
-    response = await call_next(request)
     # Skip writing if we still have no tenant context (e.g. unauthenticated probes).
     if not tenant:
         return response
