@@ -30,6 +30,7 @@ sys.path = [p for p in sys.path if os.path.abspath(p) != _SCRIPT_DIR]
 import json
 import re
 import signal
+import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -94,6 +95,27 @@ def load_config() -> dict:
     return json.loads(config_path.read_text())
 
 
+def notify(title: str, message: str) -> None:
+    """Show a macOS Notification Center banner. Best-effort, non-blocking.
+
+    AppleScript single-quotes are tricky — we escape any double quotes in
+    the strings and wrap the whole thing in a single -e arg. osascript is
+    in the default macOS PATH; the call returns quickly so we don't need
+    to background it.
+    """
+    def _esc(s: str) -> str:
+        return s.replace("\\", "\\\\").replace('"', '\\"')
+    script = f'display notification "{_esc(message)}" with title "{_esc(title)}"'
+    try:
+        subprocess.Popen(
+            ["/usr/bin/osascript", "-e", script],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"notify failed: {exc}", flush=True)
+
+
 def post_telemetry(cp: str, api_key: str, tenant: str, event_type: str, payload: dict) -> None:
     body = {
         "tenant_id": tenant,
@@ -129,6 +151,9 @@ def main() -> None:
     tenant = cfg.get("tenant_id", "default")
     poll_s = float(cfg.get("poll_interval_s", 3))
     action = (cfg.get("clipboard_action") or "monitor").lower()
+    # monitor mode is informational; default no notification (avoid spam),
+    # but allow operators to opt-in via the config.
+    notify_on_monitor = bool(cfg.get("notify_on_monitor", False))
 
     print(
         f"clipboard helper starting cp={cp} tenant={tenant} poll={poll_s}s action={action}",
@@ -165,6 +190,11 @@ def main() -> None:
                 "action": action,
             },
         )
+        if action == "monitor" and notify_on_monitor:
+            notify(
+                "CyberArmor",
+                f"Detected sensitive clipboard data: {', '.join(labels)}",
+            )
 
         if action == "redact":
             redacted, changed = redact_text(content, allowed=set())
@@ -183,6 +213,10 @@ def main() -> None:
                         },
                     )
                     print(f"redacted clipboard labels={labels}", flush=True)
+                    notify(
+                        "CyberArmor",
+                        f"Redacted sensitive clipboard data: {', '.join(labels)}",
+                    )
                 except Exception as exc:  # noqa: BLE001
                     print(f"redact write failed: {exc}", flush=True)
         elif action == "block":
@@ -195,6 +229,10 @@ def main() -> None:
                     payload={"labels": labels, "pii_classes": pii_classes},
                 )
                 print(f"cleared clipboard labels={labels}", flush=True)
+                notify(
+                    "CyberArmor",
+                    f"Blocked sensitive clipboard data: {', '.join(labels)}",
+                )
             except Exception as exc:  # noqa: BLE001
                 print(f"block write failed: {exc}", flush=True)
 
