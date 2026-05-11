@@ -568,6 +568,20 @@ chrome.webNavigation.onBeforeNavigate.addListener(async (details) => {
     content: { pii_classes: piiClasses, has_pii: piiClasses.length > 0 },
   });
 
+  // Production diagnostic — only logs when something interesting happens
+  // (PII detected or a policy matched) so silent navigations stay silent.
+  // Lets operators confirm from the service-worker console whether
+  // a misbehaving policy is failing at detection or evaluation.
+  if (piiClasses.length > 0 || policyResult.matched) {
+    console.log("[CyberArmor nav]", {
+      host: parsed.hostname,
+      pii: piiClasses,
+      policy: policyResult.policy || null,
+      action: policyResult.action || null,
+      redact_classes: policyResult.redact_classes || null,
+    });
+  }
+
 
   if (policyResult.matched && policyResult.action === "block") {
     chrome.tabs.update(details.tabId, {
