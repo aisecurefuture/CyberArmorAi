@@ -331,32 +331,63 @@ async function sendTelemetry(event) {
 
 // --- Navigation Monitoring ---
 
-chrome.webNavigation.onCompleted.addListener(async (details) => {
+// Evaluate tenant policies against EVERY top-level navigation, not only known
+// AI service domains. Fires on onBeforeNavigate so we can redirect to the
+// warning page before the bad URL renders. (chrome.webNavigation can't truly
+// cancel a top-level navigation, but a tabs.update racing the load gets us
+// "the user sees the warning, not the upstream page" in practice.)
+chrome.webNavigation.onBeforeNavigate.addListener(async (details) => {
   if (details.frameId !== 0) return;
   const url = details.url;
+  if (!url || url.startsWith("chrome-extension://") || url.startsWith("chrome://")) return;
 
-  // AI service detection
-  if (cachedConfig.aiMonitoringEnabled && isAIServiceUrl(url)) {
-    const policyResult = evaluatePolicy({
-      request: { url, type: "ai_service_access" },
-      content: {},
+  await configReady;
+
+  let parsed;
+  try { parsed = new URL(url); } catch { return; }
+
+  const policyResult = evaluatePolicy({
+    request: {
+      url,
+      hostname: parsed.hostname,
+      path: parsed.pathname,
+      type: isAIServiceUrl(url) ? "ai_service_access" : "navigation",
+    },
+    content: {},
+  });
+
+  if (policyResult.matched && policyResult.action === "block") {
+    chrome.tabs.update(details.tabId, {
+      url: chrome.runtime.getURL("phishing_warning.html") +
+        "?u=" + encodeURIComponent(url) +
+        "&reason=policy_block" +
+        "&policy=" + encodeURIComponent(policyResult.policy || ""),
     });
+    sendTelemetry({
+      type: "policy_block",
+      payload: { url, tabId: details.tabId, policy: policyResult.policy },
+    });
+    return;
+  }
 
-    await sendTelemetry({
+  if (policyResult.matched && policyResult.action === "warn") {
+    chrome.tabs.sendMessage(details.tabId, {
+      type: "show_warning",
+      message: `Policy "${policyResult.policy}" matched ${parsed.hostname}`,
+    }).catch(() => {});
+  }
+});
+
+// Keep the AI-service-specific telemetry on completed navigations so the
+// dashboard sees fully-loaded AI-tool sessions distinct from blocked attempts.
+chrome.webNavigation.onCompleted.addListener(async (details) => {
+  if (details.frameId !== 0) return;
+  await configReady;
+  if (cachedConfig.aiMonitoringEnabled && isAIServiceUrl(details.url)) {
+    sendTelemetry({
       type: "ai_service_detected",
-      payload: { url, tabId: details.tabId, policyMatch: policyResult },
+      payload: { url: details.url, tabId: details.tabId },
     });
-
-    if (policyResult.matched && policyResult.action === "block") {
-      chrome.tabs.update(details.tabId, {
-        url: chrome.runtime.getURL("phishing_warning.html") + "?u=" + encodeURIComponent(url) + "&reason=policy_block",
-      });
-    } else if (policyResult.matched && policyResult.action === "warn") {
-      chrome.tabs.sendMessage(details.tabId, {
-        type: "show_warning",
-        message: `AI service access detected: ${new URL(url).hostname}. Policy: ${policyResult.policy}`,
-      });
-    }
   }
 });
 
