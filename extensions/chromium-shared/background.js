@@ -85,6 +85,11 @@ const configReady = (async () => {
   );
   if (stored.cachedPolicies) cachedPolicies = stored.cachedPolicies;
   if (stored.cyberarmorLastAuthStatus) lastAuthStatus = stored.cyberarmorLastAuthStatus;
+  // Re-emit DNR rules from cached policies so a fresh worker boot (or one with
+  // no network) still enforces blocks at the network layer.
+  if (cachedPolicies && cachedPolicies.length) {
+    try { await updatePolicyDNR(cachedPolicies); } catch {}
+  }
 })();
 
 function recordAuthStatus(authInfo, context) {
@@ -144,6 +149,115 @@ async function ensureBootstrapRedeemed() {
   });
 }
 
+// --- Policy → declarativeNetRequest synthesis ---
+//
+// Block-action policies with URL-only conditions are translated into dynamic
+// DNR rules at sync time so blocking happens at the network layer (covers
+// subresources, fetch, XHR, websockets — not just top-level navigations).
+// Policies with non-URL conditions (user_id, content.*, etc.) fall back to
+// the onBeforeNavigate listener.
+//
+// Rule-ID ranges in this extension:
+//   1–999          (unused)
+//   1000–1099      phishing protection rules (PHISHING_RULES)
+//   100000–199999  policy-derived block rules (this section)
+
+const POLICY_DNR_ID_MIN = 100000;
+const POLICY_DNR_ID_MAX = 199999;
+
+// resourceTypes covered by the hard-block rule (every type except main_frame,
+// which is handled by a separate redirect rule so the user sees the warning).
+const POLICY_DNR_BLOCK_TYPES = [
+  "sub_frame", "stylesheet", "script", "image", "font", "object",
+  "xmlhttprequest", "ping", "csp_report", "media", "websocket", "other",
+];
+
+// Convert one policy.conditions object to an array of DNR urlFilter strings
+// (joined by OR — DNR fires when ANY rule matches). Returns null if the policy
+// can't be fully expressed in DNR; caller skips it and the navigation listener
+// handles enforcement at the top-level navigation layer.
+function extractURLFilters(conditions) {
+  if (!conditions || !Array.isArray(conditions.rules) || conditions.rules.length === 0) {
+    return null;
+  }
+  const op = (conditions.operator || "AND").toUpperCase();
+
+  const filters = [];
+  for (const r of conditions.rules) {
+    if (r.rules) return null; // nested groups: too complex for single DNR pass
+    const field = r.field || "";
+    const operator = r.operator;
+    const value = String(r.value == null ? "" : r.value);
+    if (!value) return null;
+    if (field !== "request.url" && field !== "request.hostname") return null;
+    let filter;
+    switch (operator) {
+      case "contains":    filter = value; break;
+      case "equals":      filter = "|" + value + "|"; break;
+      case "starts_with": filter = "|" + value; break;
+      case "ends_with":   filter = value + "|"; break;
+      default: return null;
+    }
+    filters.push(filter);
+  }
+
+  // AND with multiple url filters can't be a single urlFilter — DNR matches a
+  // single substring/anchor pattern per rule. Skip and let the navigation
+  // listener fall back (it can evaluate AND properly in JS).
+  if (op === "AND" && filters.length > 1) return null;
+  return filters;
+}
+
+async function updatePolicyDNR(policies) {
+  if (!chrome.declarativeNetRequest || !chrome.declarativeNetRequest.updateDynamicRules) return;
+
+  const rules = [];
+  let nextId = POLICY_DNR_ID_MIN;
+  let skipped = 0;
+
+  for (const policy of policies || []) {
+    if (!policy || !policy.enabled || policy.action !== "block") continue;
+    const filters = extractURLFilters(policy.conditions);
+    if (!filters) {
+      skipped++;
+      console.log(`[CyberArmor] DNR skip "${policy.name}" — non-URL or compound condition; navigation listener will enforce`);
+      continue;
+    }
+    const policyParam = encodeURIComponent(policy.name || "");
+    for (const urlFilter of filters) {
+      if (nextId + 1 > POLICY_DNR_ID_MAX) break;
+      rules.push({
+        id: nextId++,
+        priority: 1,
+        action: {
+          type: "redirect",
+          redirect: {
+            extensionPath: "/phishing_warning.html?reason=policy_block&policy=" + policyParam,
+          },
+        },
+        condition: { urlFilter, resourceTypes: ["main_frame"] },
+      });
+      rules.push({
+        id: nextId++,
+        priority: 1,
+        action: { type: "block" },
+        condition: { urlFilter, resourceTypes: POLICY_DNR_BLOCK_TYPES },
+      });
+    }
+  }
+
+  try {
+    const existing = await chrome.declarativeNetRequest.getDynamicRules();
+    const removeRuleIds = existing
+      .map((r) => r.id)
+      .filter((id) => id >= POLICY_DNR_ID_MIN && id <= POLICY_DNR_ID_MAX);
+    await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds, addRules: rules });
+    console.log(`[CyberArmor] DNR policy rules synced: ${rules.length} active (${skipped} skipped → listener fallback)`);
+  } catch (err) {
+    console.warn("[CyberArmor] DNR policy update failed:", err.message);
+  }
+}
+
 // --- Policy Sync ---
 
 async function syncPolicies() {
@@ -168,6 +282,7 @@ async function syncPolicies() {
       cachedPolicies = await resp.json();
       await chrome.storage.local.set({ cachedPolicies, lastPolicySync: Date.now() });
       console.log(`[CyberArmor] Synced ${cachedPolicies.length} policies`);
+      await updatePolicyDNR(cachedPolicies);
       return { ok: true, count: cachedPolicies.length };
     }
     const body = await resp.text().catch(() => "");
