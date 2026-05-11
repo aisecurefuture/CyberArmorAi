@@ -10,10 +10,13 @@
     <key>Label</key>
     <string>ai.cyberarmor.clipboard-helper</string>
 
+    <!-- Invoke the wrapper rather than python3 directly so macOS's
+         Background Activity notification and Login Items pane show
+         "cyberarmor-clipboard-helper" as the source. The wrapper exec's
+         the venv Python on clipboard_helper.py. -->
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/cyberarmor/.venv/bin/python3</string>
-        <string>/usr/local/cyberarmor/clipboard_helper.py</string>
+        <string>/usr/local/cyberarmor/cyberarmor-clipboard-helper</string>
     </array>
 
     <key>RunAtLoad</key>

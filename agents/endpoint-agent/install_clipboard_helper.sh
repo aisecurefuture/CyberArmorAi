@@ -18,7 +18,9 @@ fi
 
 AGENT_JSON="/etc/cyberarmor/agent.json"
 HELPER_SCRIPT="/usr/local/cyberarmor/clipboard_helper.py"
+HELPER_WRAPPER="/usr/local/cyberarmor/cyberarmor-clipboard-helper"
 SOURCE_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/clipboard_helper.py"
+SOURCE_WRAPPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/cyberarmor-clipboard-helper"
 TEMPLATE_PLIST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/launchagent/ai.cyberarmor.clipboard-helper.plist.template"
 
 USER_CONFIG_DIR="${HOME}/.config/cyberarmor"
@@ -39,8 +41,11 @@ fi
 echo "→ Copying clipboard_helper.py to ${HELPER_SCRIPT}"
 sudo install -m 0755 "${SOURCE_HELPER}" "${HELPER_SCRIPT}"
 
-echo "→ Ensuring pyperclip is installed in the agent venv"
-sudo /usr/local/cyberarmor/.venv/bin/python3 -m pip install --quiet pyperclip
+echo "→ Copying launcher wrapper to ${HELPER_WRAPPER}"
+sudo install -m 0755 "${SOURCE_WRAPPER}" "${HELPER_WRAPPER}"
+
+echo "→ Ensuring pyperclip + setproctitle are installed in the agent venv"
+sudo /usr/local/cyberarmor/.venv/bin/python3 -m pip install --quiet pyperclip setproctitle
 
 mkdir -p "${USER_CONFIG_DIR}" "${LAUNCH_AGENT_DIR}" "${LOG_DIR}"
 

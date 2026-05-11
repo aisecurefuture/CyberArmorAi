@@ -31,6 +31,15 @@ except ImportError:
     print("pyperclip not installed in this Python; clipboard helper exiting", flush=True)
     sys.exit(2)
 
+# Replace argv[0] so `ps` and macOS background-activity notifications show
+# a friendly name instead of "python3". The launcher wrapper covers the
+# OS-level display name; this covers process listings.
+try:
+    import setproctitle  # type: ignore[import-untyped]
+    setproctitle.setproctitle("cyberarmor-clipboard-helper")
+except ImportError:
+    pass
+
 
 # Keep in sync with extensions/chromium-shared/content.js PII_PATTERNS and
 # agents/endpoint-agent/dlp catalogues. Categories use the same "pii."/

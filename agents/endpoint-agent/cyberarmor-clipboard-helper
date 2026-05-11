@@ -1,0 +1,6 @@
+#!/bin/sh
+# Thin launcher so macOS shows "cyberarmor-clipboard-helper" instead of
+# "python3" in the Background Activity notification and Login Items pane.
+# The LaunchAgent plist points at this script; this exec's the real
+# helper with the venv's Python.
+exec /usr/local/cyberarmor/.venv/bin/python3 /usr/local/cyberarmor/clipboard_helper.py "$@"
