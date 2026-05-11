@@ -20,6 +20,13 @@ apscheduler>=3.10.0
 # classifying the agent itself as an external AI tool.
 setproctitle>=1.3.0
 
+# Cross-platform clipboard access for the macOS user-session clipboard
+# helper (clipboard_helper.py + install_clipboard_helper.sh, LaunchAgent).
+# Not used by the system LaunchDaemon — daemons can't read the user's
+# pasteboard on macOS — but kept in the shared requirements so the agent
+# venv has it ready when the helper is installed.
+pyperclip>=1.8.0
+
 # Platform-specific (optional)
 # macOS: no additional deps (uses native frameworks)
 # Windows: pywin32 (uncomment below)

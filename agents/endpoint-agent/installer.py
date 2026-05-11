@@ -369,6 +369,13 @@ def uninstall_macos_service() -> bool:
         subprocess.run(["launchctl", "bootout", "system", str(plist_path)], check=False)
         plist_path.unlink(missing_ok=True)
         logger.info("macOS launchd service removed")
+        logger.info("")
+        logger.info("Note: the per-user clipboard helper LaunchAgent (if installed) lives")
+        logger.info("in each user's home. Each user should run, as themselves (not sudo):")
+        logger.info("  ~/.../endpoint-agent/uninstall_clipboard_helper.sh")
+        logger.info("or simply:")
+        logger.info("  launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/ai.cyberarmor.clipboard-helper.plist")
+        logger.info("  rm ~/Library/LaunchAgents/ai.cyberarmor.clipboard-helper.plist ~/.config/cyberarmor/helper.json")
         return True
     except Exception as e:
         logger.error("Failed to uninstall launchd service: %s", e)
@@ -752,6 +759,21 @@ def install(
     logger.info("  Config:       %s", config_path)
     logger.info("  Logs:         %s", log_dir)
     logger.info("=" * 60)
+
+    # macOS clipboard helper requires a per-user LaunchAgent (system
+    # LaunchDaemons can't read the user pasteboard). installer.py runs as
+    # root and doesn't know which user, so we leave that step explicit.
+    if plat == "Darwin" and not skip_service:
+        helper_installer = install_dir / "install_clipboard_helper.sh"
+        if helper_installer.exists():
+            logger.info("")
+            logger.info("Optional: enable user-session clipboard monitoring.")
+            logger.info("  Run AS THE END USER (not sudo):")
+            logger.info("    %s", helper_installer)
+            logger.info("  This installs a LaunchAgent that runs in the user's GUI")
+            logger.info("  session so pyperclip.paste() can see their clipboard.")
+            logger.info("  Set CYBERARMOR_CLIPBOARD_ACTION=monitor|redact|block before")
+            logger.info("  running to choose the enforcement mode (default: monitor).")
     return True
 
 

@@ -51,6 +51,59 @@ python installer.py status
 sudo python installer.py uninstall
 ```
 
+### macOS clipboard helper (per-user LaunchAgent)
+
+macOS LaunchDaemons run outside the user's pasteboard session, so the
+system agent itself cannot read or modify the user's clipboard. To get
+clipboard PII detection / redaction / blocking, a small companion runs
+as a per-user LaunchAgent in the GUI session.
+
+After the main agent is installed, each user runs the per-user step
+**as themselves** (not `sudo`):
+
+```bash
+# Set the enforcement mode before installing (default: monitor).
+#   monitor — telemetry only, no UI banner
+#   redact  — replaces detected PII with [REDACTED-<class>] placeholders
+#             before downstream apps can paste
+#   block   — clears the clipboard entirely on detection
+export CYBERARMOR_CLIPBOARD_ACTION=monitor
+
+/usr/local/cyberarmor/install_clipboard_helper.sh
+```
+
+What the helper does:
+
+- Polls the user's pasteboard every 3 seconds via `pyperclip`
+- Detects PII / secrets (same regex catalogue as `content.js` and the
+  daemon's `file_monitor`)
+- Posts `clipboard_sensitive_data` /
+  `clipboard_sensitive_data_redacted` /
+  `clipboard_sensitive_data_blocked` telemetry to the control plane
+  with the same `tenant_id` and `api_key` as the system agent
+- For `redact` / `block` actions, rewrites the pasteboard in place and
+  shows a macOS Notification Center banner
+
+Config lives at `~/.config/cyberarmor/helper.json` (mode 600). Change
+the action with a simple edit + reload:
+
+```bash
+sed -i '' 's/"clipboard_action": "[^"]*"/"clipboard_action": "redact"/' \
+  ~/.config/cyberarmor/helper.json
+launchctl kickstart -k "gui/$(id -u)/ai.cyberarmor.clipboard-helper"
+```
+
+Logs:
+```
+~/Library/Logs/cyberarmor-clipboard-helper.log
+~/Library/Logs/cyberarmor-clipboard-helper.err
+```
+
+To remove the helper (system agent unaffected):
+```bash
+/usr/local/cyberarmor/uninstall_clipboard_helper.sh
+```
+
 ## Docker
 
 ```bash
