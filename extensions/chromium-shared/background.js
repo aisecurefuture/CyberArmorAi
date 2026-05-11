@@ -74,6 +74,19 @@ let cachedPolicies = [];
 let policySyncTimer = null;
 let lastAuthStatus = { mode: "unknown", algorithm: "unknown", updatedAt: 0 };
 
+// MV3 service workers respawn on events after going idle; onInstalled/onStartup
+// don't fire on respawn, so cachedConfig would otherwise stay at defaults until
+// the next browser launch. Kick a top-level load + cache restore so any wake-up
+// event sees real config, and await this in message handlers that need it.
+const configReady = (async () => {
+  await loadConfig();
+  const stored = await new Promise((resolve) =>
+    chrome.storage.local.get(["cachedPolicies", "cyberarmorLastAuthStatus"], resolve)
+  );
+  if (stored.cachedPolicies) cachedPolicies = stored.cachedPolicies;
+  if (stored.cyberarmorLastAuthStatus) lastAuthStatus = stored.cyberarmorLastAuthStatus;
+})();
+
 function recordAuthStatus(authInfo, context) {
   if (!authInfo) return;
   lastAuthStatus = {
@@ -375,7 +388,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === "force_policy_sync") {
-    syncPolicies().then((result) => {
+    configReady.then(() => syncPolicies()).then((result) => {
       sendResponse({ ...result, policies: cachedPolicies });
     });
     return true;
