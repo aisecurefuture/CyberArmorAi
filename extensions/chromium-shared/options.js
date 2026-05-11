@@ -192,13 +192,20 @@
     els.btnForceSync.addEventListener("click", () => {
       els.btnForceSync.disabled = true;
       els.btnForceSync.textContent = "Syncing...";
-      // Trigger a policy sync by sending a message to the background
-      chrome.runtime.sendMessage({ type: "get_policies" }, (response) => {
-        const count = response?.policies?.length || 0;
-        els.lastSyncInfo.textContent = `Last sync: Just now (${count} policies)`;
+      chrome.runtime.sendMessage({ type: "force_policy_sync" }, (response) => {
+        const count = response?.count ?? response?.policies?.length ?? 0;
         els.btnForceSync.disabled = false;
         els.btnForceSync.textContent = "Force Sync";
-        showToast(`Synced ${count} policies`, "success");
+        if (response?.ok) {
+          els.lastSyncInfo.textContent = `Last sync: Just now (${count} policies)`;
+          showToast(`Synced ${count} policies`, "success");
+        } else {
+          const err = response?.error || "unknown error";
+          els.lastSyncInfo.textContent = `Last sync failed: ${err}`;
+          showToast(`Sync failed: ${err}`, "error");
+          console.warn("[CyberArmor options] force_policy_sync failed:", response);
+        }
+        loadDebugInfo();
       });
     });
 

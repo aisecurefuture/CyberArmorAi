@@ -2847,6 +2847,47 @@ def proxy_policies_for_tenant(
     return data
 
 
+@app.get("/policies/{tenant_id}/export")
+def proxy_policies_export_for_tenant(
+    tenant_id: str,
+    x_api_key: Annotated[Optional[str], Header(alias="x-api-key")] = None,
+):
+    """Proxy the agent-shaped policy export to the Policy Service.
+
+    The browser extension and endpoint agents call /policies/{tenant_id}/export
+    to receive the sanitized, evaluation-ready shape (id, name, enabled, action,
+    priority, conditions, rules, compliance_frameworks, tags, version) defined
+    by the policy service. Returns 502 on upstream failure for parity with the
+    sibling proxy above.
+    """
+    _dev_or_key_ok(x_api_key)
+    policy_url = os.getenv("POLICY_SERVICE_URL", "http://policy:8001")
+    policy_key = os.getenv("POLICY_API_SECRET", DEFAULT_API_KEY)
+    try:
+        resp = httpx.get(
+            f"{policy_url}/policies/{tenant_id}/export",
+            headers=build_auth_headers(policy_url, policy_key),
+            timeout=5.0,
+        )
+    except Exception as exc:
+        logger.warning("policy_export_proxy_error tenant=%s err=%s", tenant_id, exc)
+        raise HTTPException(status_code=502, detail="policy service unavailable")
+    if resp.status_code != 200:
+        logger.warning(
+            "policy_export_proxy_upstream_error status=%s tenant=%s body=%s",
+            resp.status_code, tenant_id, resp.text[:200],
+        )
+        raise HTTPException(status_code=502, detail=f"policy service returned {resp.status_code}")
+    try:
+        data = resp.json()
+    except Exception as exc:
+        logger.warning("policy_export_proxy_decode_error tenant=%s err=%s", tenant_id, exc)
+        raise HTTPException(status_code=502, detail="policy service returned invalid JSON")
+    count = len(data) if isinstance(data, list) else "?"
+    logger.info("policy_export_proxy_ok tenant=%s count=%s", tenant_id, count)
+    return data
+
+
 class IncidentIngest(BaseModel):
     tenant_id: str
     request_id: str

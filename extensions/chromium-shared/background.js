@@ -134,9 +134,11 @@ async function ensureBootstrapRedeemed() {
 // --- Policy Sync ---
 
 async function syncPolicies() {
-  if (!cachedConfig.controlPlaneUrl || !cachedConfig.apiKey) return;
+  if (!cachedConfig.controlPlaneUrl || !cachedConfig.apiKey) {
+    return { ok: false, count: 0, error: "missing controlPlaneUrl or apiKey" };
+  }
+  const url = `${cachedConfig.controlPlaneUrl.replace(/\/$/, "")}/policies/${cachedConfig.tenantId}/export`;
   try {
-    const url = `${cachedConfig.controlPlaneUrl.replace(/\/$/, "")}/policies/${cachedConfig.tenantId}/export`;
     const auth = await CyberArmorPQCAuth.buildHeaders({
       baseUrl: cachedConfig.controlPlaneUrl,
       apiKey: cachedConfig.apiKey,
@@ -147,19 +149,22 @@ async function syncPolicies() {
       },
     });
     recordAuthStatus(auth.authInfo, "policy_sync");
-    const resp = await fetch(url, {
-      headers: auth.headers,
-    });
+    const resp = await fetch(url, { headers: auth.headers });
     if (resp.ok) {
       cachedPolicies = await resp.json();
       await chrome.storage.local.set({ cachedPolicies, lastPolicySync: Date.now() });
       console.log(`[CyberArmor] Synced ${cachedPolicies.length} policies`);
+      return { ok: true, count: cachedPolicies.length };
     }
+    const body = await resp.text().catch(() => "");
+    const error = `HTTP ${resp.status} ${resp.statusText}: ${body.slice(0, 200)}`;
+    console.warn(`[CyberArmor] Policy sync failed: ${error} (${url})`);
+    return { ok: false, count: cachedPolicies.length, error };
   } catch (err) {
     console.warn("[CyberArmor] Policy sync failed:", err.message);
-    // Load from cache
     const stored = await chrome.storage.local.get(["cachedPolicies"]);
     if (stored.cachedPolicies) cachedPolicies = stored.cachedPolicies;
+    return { ok: false, count: cachedPolicies.length, error: err.message };
   }
 }
 
@@ -367,6 +372,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "get_policies") {
     sendResponse({ policies: cachedPolicies });
     return false;
+  }
+
+  if (msg.type === "force_policy_sync") {
+    syncPolicies().then((result) => {
+      sendResponse({ ...result, policies: cachedPolicies });
+    });
+    return true;
   }
 
   if (msg.type === "phishing_allowlist_domain") {
