@@ -450,11 +450,23 @@ class FileMonitor:
             logger.info("pyperclip not available; clipboard monitoring disabled")
             return
 
+        logger.info("Clipboard monitor started (poll_interval=3s)")
         last_content = ""
+        consecutive_errors = 0
+        poll_count = 0
         while True:
             try:
                 await asyncio.sleep(3)
                 content = pyperclip.paste()
+                poll_count += 1
+                # Log the FIRST few polls so we can tell from the log whether
+                # the daemon-context pasteboard actually returns user data on
+                # this host. Truncated; content hashes go to telemetry, not
+                # the file log.
+                if poll_count <= 3:
+                    preview = (content or "")[:24]
+                    logger.info("Clipboard poll #%d len=%d preview=%r",
+                                poll_count, len(content or ""), preview)
                 if content and content != last_content:
                     last_content = content
                     redaction_action = self._clipboard_action()
@@ -491,8 +503,15 @@ class FileMonitor:
                                 "severity": "high",
                             },
                         )
-            except Exception:
-                # Clipboard access can fail in headless environments
+            except Exception as exc:
+                # Clipboard access can fail in headless environments (and
+                # always fails when the agent runs as a LaunchDaemon outside
+                # the user's pasteboard session — log so that case is
+                # diagnosable instead of silent).
+                consecutive_errors += 1
+                if consecutive_errors <= 3 or consecutive_errors % 20 == 0:
+                    logger.warning("Clipboard poll error #%d: %s",
+                                   consecutive_errors, exc)
                 await asyncio.sleep(10)
 
     def _clipboard_action(self) -> str:
