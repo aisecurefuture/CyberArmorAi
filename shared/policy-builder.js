@@ -145,45 +145,63 @@ function emptyRule() {
 function fromEngineTree(node) {
   if (!node || typeof node !== "object") return emptyGroup();
   if (Array.isArray(node.rules)) {
-    return {
-      __id: uid(),
-      operator: node.operator || "AND",
-      rules: node.rules.map((child) => {
-        if (child && Array.isArray(child.rules)) return fromEngineTree(child);
-        return {
-          __id: uid(),
-          field: child?.field || "",
-          operator: child?.operator || child?.op || "equals",
-          value: child?.value ?? "",
-        };
-      }),
-    };
+    const children = [];
+    for (const child of node.rules) {
+      if (child && Array.isArray(child.rules)) {
+        const sub = fromEngineTree(child);
+        // Drop empty groups when loading legacy policies authored before
+        // toEngineTree learned to prune — saves the user from re-clicking
+        // "Remove group" on every edit.
+        if (sub.rules.length > 0) children.push(sub);
+        continue;
+      }
+      const field = (child && child.field) || "";
+      if (!field) continue;
+      children.push({
+        __id: uid(),
+        field,
+        operator: child?.operator || child?.op || "equals",
+        value: child?.value ?? "",
+      });
+    }
+    return { __id: uid(), operator: node.operator || "AND", rules: children };
   }
   return emptyGroup();
 }
 
+// Serialize the builder state to the wire-format the policy engine
+// consumes. We prune as we go so authored JSON stays tidy:
+//   - Empty groups (zero rules) are dropped instead of emitted as
+//     {rules:[], operator:"OR"} — those nodes evaluate to true and quietly
+//     widen the parent AND, which is almost never what the author meant.
+//   - Leaf rules without a field are dropped (orphan rows from delete UX).
+//   - Operators on leaves that don't require a value (exists / not_exists /
+//     is_empty / is_not_empty) keep their stored value as "" rather than
+//     emitting "(n/a)" placeholder text.
 function toEngineTree(node) {
   const out = { operator: node.operator || "AND", rules: [] };
   for (const child of node.rules || []) {
     if (child && Array.isArray(child.rules)) {
-      out.rules.push(toEngineTree(child));
-    } else {
-      let value = child.value ?? "";
-      if (typeof value === "string" && ["in", "not_in"].includes(child.operator)) {
-        // Split comma/newline lists into arrays unless it's an artifact ref.
-        if (!value.startsWith("$artifact:")) {
-          value = value
-            .split(/[,\n]/)
-            .map((s) => s.trim())
-            .filter(Boolean);
-        }
-      }
-      out.rules.push({
-        field: child.field || "",
-        operator: child.operator || "equals",
-        value,
-      });
+      const sub = toEngineTree(child);
+      if (sub.rules.length > 0) out.rules.push(sub);
+      continue;
     }
+    if (!child || !child.field || !String(child.field).trim()) continue;
+    const operator = child.operator || "equals";
+    const noValueOps = ["exists", "not_exists", "is_empty", "is_not_empty"];
+    let value = child.value ?? "";
+    if (noValueOps.includes(operator)) {
+      value = "";
+    } else if (typeof value === "string" && ["in", "not_in"].includes(operator)) {
+      // Split comma/newline lists into arrays unless it's an artifact ref.
+      if (!value.startsWith("$artifact:")) {
+        value = value
+          .split(/[,\n]/)
+          .map((s) => s.trim())
+          .filter(Boolean);
+      }
+    }
+    out.rules.push({ field: String(child.field).trim(), operator, value });
   }
   return out;
 }
