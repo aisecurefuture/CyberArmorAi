@@ -2129,6 +2129,24 @@ async function viewCompliance() {
   const lastAssessment = {};
   let frameworks = [];
   let loadError = null;
+  // Window for evidence aggregation on the backend. "all" → no since/until,
+  // backend treats applied policies as current state and aggregates telemetry
+  // / audit / incidents over the full lifetime of the tenant.
+  const COMPLIANCE_WINDOWS = [
+    { id: "24h", label: "Last 24h", ms: 24 * 60 * 60 * 1000 },
+    { id: "7d",  label: "Last 7d",  ms: 7  * 24 * 60 * 60 * 1000 },
+    { id: "30d", label: "Last 30d", ms: 30 * 24 * 60 * 60 * 1000 },
+    { id: "all", label: "All time", ms: null },
+  ];
+  let windowId = "7d";
+
+  function currentWindowBody() {
+    const w = COMPLIANCE_WINDOWS.find((x) => x.id === windowId);
+    if (!w || w.ms == null) return {};
+    const until = new Date();
+    const since = new Date(until.getTime() - w.ms);
+    return { since: since.toISOString(), until: until.toISOString() };
+  }
 
   try {
     const resp = await api("/api/customer/compliance/frameworks");
@@ -2200,6 +2218,14 @@ async function viewCompliance() {
               <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-1">Average pass rate</div>
               ${totalAssessed > 0 ? compliancePctBar(avgPct) : `<div class="text-xs text-slate-500">No assessments yet</div>`}
             </div>
+            <div class="flex flex-col leading-tight">
+              <span class="text-[10px] uppercase tracking-wider text-slate-500">Evidence window</span>
+              <div class="mt-1 flex flex-wrap gap-1" id="complianceWindowPicker">
+                ${COMPLIANCE_WINDOWS.map((w) => `
+                  <button type="button" data-window-id="${w.id}" class="rounded-full px-2 py-1 text-[11px] ${windowId === w.id ? "bg-cyan-500 text-slate-950 font-semibold" : "bg-slate-900 border border-slate-700 text-slate-300 hover:bg-slate-800"}">${esc(w.label)}</button>
+                `).join("")}
+              </div>
+            </div>
             ${isAdmin ? `<button id="assessAllBtn" type="button" class="rounded-2xl bg-cyan-500 px-3 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400">Run all</button>` : `<span class="text-xs text-slate-500">View only — admins can run assessments.</span>`}
           </div>
         `)}
@@ -2216,6 +2242,15 @@ async function viewCompliance() {
     });
     const allBtn = $("#assessAllBtn");
     if (allBtn) allBtn.addEventListener("click", runAll);
+    document.querySelectorAll("#complianceWindowPicker button").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        windowId = btn.dataset.windowId;
+        // Stale prior assessments — they were run against a different window.
+        for (const k of Object.keys(lastAssessment)) delete lastAssessment[k];
+        $("#compliancePanel").innerHTML = "";
+        render();
+      });
+    });
   }
 
   async function runAssessment(fwId, fwName) {
@@ -2224,7 +2259,7 @@ async function viewCompliance() {
     try {
       const result = await api("/api/customer/compliance/assess", {
         method: "POST",
-        body: JSON.stringify({ framework: fwId }),
+        body: JSON.stringify({ framework: fwId, ...currentWindowBody() }),
       });
       lastAssessment[fwId] = result;
       panel.innerHTML = "";
@@ -2243,7 +2278,7 @@ async function viewCompliance() {
       try {
         const result = await api("/api/customer/compliance/assess", {
           method: "POST",
-          body: JSON.stringify({ framework: f.id }),
+          body: JSON.stringify({ framework: f.id, ...currentWindowBody() }),
         });
         lastAssessment[f.id] = result;
         succeeded++;
@@ -2285,11 +2320,24 @@ async function viewCompliance() {
     };
 
     const panel = $("#compliancePanel");
+    const win = result.window || {};
+    const winLabel = win.since
+      ? `${esc(String(win.since))} → ${esc(String(win.until || "now"))}`
+      : "All time";
+    const evidence = result.evidence_used && typeof result.evidence_used === "object" ? result.evidence_used : {};
+    const evidenceKeys = Object.keys(evidence).sort();
+    const evidenceChip = (k) => {
+      const v = evidence[k];
+      const truthy = v && (typeof v !== "number" || v > 0);
+      const cls = truthy ? "bg-emerald-500/15 text-emerald-200" : "bg-slate-700/40 text-slate-400";
+      const display = typeof v === "boolean" ? (v ? "true" : "false") : (typeof v === "number" ? String(v) : (v ? "set" : "unset"));
+      return `<span class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] ${cls}"><span class="font-mono">${esc(k)}</span><span class="text-slate-400">=</span><span>${esc(display)}</span></span>`;
+    };
     panel.innerHTML = card(`
       <div class="flex items-baseline justify-between gap-2">
         <div>
           <div class="text-lg font-semibold">${esc(fwName)} — Assessment results</div>
-          <div class="mt-1 text-xs text-slate-500">${esc(result.timestamp || "")}</div>
+          <div class="mt-1 text-xs text-slate-500">${esc(result.timestamp || "")} · Window: ${winLabel}</div>
         </div>
         <button id="closeAssessment" type="button" class="text-xs text-slate-400 hover:text-slate-200">Close</button>
       </div>
@@ -2307,6 +2355,12 @@ async function viewCompliance() {
           <tbody>${controls.length === 0 ? `<tr><td colspan="5" class="px-3 py-6 text-center text-sm text-slate-500">No control results returned</td></tr>` : controls.map(controlRow).join("")}</tbody>
         </table>
       </div>
+      ${evidenceKeys.length > 0 ? `
+        <div class="mt-4">
+          <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-2">Evidence used (derived from tenant state in window)</div>
+          <div class="flex flex-wrap gap-1">${evidenceKeys.map(evidenceChip).join("")}</div>
+        </div>
+      ` : ""}
     `);
     $("#closeAssessment").addEventListener("click", () => { panel.innerHTML = ""; });
     panel.scrollIntoView({ behavior: "smooth", block: "start" });

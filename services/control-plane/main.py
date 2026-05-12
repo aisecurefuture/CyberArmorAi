@@ -2775,17 +2775,152 @@ def customer_compliance_frameworks(
     return _call_compliance("GET", "/frameworks", ctx.tenant_id)
 
 
+def _build_compliance_evidence(
+    db: Session,
+    tenant_id: str,
+    since: Optional[datetime],
+    until: Optional[datetime],
+) -> Dict[str, Any]:
+    """Build a compliance evidence dict from the tenant's current state.
+
+    Compliance frameworks evaluate each control by checking whether
+    specific keys in the evidence dict are present and truthy. Without
+    this builder the customer-portal would have to ship a static evidence
+    dict and assessments would always say "no evidence — every control
+    fails." Here we generate evidence from what the platform observes
+    in the requested window: active policies, telemetry volume by class,
+    audit log presence, and incident count.
+
+    The keys we set are the union of evidence_keys actually referenced
+    by the bundled frameworks (see services/compliance/frameworks/*.py).
+    Adding more mappings is additive; controls whose keys we don't set
+    here remain "fail" with a "Missing: <key>" message, which is the
+    honest signal.
+    """
+    evidence: Dict[str, Any] = {}
+
+    # --- Policies (always current; ignore window) ---
+    try:
+        policies_resp = _fetch_policy_service(f"/policies/{tenant_id}", tenant_id)
+        policies = policies_resp if isinstance(policies_resp, list) else []
+    except Exception:
+        policies = []
+    enabled_policies = [p for p in policies if p.get("enabled") is not False]
+    actions = {str(p.get("action", "")).lower() for p in enabled_policies}
+    redact_classes_union: set = set()
+    for p in enabled_policies:
+        for c in p.get("redact_classes") or []:
+            redact_classes_union.add(str(c))
+
+    if enabled_policies:
+        evidence["access_control_policy"] = True
+        evidence["acceptable_use_policy"] = True
+        evidence["cybersecurity_policy_documented"] = True
+        evidence["cybersecurity_program"] = True
+    if "block" in actions or "warn" in actions:
+        evidence["anomaly_detection"] = True
+    if "redact" in actions or any(c.startswith("pii.") for c in redact_classes_union):
+        evidence["data_classification"] = True
+        evidence["data_flow_controls"] = True
+    if any(c.startswith("secret.") for c in redact_classes_union):
+        evidence["credential_management"] = True
+
+    # --- Telemetry-derived signals (windowed) ---
+    tq = db.query(TelemetryRecord).filter(TelemetryRecord.tenant_id == tenant_id)
+    if since is not None:
+        tq = tq.filter(TelemetryRecord.occurred_at >= since)
+    if until is not None:
+        tq = tq.filter(TelemetryRecord.occurred_at <= until)
+    tq = tq.with_entities(TelemetryRecord.event_type, TelemetryRecord.source)
+    type_counts: Dict[str, int] = {}
+    source_counts: Dict[str, int] = {}
+    for event_type, source in tq.all():
+        type_counts[event_type or ""] = type_counts.get(event_type or "", 0) + 1
+        source_counts[source or ""] = source_counts.get(source or "", 0) + 1
+
+    if sum(type_counts.values()) > 0:
+        evidence["continuous_monitoring"] = True
+        evidence["audit_review_process"] = True
+    if any(et.startswith("ai_") for et in type_counts):
+        evidence["ai_service_monitoring"] = True
+        evidence["ai_system_inventory"] = True
+        evidence["ai_output_monitoring"] = True
+    if source_counts.get("endpoint", 0) > 0:
+        evidence["network_monitoring"] = True
+        evidence["asset_inventory"] = True
+    if any("pii_" in et or "sensitive_data" in et for et in type_counts):
+        evidence["data_classification"] = True
+        evidence["data_flow_controls"] = True
+    if any("policy_block" in et or "policy_redact" in et for et in type_counts):
+        evidence["api_authorization_checks"] = True
+
+    # --- Audit logs ---
+    audit_q = db.query(func.count(AuditLog.id)).filter(AuditLog.tenant_id == tenant_id)
+    if since is not None:
+        audit_q = audit_q.filter(AuditLog.created_at >= since)
+    if until is not None:
+        audit_q = audit_q.filter(AuditLog.created_at <= until)
+    audit_count = audit_q.scalar() or 0
+    if audit_count > 0:
+        evidence["audit_logging_enabled"] = True
+        evidence["cybersecurity_audit"] = True
+
+    # --- Incidents (in-memory, no timestamp filter — best-effort) ---
+    incident_count = len(_INCIDENTS.get(tenant_id, {}))
+    if incident_count > 0:
+        evidence["incident_response_plan"] = True
+        evidence["ai_incident_response_plan"] = True
+        evidence["breach_notification_process"] = True
+
+    return evidence
+
+
 @app.post("/customer/compliance/assess")
 def customer_compliance_assess(
     payload: Dict[str, Any],
     ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+    db: Annotated[Session, Depends(get_db)],
 ) -> Any:
     """Tenant admins only — run a compliance assessment scoped to the
-    session tenant. Body forwarded unchanged to the compliance service;
-    the framework id is read from ``payload["framework"]`` and an
-    optional ``evidence`` dict can be passed for evidence merge."""
+    session tenant.
+
+    Accepts a ``since`` / ``until`` (ISO-8601) time window; the control
+    plane builds an evidence dict from the tenant's observed state in
+    that window — active policies, telemetry by class, audit log presence,
+    incident count — and merges it with any explicit evidence the caller
+    passed. The assessment therefore reflects what actually happened in
+    the requested period, not just a static stored evidence record.
+    """
     body = dict(payload or {})
-    return _call_compliance("POST", f"/assess/{ctx.tenant_id}", ctx.tenant_id, json_body=body)
+    since_dt = until_dt = None
+    if body.get("since"):
+        try:
+            since_dt = datetime.fromisoformat(str(body["since"]).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            since_dt = None
+    if body.get("until"):
+        try:
+            until_dt = datetime.fromisoformat(str(body["until"]).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            until_dt = None
+
+    derived_evidence = _build_compliance_evidence(db, ctx.tenant_id, since_dt, until_dt)
+    # Caller-provided evidence wins; the derived view fills the gaps.
+    merged_evidence = {**derived_evidence, **(body.get("evidence") or {})}
+
+    forward_body = {
+        "framework": body.get("framework"),
+        "evidence": merged_evidence,
+    }
+    result = _call_compliance("POST", f"/assess/{ctx.tenant_id}", ctx.tenant_id, json_body=forward_body)
+    # Attach the window + evidence dict to the response so the frontend can
+    # show what evidence drove the result. Non-standard field, additive.
+    if isinstance(result, dict):
+        result.setdefault("window", {})
+        result["window"]["since"] = since_dt.isoformat() if since_dt else None
+        result["window"]["until"] = until_dt.isoformat() if until_dt else None
+        result["evidence_used"] = sorted(merged_evidence.keys())
+    return result
 
 
 @app.get("/customer/compliance/report")
