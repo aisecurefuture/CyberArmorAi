@@ -178,10 +178,16 @@ PACKAGE_CATALOG: Dict[str, Dict[str, Any]] = {
         "bootstrap_env": ["CYBERARMOR_BOOTSTRAP_TOKEN", "CYBERARMOR_TENANT_ID", "CYBERARMOR_CONTROL_PLANE_URL"],
     },
     "edge-extension": {
+        # package_key is the stable internal identifier referenced from
+        # chromium-shared (options.js + background.js bootstrap redeem),
+        # admin-dashboard, customer-portal, and bootstrap_supports docs —
+        # renaming it would force every installed extension to re-redeem.
+        # Title + filename are the user-visible strings; both reflect that
+        # the bundle works in any Chromium-based browser, not just Edge.
         "title": "Chromium Browser Extension",
         "category": "browser_extension",
         "path": "extensions/edge",
-        "filename": "cyberarmor-edge-extension.zip",
+        "filename": "cyberarmor-chromium-browser-extension.zip",
         "description": "Shared browser extension bundle for Chromium-based browsers such as Chrome, Edge, Brave, Opera, and similar targets.",
         "install_hint": "Load unpacked extension in the target Chromium-based browser developer mode.",
         "bootstrap_env": ["CYBERARMOR_BOOTSTRAP_TOKEN", "CYBERARMOR_TENANT_ID", "CYBERARMOR_CONTROL_PLANE_URL"],
