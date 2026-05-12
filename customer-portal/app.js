@@ -2830,9 +2830,14 @@ function recommendedQuickstartCard(catalog) {
   // The browser extension is the fastest path from "blank tenant" to "first
   // event in dashboard". Surface it as the recommended starter so prospects
   // don't have to choose between five packages on their first visit.
-  const ext = (Array.isArray(catalog) ? catalog : []).find((p) =>
-    ["extension", "browser_extension"].includes(p.category)
-  );
+  //
+  // Pick order: prefer the Chromium browser extension specifically (works in
+  // Chrome / Edge / Brave / Opera) → any browser_extension → nothing. IDE
+  // extensions (category "extension": VS Code, Cursor, Kiro, Office 365)
+  // are NOT a browser extension and must not match here.
+  const list = Array.isArray(catalog) ? catalog : [];
+  const ext = list.find((p) => p.package_key === "edge-extension")
+           || list.find((p) => p.category === "browser_extension");
   if (!ext) return "";
   const adminCta = session.role === "tenant_admin"
     ? `<button class="customerBootstrapBtn rounded-xl bg-cyan-500 px-3 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400" data-package-key="${esc(ext.package_key)}" data-package-title="${esc(ext.title)}" type="button">Issue Bootstrap Token</button>`

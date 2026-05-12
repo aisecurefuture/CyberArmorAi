@@ -639,7 +639,11 @@ def _resolve_package_spec(package_key: str) -> Dict[str, Any]:
 
 def _catalog_entry(package_key: str, tenant_id: str, customer_scope: bool) -> DownloadCatalogEntry:
     spec = _resolve_package_spec(package_key)
-    route_prefix = "/customer/downloads/packages" if customer_scope else "/bootstrap/packages"
+    # The customer-portal nginx only proxies /api/customer/* — bare /customer/*
+    # falls through to the static-file fallback and the browser renders the
+    # portal HTML instead of streaming the zip. Match the URL prefix the
+    # frontend's api() helper uses.
+    route_prefix = "/api/customer/downloads/packages" if customer_scope else "/bootstrap/packages"
     return DownloadCatalogEntry(
         package_key=package_key,
         title=spec["title"],
