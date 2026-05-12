@@ -394,13 +394,19 @@ _SENSITIVE_REGEX_PATTERNS = [
 ]
 
 _CONTEXTUAL_SSN_PATTERNS = [
+    # Match natural-language SSN disclosures:
+    #   "My ssn is 123456789", "ssn: 123456789", "social security number = …",
+    # as well as "123456789 is my ssn". The gap between the label and the
+    # number tolerates short connecting words ("is", "was", "for me", …) by
+    # allowing up to 15 non-digit characters. Cap at 15 so we don't bridge
+    # to unrelated 9-digit values further down a paragraph.
     re.compile(
         r"\b(?:ssn|social\s+security(?:\s+number)?|taxpayer\s+id)\b"
-        r"[\s:#=-]{0,12}(\d{9})\b",
+        r"[^\d]{0,15}(\d{9})\b",
         re.IGNORECASE,
     ),
     re.compile(
-        r"\b(\d{9})\b[\s:#=-]{0,12}"
+        r"\b(\d{9})\b[^\d]{0,15}"
         r"(?:ssn|social\s+security(?:\s+number)?|taxpayer\s+id)\b",
         re.IGNORECASE,
     ),
