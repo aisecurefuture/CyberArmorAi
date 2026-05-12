@@ -1336,19 +1336,31 @@ async function viewApiKeys() {
 
   $("#apiKeyForm").addEventListener("submit", async (event) => {
     event.preventDefault();
-    $("#apiKeyMessage").className = "mt-3 text-sm text-slate-400";
-    $("#apiKeyMessage").textContent = "Creating key...";
+    const msg = $("#apiKeyMessage");
+    msg.className = "mt-3 text-sm text-slate-400";
+    msg.textContent = "Creating key...";
     try {
       const created = await api("/api/customer/api-keys", {
         method: "POST",
         body: JSON.stringify({ role: $("#apiKeyRole").value }),
       });
-      $("#apiKeyMessage").className = "mt-3 text-sm text-emerald-300";
-      $("#apiKeyMessage").textContent = `Created key ${created.key} — copy now, it will be masked on reload.`;
-      // Don't refresh immediately — let user copy the unmasked value first.
+      // Show the new key in a copy-able block — this is the only chance the
+      // user gets to grab the unmasked value. We deliberately don't refresh
+      // the list until they explicitly dismiss this banner.
+      msg.className = "mt-3 space-y-2";
+      msg.innerHTML = `
+        <div class="rounded-2xl border border-emerald-900 bg-emerald-950/30 p-3">
+          <div class="text-xs font-semibold text-emerald-200">New key — copy it now</div>
+          <p class="mt-1 text-[11px] text-emerald-100/70">This is shown once. The list below will only ever show a masked version.</p>
+          <div class="mt-2">${copyableSnippet(created.key || "", { maxHeight: "max-h-20" })}</div>
+          <button id="apiKeyDismiss" type="button" class="mt-2 rounded-xl border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-800">I've copied it — refresh list</button>
+        </div>
+      `;
+      bindCopyButtons(msg);
+      $("#apiKeyDismiss").addEventListener("click", () => viewApiKeys());
     } catch (error) {
-      $("#apiKeyMessage").className = "mt-3 text-sm text-rose-300";
-      $("#apiKeyMessage").textContent = error.message;
+      msg.className = "mt-3 text-sm text-rose-300";
+      msg.textContent = error.message;
     }
   });
   document.querySelectorAll(".disableApiKey").forEach((button) => {
@@ -1666,13 +1678,66 @@ async function viewScan() {
   ], { enabled_checks: ["prompt_injection", "policy_drift", "provider_hygiene"], schedule: "manual" });
 }
 
+// --- Policy helpers ---
+
+function policyActionBadge(action) {
+  const a = String(action || "monitor").toLowerCase();
+  // Reuse the Mission Control / Telemetry pill colors so the same action
+  // looks the same everywhere a customer sees it.
+  return `<span class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${actionPillClasses(a)}">${esc(a)}</span>`;
+}
+
 async function viewPolicies() {
   $("#pageTitle").textContent = "Policies";
-  $("#pageSubtitle").textContent = "Tenant-scoped policy rules";
+  $("#pageSubtitle").textContent = "Tenant-scoped policy rules — click any row to inspect or edit";
   const policies = await api("/api/customer/policies");
   const rows = Array.isArray(policies) ? policies : [];
-  $("#app").innerHTML = `<div id="policiesList"></div>`;
   const canEdit = session.role === "tenant_admin";
+
+  // Aggregate counts for the top summary strip.
+  const enabled = rows.filter((p) => p.enabled !== false).length;
+  const disabled = rows.length - enabled;
+  const actionCounts = {};
+  for (const p of rows) {
+    const a = String(p.action || "monitor").toLowerCase();
+    actionCounts[a] = (actionCounts[a] || 0) + 1;
+  }
+  const actionOrder = ["block", "redact", "warn", "monitor", "allow", "sandbox", "isolate", "audit-only", "route"]
+    .filter((a) => actionCounts[a]);
+
+  $("#app").innerHTML = `
+    <div class="space-y-4">
+      ${card(`
+        <div class="flex flex-wrap items-center gap-4">
+          <div class="flex flex-col leading-tight">
+            <span class="text-[10px] uppercase tracking-wider text-slate-500">Policies</span>
+            <span class="text-2xl font-semibold tabular-nums text-slate-100">${rows.length}</span>
+          </div>
+          <div class="mx-2 h-10 w-px bg-slate-800"></div>
+          <div class="flex flex-col rounded-2xl border border-slate-800 bg-slate-900/60 px-3 py-2 leading-tight">
+            <span class="text-[10px] uppercase tracking-wider text-emerald-300">Enabled</span>
+            <span class="font-mono text-sm tabular-nums text-emerald-200">${enabled}</span>
+          </div>
+          ${disabled ? `
+            <div class="flex flex-col rounded-2xl border border-slate-800 bg-slate-900/60 px-3 py-2 leading-tight">
+              <span class="text-[10px] uppercase tracking-wider text-slate-400">Disabled</span>
+              <span class="font-mono text-sm tabular-nums text-slate-200">${disabled}</span>
+            </div>` : ""}
+          <div class="mx-2 h-10 w-px bg-slate-800"></div>
+          <div class="flex flex-wrap items-center gap-2">
+            ${actionOrder.map((a) => `
+              <span class="inline-flex items-center gap-2 rounded-2xl border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs">
+                ${policyActionBadge(a)}
+                <span class="font-mono tabular-nums text-slate-300">${actionCounts[a]}</span>
+              </span>`).join("")}
+          </div>
+          ${canEdit ? `<a href="#/policy-builder" class="ml-auto rounded-2xl bg-cyan-500 px-3 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400">+ New policy</a>` : ""}
+        </div>
+      `)}
+      <div id="policiesList"></div>
+    </div>
+  `;
+
   mountListView({
     container: $("#policiesList"),
     rows,
@@ -1680,22 +1745,24 @@ async function viewPolicies() {
     columns: [
       { key: "name",        label: "Name",        type: "text",
         value: (r) => r.name || r.id || "",
-        render: (r) => `<span class="font-mono text-xs">${esc(r.name || r.id || "")}</span>` },
+        render: (r) => `<span class="font-medium text-slate-100">${esc(r.name || r.id || "")}</span>` },
       { key: "description", label: "Description", type: "text",
-        value: (r) => r.description || "" },
+        value: (r) => r.description || "",
+        render: (r) => r.description ? `<span class="text-xs text-slate-400">${esc(r.description)}</span>` : `<span class="text-slate-700">—</span>` },
       { key: "action",      label: "Action",      type: "enum",
         enumValues: ["allow","warn","redact","sandbox","block","isolate","route","audit-only","monitor"],
         value: (r) => r.action || "monitor",
-        render: (r) => badge(r.action || "monitor", r.action === "block" ? "amber" : "cyan") },
+        render: (r) => policyActionBadge(r.action) },
       { key: "priority",    label: "Priority",    type: "number",
-        value: (r) => r.priority ?? 100 },
+        value: (r) => r.priority ?? 100,
+        render: (r) => `<span class="font-mono text-xs tabular-nums text-slate-300">${r.priority ?? 100}</span>` },
       { key: "status",      label: "Status",      type: "enum",
         enumValues: ["enabled","disabled"],
         value: (r) => r.enabled === false ? "disabled" : "enabled",
         render: (r) => badge(r.enabled === false ? "disabled" : "enabled", r.enabled === false ? "slate" : "green") },
       { key: "updated_at",  label: "Updated",     type: "date",
         value: (r) => r.updated_at || r.created_at || "",
-        render: (r) => `<span class="text-xs text-slate-400">${esc(fmt(r.updated_at || r.created_at))}</span>` },
+        render: (r) => `<span class="text-xs text-slate-400 tabular-nums" title="${esc(fmt(r.updated_at || r.created_at))}">${esc(relativeFromIso(r.updated_at || r.created_at))}</span>` },
     ],
     onRowClick: (policy) => openPolicyDetailModal({
       policy,
@@ -1709,7 +1776,7 @@ async function viewPolicies() {
       canEdit,
       onSaved: async () => { await viewPolicies(); },
     }),
-    emptyMessage: "No policies found for this tenant.",
+    emptyMessage: "No policies found for this tenant. Use the Policy Builder to author your first rule.",
   });
 }
 
@@ -2507,44 +2574,153 @@ async function viewAudit() {
   render();
 }
 
+// --- Incidents helpers ---
+
+function decisionPill(decision) {
+  const d = String(decision || "unknown").toLowerCase();
+  const cls = d === "block"    ? "bg-rose-500/20 text-rose-200"
+            : d === "redact"   ? "bg-amber-500/20 text-amber-200"
+            : d === "warn"     ? "bg-amber-500/15 text-amber-200"
+            : d === "allow"    ? "bg-emerald-500/20 text-emerald-200"
+            : d === "sandbox"  ? "bg-blue-500/20 text-blue-200"
+            : d === "isolate"  ? "bg-violet-500/20 text-violet-200"
+            : "bg-slate-700/40 text-slate-300";
+  return `<span class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${cls}">${esc(d)}</span>`;
+}
+
+function relativeFromIso(iso) {
+  if (!iso) return "—";
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "—";
+  return relativeSince(Math.max(0, (Date.now() - t) / 60000));
+}
+
 async function viewIncidents() {
   $("#pageTitle").textContent = "Incidents";
-  $("#pageSubtitle").textContent = "Tenant-scoped incidents";
-  const incidents = await api("/api/customer/incidents?limit=250");
-  $("#app").innerHTML = `<div id="incidentsList"></div>`;
-  mountListView({
-    container: $("#incidentsList"),
-    rows: Array.isArray(incidents) ? incidents : [],
-    filename: `incidents_${session.tenant_id || "tenant"}`,
-    columns: [
-      { key: "request_id",  label: "Request",  type: "text",
-        value: (r) => r.request_id || "",
-        render: (r) => `<span class="font-mono text-xs">${esc(r.request_id || "")}</span>` },
-      { key: "event_type",  label: "Type",     type: "text",
-        value: (r) => r.event_type || "" },
-      { key: "decision",    label: "Decision", type: "enum",
-        value: (r) => r.decision || "unknown",
-        render: (r) => badge(r.decision || "unknown", r.decision === "block" ? "amber" : "cyan") },
-      { key: "received_at", label: "Received", type: "date",
-        value: (r) => r.received_at || "",
-        render: (r) => `<span class="text-xs text-slate-400">${esc(fmt(r.received_at))}</span>` },
-    ],
-    onRowClick: (incident) => openReadOnlyModal({
-      title: `Incident — ${incident.request_id || ""}`,
-      record: incident,
-      fields: [
-        { key: "request_id", label: "Request ID" },
-        { key: "event_type", label: "Type" },
-        { key: "decision",   label: "Decision",  render: (r) => badge(r.decision || "unknown", r.decision === "block" ? "amber" : "cyan") },
-        { key: "received_at",label: "Received",  render: (r) => esc(fmt(r.received_at)) },
-        { key: "tenant_id",  label: "Tenant" },
-        { key: "user_id",    label: "User" },
-        { key: "agent_id",   label: "Agent" },
-        { key: "source",     label: "Source" },
+  $("#pageSubtitle").textContent = "Runtime decisions, findings, and evidence — investigate what enforcement actually did";
+  const incidents = await api("/api/customer/incidents?limit=500");
+  const rows = Array.isArray(incidents) ? incidents : [];
+
+  const state = { decisionFilter: "all" };
+
+  function visibleRows() {
+    if (state.decisionFilter === "all") return rows;
+    return rows.filter((r) => String(r.decision || "").toLowerCase() === state.decisionFilter);
+  }
+  function chipCls(active) {
+    return active
+      ? "rounded-full bg-cyan-500/20 text-cyan-100 border border-cyan-400/40 px-3 py-1 text-xs"
+      : "rounded-full bg-slate-900 text-slate-300 border border-slate-800 hover:border-slate-700 px-3 py-1 text-xs";
+  }
+
+  // Aggregate decision counts for chips.
+  const counts = { block: 0, redact: 0, warn: 0, allow: 0, sandbox: 0, isolate: 0, other: 0 };
+  for (const r of rows) {
+    const d = String(r.decision || "").toLowerCase();
+    if (counts[d] != null) counts[d]++; else counts.other++;
+  }
+  const decisionOrder = ["block", "redact", "warn", "allow", "sandbox", "isolate", "other"].filter((k) => counts[k] > 0);
+
+  function render() {
+    const filtered = visibleRows();
+    $("#app").innerHTML = `
+      <div class="space-y-4">
+        ${card(`
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="text-[10px] uppercase tracking-wider text-slate-500">Decision</span>
+            <button data-decision-chip="all" class="${chipCls(state.decisionFilter === "all")}">All <span class="text-slate-500">·${rows.length}</span></button>
+            ${decisionOrder.map((d) =>
+              `<button data-decision-chip="${esc(d)}" class="${chipCls(state.decisionFilter === d)}">${esc(d)} <span class="text-slate-500">·${counts[d]}</span></button>`
+            ).join("")}
+            <div class="ml-auto text-xs text-slate-400">${filtered.length} of ${rows.length} shown</div>
+          </div>
+        `)}
+        <div id="incidentsList"></div>
+      </div>
+    `;
+
+    mountListView({
+      container: $("#incidentsList"),
+      rows: filtered,
+      filename: `incidents_${session.tenant_id || "tenant"}`,
+      columns: [
+        { key: "received_at", label: "Time", type: "date",
+          value: (r) => r.received_at || "",
+          render: (r) => `<span class="text-xs text-slate-400 tabular-nums" title="${esc(fmt(r.received_at))}">${esc(relativeFromIso(r.received_at))}</span>` },
+        { key: "decision", label: "Decision", type: "enum",
+          value: (r) => String(r.decision || "unknown").toLowerCase(),
+          render: (r) => decisionPill(r.decision) },
+        { key: "event_type", label: "Event", type: "text",
+          value: (r) => r.event_type || "",
+          render: (r) => {
+            const reasons = Array.isArray(r.reasons) ? r.reasons : [];
+            const teaser = reasons.length ? reasons[0] : "";
+            return `<div class="leading-tight">
+              <span class="font-mono text-xs text-slate-100">${esc(r.event_type || "")}</span>
+              ${teaser ? `<div class="mt-0.5 truncate text-[11px] text-slate-500" title="${esc(reasons.join(" · "))}">${esc(teaser)}</div>` : ""}
+            </div>`;
+          } },
+        { key: "request_id", label: "Request", type: "text", sortable: false,
+          value: (r) => r.request_id || "",
+          render: (r) => r.request_id ? `<span class="font-mono text-[10px] text-slate-500">${esc((r.request_id || "").slice(0, 14))}…</span>` : `<span class="text-slate-700">—</span>` },
+        { key: "findings", label: "Findings", type: "number", sortable: false,
+          value: (r) => Array.isArray(r.findings) ? r.findings.length : 0,
+          render: (r) => {
+            const n = Array.isArray(r.findings) ? r.findings.length : 0;
+            return n
+              ? `<span class="inline-flex items-center rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold text-amber-200">${n} finding${n === 1 ? "" : "s"}</span>`
+              : `<span class="text-slate-700">—</span>`;
+          },
+          csv: (r) => JSON.stringify(r.findings || []) },
       ],
-    }),
-    emptyMessage: "No incidents found for this tenant.",
-  });
+      onRowClick: (incident) => {
+        const reasons = Array.isArray(incident.reasons) ? incident.reasons : [];
+        const findings = Array.isArray(incident.findings) ? incident.findings : [];
+        const reasonsHtml = reasons.length
+          ? `<ul class="list-disc space-y-1 pl-5 text-sm text-slate-300">${reasons.map((r) => `<li>${esc(r)}</li>`).join("")}</ul>`
+          : `<div class="text-xs text-slate-500">No reasons recorded.</div>`;
+        const findingsHtml = findings.length
+          ? `<ul class="space-y-2">${findings.map((f) => {
+              const label = f.label || f.classification || f.type || "finding";
+              const detail = f.detail || f.value || f.description || "";
+              const sev = f.severity || "";
+              return `<li class="rounded-xl border border-slate-800 bg-slate-900/50 px-3 py-2">
+                <div class="flex items-baseline justify-between gap-2">
+                  <span class="font-mono text-xs text-slate-100">${esc(label)}</span>
+                  ${sev ? severityBadgeHtml(sev) : ""}
+                </div>
+                ${detail ? `<div class="mt-1 truncate text-xs text-slate-400">${esc(String(detail).slice(0, 200))}</div>` : ""}
+              </li>`;
+            }).join("")}</ul>`
+          : `<div class="text-xs text-slate-500">No findings recorded.</div>`;
+        openReadOnlyModal({
+          title: `Incident — ${(incident.event_type || "")} → ${incident.decision || "unknown"}`,
+          record: incident,
+          fields: [
+            { key: "received_at", label: "Time", render: (r) => `${esc(fmt(r.received_at))}<div class="text-xs text-slate-500">${esc(relativeFromIso(r.received_at))}</div>` },
+            { key: "decision",   label: "Decision",   render: (r) => decisionPill(r.decision) },
+            { key: "event_type", label: "Event Type" },
+            { key: "request_id", label: "Request ID", render: (r) => `<span class="font-mono text-xs">${esc(r.request_id || "")}</span>` },
+            { key: "reasons",    label: "Reasons",    render: () => reasonsHtml },
+            { key: "findings",   label: `Findings (${findings.length})`, render: () => findingsHtml },
+            { key: "tenant_id",  label: "Tenant" },
+            { key: "user_id",    label: "User" },
+            { key: "agent_id",   label: "Agent" },
+            { key: "source",     label: "Source" },
+          ],
+        });
+      },
+      emptyMessage: filtered.length === 0 && rows.length > 0
+        ? "No incidents match the current decision filter."
+        : "No incidents found for this tenant. Runtime decisions (block, redact, warn) show up here as enforcement happens.",
+    });
+
+    document.querySelectorAll("[data-decision-chip]").forEach((el) => {
+      el.addEventListener("click", () => { state.decisionFilter = el.dataset.decisionChip; render(); });
+    });
+  }
+
+  render();
 }
 
 async function viewProviders() {
@@ -2976,14 +3152,19 @@ async function viewUsers() {
     return;
   }
   const users = await api("/api/customer/users");
-  const rows = users.map((user) => `
-    <tr class="border-t border-slate-800">
-      <td class="px-3 py-3">${esc(user.email)}</td>
-      <td class="px-3 py-3">${badge(user.role, user.role === "tenant_admin" ? "green" : "cyan")}</td>
-      <td class="px-3 py-3">${badge(user.status, user.status === "active" ? "green" : "amber")}</td>
-      <td class="px-3 py-3 text-xs text-slate-400">${esc(user.last_login_at || "never")}</td>
-    </tr>
-  `).join("");
+  const rows = users.map((user) => {
+    const last = user.last_login_at;
+    const lastCell = last
+      ? `<span title="${esc(fmt(last))}">${esc(relativeFromIso(last))}</span>`
+      : `<span class="text-slate-600">never</span>`;
+    return `
+      <tr class="border-t border-slate-800">
+        <td class="px-3 py-3">${esc(user.email)}</td>
+        <td class="px-3 py-3">${badge(user.role, user.role === "tenant_admin" ? "green" : "cyan")}</td>
+        <td class="px-3 py-3">${badge(user.status, user.status === "active" ? "green" : "amber")}</td>
+        <td class="px-3 py-3 text-xs text-slate-400 tabular-nums">${lastCell}</td>
+      </tr>`;
+  }).join("");
   $("#app").innerHTML = card(`
     <div class="flex flex-col gap-4 lg:flex-row lg:items-start">
       <form id="addUserForm" class="min-w-80 rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
