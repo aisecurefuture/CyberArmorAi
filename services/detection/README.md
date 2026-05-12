@@ -37,6 +37,17 @@ uvicorn main:app --host 0.0.0.0 --port 8002
 - `PROMPTWARE_CHAIN_WARN_THRESHOLD` (default `0.55`)
 - `PROMPTWARE_CHAIN_BLOCK_THRESHOLD` (default `0.85`)
 - `CYBERARMOR_ENABLE_LEGACY_PROMPT_REGEX` (default `false`; optional compatibility mode)
+- `CYBERARMOR_DETECTION_DL_STATES` (default empty)
+  - Opt-in list of US state driver's license formats to detect as structured
+    patterns. Comma-separated. Recognised: `CA` (1 letter + 7 digits — letter
+    prefix gives moderate signal), `TX` (8 bare digits — collides with order
+    numbers / account IDs), `NY` (9 bare digits — collides with SSN / EIN /
+    routing candidates).
+  - Default (empty) keeps DL detection contextual-only plus the always-on
+    MD/FL `L#### #### ####` form. Enable per-state when a known regional
+    customer base needs bare-format detection; expect higher false-positive
+    volume for `TX`/`NY`. `TX`/`NY` findings are emitted at severity `low`,
+    `CA` at `medium`.
 
 ## Prompt-injection detection model
 - Prompt-injection detection now uses an embedded local classifier (`local-pi-llm-v1`) instead of regex-only matching.

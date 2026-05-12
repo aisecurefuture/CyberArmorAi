@@ -522,6 +522,48 @@ _CONTEXTUAL_DOB_PATTERNS = [
     ),
 ]
 
+# ---- State-specific driver's license formats (opt-in) -----------------
+# These patterns are too generic to be on by default — TX (8 digits) and
+# NY (9 digits) overlap with bare order numbers, AWS account IDs, SSN /
+# EIN / ABA routing candidates, and others. CA (1 letter + 7 digits) is
+# marginally safer thanks to the letter prefix. Operators with a known
+# regional customer base can enable specific states via:
+#
+#   CYBERARMOR_DETECTION_DL_STATES=CA          # CA only
+#   CYBERARMOR_DETECTION_DL_STATES=CA,TX,NY    # all three
+#
+# Empty / unset (default) → no additional state-specific structured
+# matching beyond the MD/FL L+12 dashed/spaced form in
+# _SENSITIVE_REGEX_PATTERNS, which is distinctive enough to be always-on.
+_DL_STATE_PATTERNS: Dict[str, "re.Pattern[str]"] = {
+    "CA": re.compile(r"\b[A-Z]\d{7}\b", re.IGNORECASE),
+    "TX": re.compile(r"\b\d{8}\b"),
+    "NY": re.compile(r"\b\d{9}\b"),
+}
+_DL_STATE_HIGH_FP_WARNING = {"TX", "NY"}
+
+_DL_ENABLED_STATES = {
+    s.strip().upper()
+    for s in os.getenv("CYBERARMOR_DETECTION_DL_STATES", "").split(",")
+    if s.strip()
+}
+_ENABLED_DL_STATE_PATTERNS = [
+    (s, _DL_STATE_PATTERNS[s]) for s in sorted(_DL_ENABLED_STATES) if s in _DL_STATE_PATTERNS
+]
+if _ENABLED_DL_STATE_PATTERNS:
+    logger.info(
+        "Driver's license state-specific detection enabled: %s",
+        [s for s, _ in _ENABLED_DL_STATE_PATTERNS],
+    )
+    for s, _ in _ENABLED_DL_STATE_PATTERNS:
+        if s in _DL_STATE_HIGH_FP_WARNING:
+            logger.warning(
+                "DL state %s uses a bare-digit pattern with high false-positive risk "
+                "(collides with order numbers, account IDs, SSN/EIN candidates). "
+                "Review findings with this in mind.",
+                s,
+            )
+
 _ENTITY_REGEX_PATTERNS = [
     ("email", re.compile(r"\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[A-Za-z]{2,}\b")),
     (
@@ -878,6 +920,22 @@ def _scan_sensitive_data(text: str) -> List[Dict[str, Any]]:
                     }
                 )
 
+    # 2e. Opt-in state-specific driver's license formats. Only runs when
+    # CYBERARMOR_DETECTION_DL_STATES is set; disabled by default because
+    # the bare digit forms (TX 8 digits, NY 9 digits) collide with too many
+    # non-DL identifiers.
+    for state, pattern in _ENABLED_DL_STATE_PATTERNS:
+        for match in pattern.finditer(expanded):
+            findings.append(
+                {
+                    "type": "sensitive_data",
+                    "subtype": "drivers_license",
+                    "match": match.group(0)[:120],
+                    "severity": "low" if state in _DL_STATE_HIGH_FP_WARNING else "medium",
+                    "detector": f"regex_state_{state.lower()}",
+                }
+            )
+
     # 3. Semantic DLP
     findings.extend(_scan_semantic_dlp(expanded))
 
@@ -934,6 +992,9 @@ _REDACT_CLASS_MAP: Dict[str, List[tuple]] = {
         ("drivers_license", _SENSITIVE_REGEX_BY_NAME["drivers_license"], None),
         ("drivers_license", _CONTEXTUAL_DRIVERS_LICENSE_PATTERNS[0],  1),
         ("drivers_license", _CONTEXTUAL_DRIVERS_LICENSE_PATTERNS[1],  1),
+        # State-specific patterns are appended only when enabled via env.
+        # Redact policies pick them up automatically without code changes.
+        *[(f"drivers_license_{s.lower()}", p, None) for s, p in _ENABLED_DL_STATE_PATTERNS],
     ],
     "pii.passport":         [
         ("passport",        _CONTEXTUAL_PASSPORT_PATTERNS[0],         1),
