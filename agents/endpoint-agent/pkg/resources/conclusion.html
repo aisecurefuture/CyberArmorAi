@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<body style="font-family: -apple-system, BlinkMacSystemFont, sans-serif; padding: 1em;">
+<h2>Installation complete</h2>
+<p>The CyberArmor Endpoint Agent is now running as the
+   <code>ai.cyberarmor.endpoint</code> LaunchDaemon.</p>
+
+<h3>Verify</h3>
+<pre style="background:#f3f3f3;padding:0.6em;border-radius:4px;">
+sudo launchctl list | grep cyberarmor
+sudo tail -n 30 /var/log/cyberarmor/agent.log
+</pre>
+
+<h3>Finish bootstrap (only if no BOOTSTRAP_TOKEN was provided)</h3>
+<p>If <code>/etc/cyberarmor/agent.json</code> shows an empty <code>api_key</code>,
+   redeem a one-time bootstrap token from the customer portal:</p>
+<pre style="background:#f3f3f3;padding:0.6em;border-radius:4px;">
+sudo /usr/local/cyberarmor/.venv/bin/python3 \
+  /usr/local/cyberarmor/installer.py install \
+  --control-plane-url https://app.cyberarmor.ai \
+  --bootstrap-token YOUR_TOKEN
+</pre>
+
+<h3>Clipboard helper</h3>
+<p>The per-user clipboard helper was auto-installed for the logged-in user
+   (default mode: <strong>monitor</strong>). To switch enforcement modes
+   later:</p>
+<pre style="background:#f3f3f3;padding:0.6em;border-radius:4px;">
+sed -i '' 's/"clipboard_action": "[^"]*"/"clipboard_action": "redact"/' \
+  ~/.config/cyberarmor/helper.json
+launchctl kickstart -k "gui/$(id -u)/ai.cyberarmor.clipboard-helper"
+</pre>
+<p>Other users on the same machine should run, once after login:</p>
+<pre style="background:#f3f3f3;padding:0.6em;border-radius:4px;">
+/usr/local/cyberarmor/install_clipboard_helper.sh
+</pre>
+
+<h3>Uninstall</h3>
+<pre style="background:#f3f3f3;padding:0.6em;border-radius:4px;">
+sudo /usr/local/cyberarmor/.venv/bin/python3 \
+  /usr/local/cyberarmor/installer.py uninstall
+/usr/local/cyberarmor/uninstall_clipboard_helper.sh
+</pre>
+</body>
+</html>

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Preinstall: bounce any existing daemon so the file replacement that
+# follows doesn't run into "Text file busy" / locked-venv errors.
+# Errors here are non-fatal — postinstall handles fresh installs too.
+
+set -u
+
+LABEL="ai.cyberarmor.endpoint"
+PLIST="/Library/LaunchDaemons/${LABEL}.plist"
+
+echo "[cyberarmor preinstall] stopping any running daemon"
+launchctl bootout "system/${LABEL}" 2>/dev/null || true
+launchctl bootout system "${PLIST}" 2>/dev/null || true
+
+exit 0

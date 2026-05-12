@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+<body style="font-family: -apple-system, BlinkMacSystemFont, sans-serif; padding: 1em;">
+<h2>CyberArmor Endpoint Agent</h2>
+<p>This installer will:</p>
+<ul>
+  <li>Install the endpoint agent to <code>/usr/local/cyberarmor/</code></li>
+  <li>Register the system service (<code>ai.cyberarmor.endpoint</code> LaunchDaemon)</li>
+  <li>Configure the per-user clipboard helper for the active console user</li>
+</ul>
+<p>If <code>/etc/cyberarmor/install.env</code> exists with a
+   <code>BOOTSTRAP_TOKEN</code>, the agent will redeem it during install and
+   be ready immediately. Otherwise you'll need to finish the bootstrap
+   manually after install.</p>
+<p>Administrator privileges are required.</p>
+</body>
+</html>

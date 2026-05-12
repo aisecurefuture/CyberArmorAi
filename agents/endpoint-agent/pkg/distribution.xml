@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="2">
+    <title>CyberArmor Endpoint Agent</title>
+    <organization>ai.cyberarmor</organization>
+    <domains enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true"/>
+    <options customize="never" require-scripts="true" rootVolumeOnly="true"/>
+    <volume-check>
+        <allowed-os-versions>
+            <os-version min="12.0"/>
+        </allowed-os-versions>
+    </volume-check>
+    <welcome     file="welcome.html"     mime-type="text/html"/>
+    <conclusion  file="conclusion.html"  mime-type="text/html"/>
+    <choices-outline>
+        <line choice="default">
+            <line choice="ai.cyberarmor.endpoint"/>
+        </line>
+    </choices-outline>
+    <choice id="default"/>
+    <choice id="ai.cyberarmor.endpoint" visible="false">
+        <pkg-ref id="ai.cyberarmor.endpoint"/>
+    </choice>
+    <pkg-ref id="ai.cyberarmor.endpoint" version="1.0.0" onConclusion="none">cyberarmor-endpoint-agent-component.pkg</pkg-ref>
+</installer-gui-script>

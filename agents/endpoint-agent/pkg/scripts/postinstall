@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+# Postinstall: build the venv, install deps, optionally redeem a bootstrap
+# token, write the LaunchDaemon plist, kickstart it, then run the per-user
+# clipboard helper installer for the active console user.
+#
+# Conventions and overrides:
+#   /etc/cyberarmor/install.env  — optional env file pre-baked by the admin
+#                                  to pass CONTROL_PLANE_URL and
+#                                  BOOTSTRAP_TOKEN into postinstall.
+#                                  Example:
+#                                    CONTROL_PLANE_URL=https://app.cyberarmor.ai
+#                                    BOOTSTRAP_TOKEN=ca_boot_XXXXXXXXXXXXXXXX
+#                                    CYBERARMOR_CLIPBOARD_ACTION=redact
+#   If install.env is absent or missing fields, the script still installs
+#   the daemon but leaves /etc/cyberarmor/agent.json with empty credentials
+#   so the operator can finish the bootstrap manually.
+
+set -u
+
+LABEL="ai.cyberarmor.endpoint"
+INSTALL_DIR="/usr/local/cyberarmor"
+CONFIG_DIR="/etc/cyberarmor"
+LOG_DIR="/var/log/cyberarmor"
+PLIST_PATH="/Library/LaunchDaemons/${LABEL}.plist"
+ENV_FILE="${CONFIG_DIR}/install.env"
+
+mkdir -p "${CONFIG_DIR}" "${LOG_DIR}"
+
+# Pick the system Python. We deliberately do NOT fall through to homebrew —
+# /usr/bin/python3 (Command Line Tools) is the only one we can rely on
+# being present on every macOS host.
+PYTHON="/usr/bin/python3"
+if [[ ! -x "${PYTHON}" ]]; then
+    echo "[cyberarmor postinstall] /usr/bin/python3 missing. Install Xcode Command Line Tools: xcode-select --install" >&2
+    exit 1
+fi
+
+echo "[cyberarmor postinstall] building venv at ${INSTALL_DIR}/.venv"
+"${PYTHON}" -m venv "${INSTALL_DIR}/.venv"
+
+echo "[cyberarmor postinstall] installing python deps"
+"${INSTALL_DIR}/.venv/bin/python3" -m pip install --upgrade --quiet pip
+"${INSTALL_DIR}/.venv/bin/python3" -m pip install --quiet -r "${INSTALL_DIR}/requirements.txt"
+
+# Load the optional install.env (CONTROL_PLANE_URL / BOOTSTRAP_TOKEN / …).
+CONTROL_PLANE_URL=""
+BOOTSTRAP_TOKEN=""
+TENANT_ID=""
+CLIPBOARD_ACTION="${CYBERARMOR_CLIPBOARD_ACTION:-monitor}"
+if [[ -f "${ENV_FILE}" ]]; then
+    # shellcheck disable=SC1090
+    set -a; source "${ENV_FILE}"; set +a
+    : "${CONTROL_PLANE_URL:=${CONTROL_PLANE_URL:-}}"
+    : "${BOOTSTRAP_TOKEN:=${BOOTSTRAP_TOKEN:-}}"
+    : "${TENANT_ID:=${TENANT_ID:-}}"
+    : "${CLIPBOARD_ACTION:=${CYBERARMOR_CLIPBOARD_ACTION:-monitor}}"
+fi
+CONTROL_PLANE_URL="${CONTROL_PLANE_URL:-https://app.cyberarmor.ai}"
+
+# Bootstrap-redeem if we have a token, otherwise leave credentials empty
+# and let the operator run installer.py install … later.
+AGENT_JSON="${CONFIG_DIR}/agent.json"
+if [[ -n "${BOOTSTRAP_TOKEN}" ]]; then
+    echo "[cyberarmor postinstall] redeeming bootstrap token against ${CONTROL_PLANE_URL}"
+    "${INSTALL_DIR}/.venv/bin/python3" - <<PY
+import json, platform, pathlib, urllib.request, sys
+payload = {
+    "bootstrap_token": "${BOOTSTRAP_TOKEN}",
+    "package_key": "endpoint-agent",
+    "subject_type": "endpoint_agent",
+    "subject_name": platform.node(),
+    "hostname": platform.node(),
+}
+req = urllib.request.Request(
+    "${CONTROL_PLANE_URL}".rstrip("/") + "/bootstrap/redeem",
+    data=json.dumps(payload).encode(),
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+try:
+    with urllib.request.urlopen(req, timeout=20) as r:
+        result = json.loads(r.read())
+except Exception as e:
+    print(f"[cyberarmor postinstall] bootstrap redeem failed: {e}", file=sys.stderr)
+    sys.exit(0)
+
+cfg = {
+    "control_plane_url": result.get("control_plane_url") or "${CONTROL_PLANE_URL}",
+    "tenant_id": result.get("tenant_id") or "${TENANT_ID}" or "default",
+    "api_key": result["service_api_key"],
+    "agent_id": result.get("subject_id", ""),
+}
+target = pathlib.Path("${AGENT_JSON}")
+target.write_text(json.dumps(cfg, indent=2))
+target.chmod(0o600)
+print(f"[cyberarmor postinstall] wrote {target}")
+PY
+elif [[ ! -f "${AGENT_JSON}" ]]; then
+    cat >"${AGENT_JSON}" <<EOF
+{
+  "control_plane_url": "${CONTROL_PLANE_URL}",
+  "tenant_id": "${TENANT_ID:-default}",
+  "api_key": ""
+}
+EOF
+    chmod 600 "${AGENT_JSON}"
+    echo "[cyberarmor postinstall] wrote empty ${AGENT_JSON} (run installer.py with --bootstrap-token to finish)"
+fi
+
+echo "[cyberarmor postinstall] writing LaunchDaemon plist"
+cat >"${PLIST_PATH}" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>${LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${INSTALL_DIR}/.venv/bin/python3</string>
+        <string>${INSTALL_DIR}/agent.py</string>
+        <string>--config</string>
+        <string>${AGENT_JSON}</string>
+    </array>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+    <key>StandardOutPath</key><string>${LOG_DIR}/agent.log</string>
+    <key>StandardErrorPath</key><string>${LOG_DIR}/agent.err</string>
+    <key>WorkingDirectory</key><string>${INSTALL_DIR}</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>CYBERARMOR_CONFIG</key><string>${AGENT_JSON}</string>
+    </dict>
+    <key>ProcessType</key><string>Background</string>
+    <key>ThrottleInterval</key><integer>5</integer>
+</dict>
+</plist>
+EOF
+chmod 644 "${PLIST_PATH}"
+
+echo "[cyberarmor postinstall] bootstrapping LaunchDaemon"
+launchctl bootstrap system "${PLIST_PATH}" 2>&1 || true
+launchctl enable "system/${LABEL}" 2>&1 || true
+launchctl kickstart -k "system/${LABEL}" 2>&1 || true
+
+# Per-user clipboard helper. installer.py runs as root and doesn't know
+# which user owns the GUI session — the .pkg context does (the console
+# user). Run install_clipboard_helper.sh as that user; if no GUI user is
+# logged in (headless install), skip and leave a note.
+GUI_USER="$(stat -f "%Su" /dev/console 2>/dev/null || echo "")"
+if [[ -n "${GUI_USER}" && "${GUI_USER}" != "root" && "${GUI_USER}" != "loginwindow" ]]; then
+    echo "[cyberarmor postinstall] installing clipboard helper for ${GUI_USER}"
+    HELPER_INSTALLER="${INSTALL_DIR}/install_clipboard_helper.sh"
+    if [[ -x "${HELPER_INSTALLER}" ]]; then
+        sudo -u "${GUI_USER}" CYBERARMOR_CLIPBOARD_ACTION="${CLIPBOARD_ACTION}" \
+            /bin/bash "${HELPER_INSTALLER}" || \
+            echo "[cyberarmor postinstall] clipboard helper install for ${GUI_USER} failed; user can re-run later"
+    fi
+else
+    echo "[cyberarmor postinstall] no GUI user detected — clipboard helper not auto-installed."
+    echo "[cyberarmor postinstall] After login, each user should run:"
+    echo "                        ${INSTALL_DIR}/install_clipboard_helper.sh"
+fi
+
+echo "[cyberarmor postinstall] complete"
+exit 0

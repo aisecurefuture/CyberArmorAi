@@ -51,6 +51,42 @@ python installer.py status
 sudo python installer.py uninstall
 ```
 
+### macOS `.pkg` installer (single double-click)
+
+For end-user laptops, build a signed/notarised `.pkg` once on a build
+host and ship it via MDM, email, or direct download. End users
+double-click; the installer handles venv setup, dependency install,
+bootstrap-token redemption, LaunchDaemon registration, and the
+per-user clipboard helper in one go.
+
+Build:
+
+```bash
+cd agents/endpoint-agent/pkg
+./build.sh   # → ./dist/cyberarmor-endpoint-agent-<version>.pkg
+# Optional: code-signed build
+DEVELOPER_ID="Developer ID Installer: Your Co. (XXXXXXXXXX)" ./build.sh
+```
+
+To pre-bake the bootstrap so the agent comes up ready, drop an env file
+into the payload before building, or stage it on the target before
+install:
+
+```bash
+sudo tee /etc/cyberarmor/install.env >/dev/null <<EOF
+CONTROL_PLANE_URL=https://app.cyberarmor.ai
+BOOTSTRAP_TOKEN=ca_boot_XXXXXXXXXXXXXXXXXXXXXXXX
+CYBERARMOR_CLIPBOARD_ACTION=monitor
+EOF
+sudo installer -pkg cyberarmor-endpoint-agent-1.0.0.pkg -target /
+```
+
+The postinstall script will redeem the token, write
+`/etc/cyberarmor/agent.json` (mode 600), bootstrap the LaunchDaemon,
+and run `install_clipboard_helper.sh` as the active console user. If no
+GUI user is logged in (headless install) the helper step is skipped and
+each user runs it themselves on first login.
+
 ### macOS clipboard helper (per-user LaunchAgent)
 
 macOS LaunchDaemons run outside the user's pasteboard session, so the
