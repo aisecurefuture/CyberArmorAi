@@ -3803,12 +3803,470 @@ async function viewProviders() {
   });
 }
 
+// Time windows for the Agent Directory. Filters client-side off the
+// merged risk-events feed (same convention as the Action Graph).
+const AGENT_WINDOWS = [
+  { id: "24h", label: "Last 24h", ms: 24 * 60 * 60 * 1000 },
+  { id: "7d",  label: "Last 7d",  ms: 7  * 24 * 60 * 60 * 1000 },
+  { id: "30d", label: "Last 30d", ms: 30 * 24 * 60 * 60 * 1000 },
+  { id: "all", label: "All time", ms: null },
+];
+
+const AGENT_KIND_META = {
+  endpoint:  { label: "Endpoint",  tone: "emerald", icon: "💻" },
+  extension: { label: "Extension", tone: "cyan",    icon: "🧩" },
+  sdk:       { label: "SDK",       tone: "violet",  icon: "📦" },
+  proxy:     { label: "Proxy",     tone: "amber",   icon: "🛰" },
+  unknown:   { label: "Unknown",   tone: "slate",   icon: "❓" },
+};
+
+function agentKindPill(kind) {
+  const meta = AGENT_KIND_META[kind] || AGENT_KIND_META.unknown;
+  const cls = {
+    emerald: "bg-emerald-500/20 text-emerald-200",
+    cyan:    "bg-cyan-500/20    text-cyan-200",
+    violet:  "bg-violet-500/20  text-violet-200",
+    amber:   "bg-amber-500/20   text-amber-200",
+    slate:   "bg-slate-700/40   text-slate-200",
+  }[meta.tone] || "bg-slate-700/40 text-slate-200";
+  return `<span class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${cls}">${meta.icon} ${esc(meta.label)}</span>`;
+}
+
+// Infer agent kind from the underlying event source. The risk-events
+// projection carries the raw telemetry source in details.source for
+// endpoint/extension writes; audit-graph events carry source on the row.
+function inferAgentKind(events, endpointAgentIds) {
+  if (events.some((ev) => endpointAgentIds.has(ev.agent_id))) return "endpoint";
+  const sources = new Set();
+  for (const ev of events) {
+    const s = String(((ev.details && ev.details.source) || ev.provider || ev.source || "")).toLowerCase();
+    if (s) sources.add(s);
+  }
+  if (sources.has("browser_extension")) return "extension";
+  if (sources.has("endpoint") || sources.has("endpoint_clipboard_helper")) return "endpoint";
+  if (sources.has("proxy_agent") || sources.has("rasp")) return "proxy";
+  if (sources.has("sdk") || sources.has("runtime")) return "sdk";
+  return "unknown";
+}
+
 async function viewAgents() {
   $("#pageTitle").textContent = "Agent Directory";
-  $("#pageSubtitle").textContent = "Tenant AI agent identities and endpoint agents";
-  await viewEndpoints();
-  $("#pageTitle").textContent = "Agent Directory";
-  $("#pageSubtitle").textContent = "Tenant AI agent identities and endpoint agents";
+  $("#pageSubtitle").textContent = "AI agent identities seen in tenant audit + telemetry, plus endpoint fleet";
+
+  let tab = "ai";          // "ai" | "endpoints"
+  let windowId = "7d";
+  let kindFilter = "all";  // "all" | one of AGENT_KIND_META keys
+  let search = "";
+  let selectedAgentId = null;
+
+  let allEvents = [];
+  let sources = null;
+  let endpointAgents = [];
+  let eventsError = null;
+  let endpointsError = null;
+
+  async function load() {
+    const [evRes, agRes] = await Promise.allSettled([
+      api("/api/customer/risk/events?limit=500"),
+      api("/api/customer/agents?limit=500"),
+    ]);
+    if (evRes.status === "fulfilled") {
+      const r = evRes.value;
+      allEvents = Array.isArray(r) ? r : (r && r.events) || [];
+      sources = (r && r.sources) || null;
+      eventsError = null;
+    } else {
+      allEvents = []; eventsError = evRes.reason?.message || "event fetch failed";
+    }
+    if (agRes.status === "fulfilled") {
+      endpointAgents = Array.isArray(agRes.value) ? agRes.value : [];
+      endpointsError = null;
+    } else {
+      endpointAgents = []; endpointsError = agRes.reason?.message || "agent fetch failed";
+    }
+  }
+
+  function eventsInWindow() {
+    const w = AGENT_WINDOWS.find((x) => x.id === windowId);
+    if (!w || w.ms == null) return allEvents;
+    const cutoff = Date.now() - w.ms;
+    return allEvents.filter((ev) => {
+      const t = Date.parse(ev.timestamp || "");
+      return Number.isFinite(t) && t >= cutoff;
+    });
+  }
+
+  // Aggregate per-agent stats. The directory is a *union* of:
+  //   - agents seen as ev.agent_id in audit/telemetry
+  //   - registered endpoint agents that may not have events in window
+  // Endpoint agents with no events still show up so an operator can
+  // confirm they're enrolled but quiet.
+  function buildAgents(events) {
+    const endpointIds = new Set(endpointAgents.map((a) => a.agent_id).filter(Boolean));
+    const endpointByAgentId = new Map(endpointAgents.map((a) => [a.agent_id, a]));
+    const map = new Map();
+
+    for (const ev of events) {
+      const aid = ev.agent_id;
+      if (!aid) continue;
+      let a = map.get(aid);
+      if (!a) {
+        a = {
+          agent_id: aid, kind: "unknown", events: 0, blocked: 0, redacted: 0,
+          providers: new Set(), models: new Set(), tools: new Set(), actions: new Set(),
+          users: new Set(), hosts: new Set(), latestTs: 0, _events: [],
+        };
+        map.set(aid, a);
+      }
+      a._events.push(ev);
+      a.events++;
+      const outcome = String(ev.outcome || "").toLowerCase();
+      if (outcome === "blocked") a.blocked++;
+      if (outcome === "redacted") a.redacted++;
+      const det = ev.details || {};
+      if (ev.provider) a.providers.add(ev.provider);
+      if (det.provider) a.providers.add(det.provider);
+      if (ev.model) a.models.add(ev.model);
+      if (det.model || det.model_id) a.models.add(det.model || det.model_id);
+      if (det.tool_name || det.tool) a.tools.add(det.tool_name || det.tool);
+      if (ev.action || ev.event_type) a.actions.add(ev.action || ev.event_type);
+      const user = ev.human_id || det.user_id || det.username || det.human_id;
+      if (user) a.users.add(user);
+      if (ev.hostname || det.hostname) a.hosts.add(ev.hostname || det.hostname);
+      const ts = Date.parse(ev.timestamp || "") || 0;
+      if (ts > a.latestTs) a.latestTs = ts;
+    }
+
+    // Backfill endpoints that have no events in the window so the
+    // operator can still see they're enrolled. Marked kind=endpoint.
+    for (const ep of endpointAgents) {
+      const aid = ep.agent_id;
+      if (!aid) continue;
+      if (!map.has(aid)) {
+        map.set(aid, {
+          agent_id: aid, kind: "endpoint", events: 0, blocked: 0, redacted: 0,
+          providers: new Set(), models: new Set(), tools: new Set(), actions: new Set(),
+          users: new Set(ep.username ? [ep.username] : []),
+          hosts: new Set(ep.hostname ? [ep.hostname] : []),
+          latestTs: ep.last_seen ? Date.parse(ep.last_seen) || 0 : 0,
+          _events: [], _endpoint: ep,
+        });
+      } else {
+        map.get(aid)._endpoint = ep;
+      }
+    }
+
+    // Resolve kind for every entry.
+    for (const a of map.values()) {
+      a.kind = inferAgentKind(a._events, endpointIds);
+      if (a._endpoint && a.kind === "unknown") a.kind = "endpoint";
+    }
+    return [...map.values()];
+  }
+
+  function passesFilter(a) {
+    if (kindFilter !== "all" && a.kind !== kindFilter) return false;
+    if (!search) return true;
+    const q = search.toLowerCase();
+    if (a.agent_id && a.agent_id.toLowerCase().includes(q)) return true;
+    for (const u of a.users) if (String(u).toLowerCase().includes(q)) return true;
+    for (const h of a.hosts) if (String(h).toLowerCase().includes(q)) return true;
+    for (const p of a.providers) if (String(p).toLowerCase().includes(q)) return true;
+    for (const m of a.models) if (String(m).toLowerCase().includes(q)) return true;
+    return false;
+  }
+
+  function summaryRow(agents, events) {
+    const kinds = {};
+    let blocked = 0;
+    const providers = new Set();
+    for (const a of agents) {
+      kinds[a.kind] = (kinds[a.kind] || 0) + 1;
+      blocked += a.blocked;
+      for (const p of a.providers) providers.add(p);
+    }
+    return `
+      <div class="flex flex-wrap items-center gap-4">
+        <div class="flex flex-col leading-tight">
+          <span class="text-[10px] uppercase tracking-wider text-slate-500">Total agents</span>
+          <span class="text-2xl font-semibold tabular-nums">${agents.length}</span>
+        </div>
+        <div class="mx-2 h-10 w-px bg-slate-800"></div>
+        ${Object.entries(AGENT_KIND_META).filter(([k]) => k !== "unknown" || kinds.unknown).map(([k, meta]) => `
+          <div class="flex items-center gap-2 rounded-2xl border border-slate-800 bg-slate-900/60 px-3 py-2">
+            <span class="text-sm">${meta.icon}</span>
+            <div class="flex flex-col leading-tight">
+              <span class="text-[10px] uppercase tracking-wider text-slate-500">${esc(meta.label)}</span>
+              <span class="font-mono text-sm tabular-nums">${kinds[k] || 0}</span>
+            </div>
+          </div>
+        `).join("")}
+        <div class="mx-2 h-10 w-px bg-slate-800"></div>
+        <div class="flex flex-col leading-tight">
+          <span class="text-[10px] uppercase tracking-wider text-slate-500">Events</span>
+          <span class="font-mono text-sm tabular-nums">${events.length}</span>
+        </div>
+        <div class="flex flex-col leading-tight">
+          <span class="text-[10px] uppercase tracking-wider text-slate-500">Blocked</span>
+          <span class="font-mono text-sm tabular-nums ${blocked > 0 ? "text-rose-300" : ""}">${blocked}</span>
+        </div>
+        <div class="flex flex-col leading-tight">
+          <span class="text-[10px] uppercase tracking-wider text-slate-500">Providers</span>
+          <span class="font-mono text-sm tabular-nums">${providers.size}</span>
+        </div>
+        <div class="ml-auto flex flex-col leading-tight">
+          <span class="text-[10px] uppercase tracking-wider text-slate-500">Time window</span>
+          <div class="mt-1 flex flex-wrap gap-1" id="agentsWindowPicker">
+            ${AGENT_WINDOWS.map((w) => `
+              <button type="button" data-window-id="${w.id}" class="rounded-full px-2 py-1 text-[11px] ${windowId === w.id ? "bg-cyan-500 text-slate-950 font-semibold" : "bg-slate-900 border border-slate-700 text-slate-300 hover:bg-slate-800"}">${esc(w.label)}</button>
+            `).join("")}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function filtersRow() {
+    const allBtn = (k, label) => {
+      const isOn = kindFilter === k;
+      return `<button data-kind-filter="${k}" type="button" class="agentKindFilter rounded-full px-2 py-1 text-[11px] ${isOn ? "bg-cyan-500 text-slate-950 font-semibold" : "bg-slate-900 border border-slate-700 text-slate-300 hover:bg-slate-800"}">${esc(label)}</button>`;
+    };
+    return `
+      <div class="flex flex-wrap items-center gap-2">
+        <input id="agentSearch" type="search" placeholder="Search agent ID, user, host, provider, model…" class="flex-1 min-w-[260px] rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm" value="${esc(search)}" />
+        <div class="flex flex-wrap gap-1">
+          ${allBtn("all", "All")}
+          ${Object.entries(AGENT_KIND_META).map(([k, m]) => allBtn(k, m.label)).join("")}
+        </div>
+      </div>
+    `;
+  }
+
+  function aiAgentRow(a) {
+    const sel = selectedAgentId === a.agent_id;
+    const lastSeen = a.latestTs ? new Date(a.latestTs).toLocaleString() : "—";
+    const peers = [...a.providers].slice(0, 2).join(", ");
+    return `<tr class="border-t border-slate-800 cursor-pointer ${sel ? "bg-cyan-500/5" : "hover:bg-slate-900/60"}" data-agent-id="${esc(a.agent_id)}">
+      <td class="px-3 py-2"><div class="font-mono text-xs text-slate-100 break-all">${esc(a.agent_id)}</div>${peers ? `<div class="text-[10px] text-slate-500">${esc(peers)}</div>` : ""}</td>
+      <td class="px-3 py-2">${agentKindPill(a.kind)}</td>
+      <td class="px-3 py-2 text-xs tabular-nums">${a.events}</td>
+      <td class="px-3 py-2 text-xs tabular-nums ${a.blocked > 0 ? "text-rose-300" : ""}">${a.blocked}</td>
+      <td class="px-3 py-2 text-xs tabular-nums">${a.providers.size}</td>
+      <td class="px-3 py-2 text-xs tabular-nums">${a.models.size + a.tools.size}</td>
+      <td class="px-3 py-2 text-xs tabular-nums">${a.users.size}</td>
+      <td class="px-3 py-2 text-xs text-slate-400">${esc(lastSeen)}</td>
+    </tr>`;
+  }
+
+  function detailPanel(agents) {
+    if (!selectedAgentId) {
+      return `<div class="rounded-2xl border border-slate-800 bg-slate-950 p-4 text-sm text-slate-400">
+        <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-2">Inspector</div>
+        Click any agent in the table to see providers, models, recent events, and (if applicable) endpoint details.
+      </div>`;
+    }
+    const a = agents.find((x) => x.agent_id === selectedAgentId);
+    if (!a) {
+      return `<div class="rounded-2xl border border-slate-800 bg-slate-950 p-4 text-sm text-slate-400">Agent not in current filter/window.</div>`;
+    }
+    const recent = (a._events || []).slice(0, 8);
+    const setRow = (label, set) => set.size === 0
+      ? `<div class="rounded-lg bg-slate-900 px-2 py-1.5 text-xs text-slate-500">${esc(label)}: none</div>`
+      : `<div class="rounded-lg bg-slate-900 px-2 py-1.5">
+          <div class="text-[10px] uppercase tracking-wider text-slate-500">${esc(label)} (${set.size})</div>
+          <div class="mt-1 flex flex-wrap gap-1">${[...set].map((v) => `<span class="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-mono text-slate-200">${esc(String(v))}</span>`).join("")}</div>
+        </div>`;
+    const endpointBlock = a._endpoint ? `
+      <div class="mt-3 rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+        <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-1">Endpoint enrollment</div>
+        <div class="text-xs text-slate-200">${esc(a._endpoint.hostname || "—")}</div>
+        <div class="mt-1 flex flex-wrap gap-2 text-[11px] text-slate-400">
+          <span>OS: ${esc(a._endpoint.platform || a._endpoint.os || "—")}</span>
+          <span>v${esc(a._endpoint.version || "—")}</span>
+          <span>Health: ${esc(a._endpoint.health || "unknown")}</span>
+        </div>
+      </div>` : "";
+    return `
+      <div class="rounded-2xl border border-slate-800 bg-slate-950 p-4">
+        <div class="flex items-baseline justify-between gap-2">
+          <div class="min-w-0">
+            <div class="text-[10px] uppercase tracking-wider text-slate-500">Agent</div>
+            <div class="font-mono text-sm text-slate-100 break-all">${esc(a.agent_id)}</div>
+          </div>
+          <button id="agentClearSelection" type="button" class="text-xs text-slate-400 hover:text-slate-200">Clear</button>
+        </div>
+        <div class="mt-2">${agentKindPill(a.kind)}</div>
+        <div class="mt-3 grid grid-cols-3 gap-2">
+          <div class="rounded-xl bg-slate-900 px-3 py-2"><div class="text-[10px] uppercase tracking-wider text-slate-500">Events</div><div class="text-lg font-semibold tabular-nums">${a.events}</div></div>
+          <div class="rounded-xl bg-slate-900 px-3 py-2"><div class="text-[10px] uppercase tracking-wider text-slate-500">Blocked</div><div class="text-lg font-semibold tabular-nums ${a.blocked > 0 ? "text-rose-300" : ""}">${a.blocked}</div></div>
+          <div class="rounded-xl bg-slate-900 px-3 py-2"><div class="text-[10px] uppercase tracking-wider text-slate-500">Redacted</div><div class="text-lg font-semibold tabular-nums ${a.redacted > 0 ? "text-amber-300" : ""}">${a.redacted}</div></div>
+        </div>
+        ${endpointBlock}
+        <div class="mt-3 space-y-1">
+          ${setRow("Providers", a.providers)}
+          ${setRow("Models", a.models)}
+          ${setRow("Tools", a.tools)}
+          ${setRow("Users", a.users)}
+          ${setRow("Hosts", a.hosts)}
+        </div>
+        <div class="mt-4">
+          <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-2">Recent events (${recent.length} of ${a._events.length})</div>
+          ${recent.length === 0 ? `<div class="text-xs text-slate-500">No events in window.</div>` : `
+            <div class="space-y-1">${recent.map((ev) => {
+              const outcome = String(ev.outcome || "ok").toLowerCase();
+              const tone = outcome === "blocked" ? "bg-rose-500/20 text-rose-200"
+                         : outcome === "warn" || outcome === "redacted" ? "bg-amber-500/20 text-amber-200"
+                         : "bg-slate-700/40 text-slate-200";
+              return `<div class="rounded-lg bg-slate-900 px-2 py-1.5">
+                <div class="flex items-center justify-between gap-2">
+                  <span class="font-mono text-xs text-slate-200 truncate">${esc(String(ev.action || ev.event_type || ""))}</span>
+                  <span class="rounded-full px-1.5 py-0.5 text-[10px] uppercase tracking-wider ${tone}">${esc(outcome)}</span>
+                </div>
+                <div class="mt-0.5 text-[10px] text-slate-500">${esc(ev.timestamp ? new Date(ev.timestamp).toLocaleString() : "")}</div>
+              </div>`;
+            }).join("")}</div>
+          `}
+        </div>
+        <div class="mt-3 flex flex-wrap gap-2">
+          <a class="rounded-xl border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-800" href="#/graph">Open in Action Graph</a>
+          ${a._endpoint ? `<a class="rounded-xl border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-800" href="#/endpoints">Endpoints page</a>` : ""}
+        </div>
+      </div>
+    `;
+  }
+
+  async function renderAiTab() {
+    const events = eventsInWindow();
+    const agents = buildAgents(events);
+    const filtered = agents.filter(passesFilter)
+      .sort((a, b) => (b.blocked - a.blocked) || (b.events - a.events) || (b.latestTs - a.latestTs));
+
+    return `
+      <div class="space-y-4">
+        ${eventsError ? `<div class="rounded-2xl border border-rose-900 bg-rose-950/30 p-3 text-sm text-rose-200">Could not load events: ${esc(eventsError)}.</div>` : ""}
+        ${card(summaryRow(filtered, events))}
+        ${card(filtersRow())}
+        <div class="grid gap-4 lg:grid-cols-[1fr_380px]">
+          ${card(`
+            <div class="overflow-x-auto">
+              <table class="w-full text-left text-sm">
+                <thead class="text-[10px] uppercase tracking-wider text-slate-500">
+                  <tr>
+                    <th class="px-3 py-2">Agent</th>
+                    <th class="px-3 py-2">Kind</th>
+                    <th class="px-3 py-2">Events</th>
+                    <th class="px-3 py-2">Blocked</th>
+                    <th class="px-3 py-2">Providers</th>
+                    <th class="px-3 py-2">Models / Tools</th>
+                    <th class="px-3 py-2">Users</th>
+                    <th class="px-3 py-2">Last seen</th>
+                  </tr>
+                </thead>
+                <tbody id="aiAgentRows">
+                  ${filtered.length === 0
+                    ? `<tr><td colspan="8" class="px-3 py-8 text-center text-sm text-slate-500">No agents match the current filter / window.</td></tr>`
+                    : filtered.map(aiAgentRow).join("")}
+                </tbody>
+              </table>
+            </div>
+            ${sources ? `<div class="mt-3 text-[11px] text-slate-500">Sources: ${sources.audit_graph ?? 0} audit + ${sources.telemetry ?? 0} telemetry</div>` : ""}
+          `)}
+          <div>${detailPanel(filtered)}</div>
+        </div>
+      </div>
+    `;
+  }
+
+  async function render() {
+    const tabsHtml = `
+      <div class="flex flex-wrap gap-2">
+        ${tabButton("ai", `AI Agents`, tab === "ai")}
+        ${tabButton("endpoints", `Endpoint Agents`, tab === "endpoints")}
+      </div>
+    `;
+
+    if (tab === "endpoints") {
+      // Defer to the existing endpoints view — it owns its summary cards,
+      // table, and downloads section. Then inject our tab bar at the top
+      // so the operator can still switch back to AI Agents.
+      await viewEndpoints();
+      $("#pageTitle").textContent = "Agent Directory";
+      $("#pageSubtitle").textContent = "AI agent identities seen in tenant audit + telemetry, plus endpoint fleet";
+      const appEl = $("#app");
+      if (appEl) appEl.insertAdjacentHTML("afterbegin", `<div class="mb-3">${tabsHtml}</div>`);
+      wireTabs();
+      return;
+    }
+
+    const body = await renderAiTab();
+    $("#app").innerHTML = `<div class="space-y-3">${tabsHtml}${body}</div>`;
+    wireTabs();
+    wireAiTab();
+  }
+
+  function wireTabs() {
+    document.querySelectorAll(".sectionTab").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const t = btn.dataset.tab;
+        if (!t || t === tab) return;
+        tab = t;
+        // Reset transient inspector state when leaving AI tab.
+        if (tab !== "ai") selectedAgentId = null;
+        render();
+      });
+    });
+  }
+
+  function wireAiTab() {
+    document.querySelectorAll("#agentsWindowPicker button").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        if (windowId === btn.dataset.windowId) return;
+        windowId = btn.dataset.windowId;
+        selectedAgentId = null;
+        render();
+      });
+    });
+    document.querySelectorAll(".agentKindFilter").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        kindFilter = btn.dataset.kindFilter;
+        selectedAgentId = null;
+        render();
+      });
+    });
+    const sb = $("#agentSearch");
+    if (sb) {
+      sb.addEventListener("input", () => {
+        search = sb.value;
+        // Re-render rows in place to avoid losing input focus on every keypress.
+        const events = eventsInWindow();
+        const filtered = buildAgents(events).filter(passesFilter)
+          .sort((a, b) => (b.blocked - a.blocked) || (b.events - a.events) || (b.latestTs - a.latestTs));
+        const tbody = $("#aiAgentRows");
+        if (tbody) {
+          tbody.innerHTML = filtered.length === 0
+            ? `<tr><td colspan="8" class="px-3 py-8 text-center text-sm text-slate-500">No agents match the current filter / window.</td></tr>`
+            : filtered.map(aiAgentRow).join("");
+          bindRowClicks();
+        }
+      });
+    }
+    bindRowClicks();
+    const clearBtn = $("#agentClearSelection");
+    if (clearBtn) clearBtn.addEventListener("click", () => { selectedAgentId = null; render(); });
+  }
+
+  function bindRowClicks() {
+    document.querySelectorAll("#aiAgentRows tr[data-agent-id]").forEach((tr) => {
+      tr.addEventListener("click", () => {
+        const aid = tr.dataset.agentId;
+        selectedAgentId = (selectedAgentId === aid) ? null : aid;
+        render();
+      });
+    });
+  }
+
+  await load();
+  await render();
 }
 
 async function viewPolicyStudio() {
