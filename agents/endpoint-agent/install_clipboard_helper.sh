@@ -62,6 +62,8 @@ helper = {
     "control_plane_url": agent.get("control_plane_url", "https://app.cyberarmor.ai"),
     "tenant_id": agent.get("tenant_id", "default"),
     "service_api_key": api_key,
+    "agent_id": agent.get("agent_id"),
+    "hostname": agent.get("hostname"),
     "poll_interval_s": 3,
     "clipboard_action": os.environ.get("CYBERARMOR_CLIPBOARD_ACTION", "monitor"),
 }

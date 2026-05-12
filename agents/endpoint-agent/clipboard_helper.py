@@ -27,9 +27,11 @@ import sys
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path = [p for p in sys.path if os.path.abspath(p) != _SCRIPT_DIR]
 
+import getpass
 import json
 import re
 import signal
+import socket
 import subprocess
 import time
 import urllib.error
@@ -116,7 +118,27 @@ def notify(title: str, message: str) -> None:
         print(f"notify failed: {exc}", flush=True)
 
 
-def post_telemetry(cp: str, api_key: str, tenant: str, event_type: str, payload: dict) -> None:
+def _identity(cfg: dict) -> tuple[str | None, str, str]:
+    """Resolve (agent_id, hostname, username) from cfg + the host environment.
+
+    agent_id comes from helper.json (provisioned by install_clipboard_helper.sh
+    from /etc/cyberarmor/agent.json). hostname / username are pulled from the
+    OS directly so we never report dashes in the portal even if the install
+    script missed them — this matches what the proxy and endpoint agent do.
+    """
+    try:
+        host = socket.gethostname() or ""
+    except Exception:
+        host = ""
+    try:
+        user = getpass.getuser() or ""
+    except Exception:
+        user = ""
+    return cfg.get("agent_id"), cfg.get("hostname") or host, cfg.get("username") or user
+
+
+def post_telemetry(cp: str, api_key: str, tenant: str, event_type: str, payload: dict,
+                   agent_id: str | None = None, hostname: str = "", username: str = "") -> None:
     body = {
         "tenant_id": tenant,
         "event_type": event_type,
@@ -124,6 +146,12 @@ def post_telemetry(cp: str, api_key: str, tenant: str, event_type: str, payload:
         "occurred_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f+00:00"),
         "payload": payload,
     }
+    if agent_id:
+        body["agent_id"] = agent_id
+    if hostname:
+        body["hostname"] = hostname
+    if username:
+        body["user_id"] = username
     req = urllib.request.Request(
         cp.rstrip("/") + "/telemetry/ingest",
         data=json.dumps(body).encode(),
@@ -154,9 +182,11 @@ def main() -> None:
     # monitor mode is informational; default no notification (avoid spam),
     # but allow operators to opt-in via the config.
     notify_on_monitor = bool(cfg.get("notify_on_monitor", False))
+    agent_id, hostname, username = _identity(cfg)
 
     print(
-        f"clipboard helper starting cp={cp} tenant={tenant} poll={poll_s}s action={action}",
+        f"clipboard helper starting cp={cp} tenant={tenant} poll={poll_s}s action={action} "
+        f"agent_id={agent_id or '?'} host={hostname or '?'} user={username or '?'}",
         flush=True,
     )
 
@@ -189,6 +219,7 @@ def main() -> None:
                 "length": len(content),
                 "action": action,
             },
+            agent_id=agent_id, hostname=hostname, username=username,
         )
         if action == "monitor" and notify_on_monitor:
             notify(
@@ -211,6 +242,7 @@ def main() -> None:
                             "original_length": len(content),
                             "redacted_length": len(redacted),
                         },
+                        agent_id=agent_id, hostname=hostname, username=username,
                     )
                     print(f"redacted clipboard labels={labels}", flush=True)
                     notify(
@@ -227,6 +259,7 @@ def main() -> None:
                     cp, api_key, tenant,
                     event_type="clipboard_sensitive_data_blocked",
                     payload={"labels": labels, "pii_classes": pii_classes},
+                    agent_id=agent_id, hostname=hostname, username=username,
                 )
                 print(f"cleared clipboard labels={labels}", flush=True)
                 notify(

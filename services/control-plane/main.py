@@ -425,6 +425,8 @@ def wait_for_db(max_wait_s: int = 45) -> None:
 class TelemetryEvent(BaseModel):
     tenant_id: str
     user_id: Optional[str] = None
+    agent_id: Optional[str] = None
+    hostname: Optional[str] = None
     event_type: str = Field(..., description="e.g., page_visit, form_detected, pii_detected, genai_detected, policy_violation")
     payload: Dict = Field(default_factory=dict)
     source: str = Field(..., description="browser_extension|proxy_agent|endpoint")
@@ -4347,9 +4349,14 @@ def bootstrap_redeem_token(
 def ingest_event(event: TelemetryEvent, ctx: Annotated[AuthContext, Depends(require_any_role("analyst", "service"))]):
     if ctx.tenant_id and ctx.tenant_id != event.tenant_id:
         raise HTTPException(status_code=403, detail="Tenant scope mismatch")
+    # Fall back to payload values when the top-level fields aren't sent —
+    # older helpers stuffed identity into the payload dict only.
+    p = event.payload or {}
     stored_event = {
         "tenant_id": event.tenant_id,
-        "user_id": event.user_id,
+        "agent_id": event.agent_id or p.get("agent_id"),
+        "hostname": event.hostname or p.get("hostname"),
+        "user_id": event.user_id or p.get("username") or p.get("user_id"),
         "event_type": event.event_type,
         "payload": event.payload,
         "source": event.source,
