@@ -1991,13 +1991,20 @@ def customer_overview(
     recent_events: List[Dict[str, Any]] = []
     for r in recent_rows:
         payload = _coerce_meta(r.payload) or {}
+        # Mirror the shape /customer/telemetry returns so the Mission Control
+        # "raw JSON" view shows identical data — same id, full payload, and
+        # both timestamps — plus our derived action_class for the pill badge.
         recent_events.append({
+            "id": r.id,
+            "tenant_id": r.tenant_id,
+            "agent_id": r.agent_id,
+            "hostname": r.hostname,
+            "user_id": r.user_id,
+            "event_type": r.event_type,
+            "source": r.source,
+            "payload": payload,
             "occurred_at": r.occurred_at.isoformat() if r.occurred_at else None,
-            "event_type": r.event_type or "",
-            "source": r.source or "",
-            "hostname": r.hostname or "",
-            "agent_id": r.agent_id or "",
-            "user_id": r.user_id or "",
+            "created_at": r.created_at.isoformat() if r.created_at else None,
             "severity": payload.get("severity") if isinstance(payload, dict) else None,
             "action_class": _classify_action(r.event_type),
         })

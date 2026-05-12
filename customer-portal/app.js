@@ -1002,17 +1002,20 @@ async function viewOverview() {
       let event = {};
       try { event = JSON.parse(el.dataset.recentEvent || "{}"); } catch { /* noop */ }
       openReadOnlyModal({
-        title: `Event — ${event.event_type || ""}`,
+        title: `Telemetry Event — ${event.event_type || ""}`,
         record: event,
+        // Match the Telemetry view's labeled rows exactly so the modal looks
+        // identical regardless of which entry point opened it. The "View raw
+        // JSON" details below shows the full record, including payload.
         fields: [
-          { key: "occurred_at",  label: "Time",       render: (r) => esc(fmt(r.occurred_at)) },
-          { key: "event_type",   label: "Event Type" },
-          { key: "action_class", label: "Action class", render: (r) => `<span class="inline-flex rounded-full px-2 py-0.5 text-[10px] uppercase ${actionPillClasses(r.action_class)}">${esc(r.action_class || "event")}</span>` },
+          { key: "occurred_at",  label: "Time",         render: (r) => esc(fmt(r.occurred_at || r.created_at)) },
           { key: "source",       label: "Source" },
-          { key: "severity",     label: "Severity" },
+          { key: "event_type",   label: "Event Type" },
+          { key: "action_class", label: "Action class", render: (r) => r.action_class ? `<span class="inline-flex rounded-full px-2 py-0.5 text-[10px] uppercase ${actionPillClasses(r.action_class)}">${esc(r.action_class)}</span>` : "" },
           { key: "hostname",     label: "Hostname" },
           { key: "agent_id",     label: "Agent" },
           { key: "user_id",      label: "User" },
+          { key: "tenant_id",    label: "Tenant" },
         ],
       });
     });
