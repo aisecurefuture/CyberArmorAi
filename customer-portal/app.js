@@ -202,19 +202,20 @@ function bindCustomerBootstrapButtons() {
             <div class="mt-4 grid gap-3 lg:grid-cols-2">
               <div>
                 <div class="text-xs uppercase tracking-[0.18em] text-slate-500">Bootstrap Token</div>
-                <div class="mt-2 rounded-xl bg-slate-950 px-3 py-3 font-mono text-xs text-emerald-300 break-all">${esc(issued.bootstrap_token || "")}</div>
+                <div class="mt-2">${copyableSnippet(issued.bootstrap_token || "", { maxHeight: "max-h-24" })}</div>
               </div>
               <div>
                 <div class="text-xs uppercase tracking-[0.18em] text-slate-500">Suggested Env</div>
-                <pre class="mt-2 overflow-x-auto rounded-xl border border-slate-800 bg-slate-950 p-3 text-xs text-cyan-200">${esc(envLines)}</pre>
+                <div class="mt-2">${copyableSnippet(envLines)}</div>
               </div>
             </div>
             <div class="mt-4">
               <div class="text-xs uppercase tracking-[0.18em] text-slate-500">Redeem Example</div>
-              <pre class="mt-2 overflow-x-auto rounded-xl border border-slate-800 bg-slate-950 p-3 text-xs text-cyan-200">${esc(redeemExample)}</pre>
+              <div class="mt-2">${copyableSnippet(redeemExample)}</div>
             </div>
             <div class="mt-3 text-xs text-slate-500">Package: ${esc(issued.package_key)} | Tenant: ${esc(issued.tenant_id)}</div>
           `);
+          bindCopyButtons(panel);
         }
       } catch (error) {
         if (panel) panel.innerHTML = card(`<div class="text-sm text-rose-300">${esc(error.message)}</div>`);
@@ -2723,28 +2724,190 @@ async function viewDelegations() {
   ], { chains: [], default_ttl_minutes: 60, require_approval: true }, true);
 }
 
+// --- Onboarding helpers ---
+
+// Reusable "copy to clipboard" wrapper for any snippet. Renders the text in
+// a mono pre with a corner button; bindCopyButtons() wires the click.
+function copyableSnippet(content, { language = "", maxHeight = "max-h-48" } = {}) {
+  const escaped = esc(content);
+  const stamped = String(content).replace(/"/g, "&quot;");
+  return `<div class="relative">
+    <pre class="overflow-x-auto rounded-xl border border-slate-800 bg-slate-950 px-3 py-2.5 pr-16 text-xs text-cyan-200 ${maxHeight}">${escaped}</pre>
+    ${language ? `<span class="absolute bottom-2 left-3 text-[10px] uppercase tracking-wider text-slate-600">${esc(language)}</span>` : ""}
+    <button type="button" class="copySnippetBtn absolute top-2 right-2 rounded border border-slate-700 bg-slate-900 px-2 py-0.5 text-[10px] uppercase tracking-wider text-slate-300 hover:bg-slate-800" data-copy="${stamped}">Copy</button>
+  </div>`;
+}
+
+function bindCopyButtons(root = document) {
+  root.querySelectorAll(".copySnippetBtn").forEach((btn) => {
+    if (btn.dataset.bound === "1") return;
+    btn.dataset.bound = "1";
+    btn.addEventListener("click", async () => {
+      const text = btn.dataset.copy || "";
+      try {
+        await navigator.clipboard.writeText(text);
+        const original = btn.textContent;
+        btn.textContent = "Copied";
+        btn.classList.add("text-emerald-200");
+        setTimeout(() => { btn.textContent = original; btn.classList.remove("text-emerald-200"); }, 1200);
+      } catch {
+        // Fallback: select + execCommand is deprecated; just no-op on permission denial.
+        btn.textContent = "Copy failed";
+        setTimeout(() => { btn.textContent = "Copy"; }, 1500);
+      }
+    });
+  });
+}
+
+function tenantSignalCard(overview) {
+  const recent = (overview.recent_events || [])[0];
+  const lastTs = recent && (recent.occurred_at || recent.created_at);
+  let minutesAgo = null;
+  if (lastTs) {
+    const t = Date.parse(lastTs);
+    if (!Number.isNaN(t)) minutesAgo = Math.max(0, (Date.now() - t) / 60000);
+  }
+  const series = overview.telemetry_series_24h || [];
+  const lastHour = series.length ? series[series.length - 1] : 0;
+  const total24h = series.reduce((a, b) => a + b, 0);
+
+  let label, dot, summary;
+  if (minutesAgo == null) {
+    label = "Awaiting first event";
+    dot = "bg-slate-500";
+    summary = "Install a browser extension or endpoint agent below and trigger a monitored event — this card lights up the moment your tenant's first telemetry arrives.";
+  } else if (minutesAgo < 5) {
+    label = "Reporting now";
+    dot = "bg-emerald-400";
+    summary = `Last event ${relativeSince(minutesAgo)} · ${lastHour} in the last hour · ${total24h} in the last 24h.`;
+  } else if (minutesAgo < 60) {
+    label = "Recently active";
+    dot = "bg-amber-300";
+    summary = `Last event ${relativeSince(minutesAgo)} · ${lastHour} in the last hour · ${total24h} in the last 24h.`;
+  } else {
+    label = "Quiet";
+    dot = "bg-slate-500";
+    summary = `Last event ${relativeSince(minutesAgo)} · no events in the last hour · ${total24h} in the last 24h. If you expected activity, check the endpoint/extension logs.`;
+  }
+  return card(`
+    <div class="flex flex-wrap items-center gap-4">
+      <span class="inline-flex h-3 w-3 rounded-full ${dot} ring-2 ring-slate-900"></span>
+      <div class="flex-1">
+        <div class="text-base font-semibold">Tenant signal — ${esc(label)}</div>
+        <div class="mt-1 text-sm text-slate-400">${esc(summary)}</div>
+      </div>
+      <a href="#/telemetry" class="rounded-2xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-200 hover:bg-slate-800">Open Telemetry →</a>
+    </div>
+  `);
+}
+
+function tenantContextStrip(settings) {
+  const tenant = settings.tenant || {};
+  const user = settings.user || {};
+  return card(`
+    <div class="flex flex-wrap items-baseline gap-x-6 gap-y-2 text-sm">
+      <div class="flex items-baseline gap-2">
+        <span class="text-[10px] uppercase tracking-wider text-slate-500">Tenant</span>
+        <span class="font-semibold">${esc(tenant.name || "")}</span>
+      </div>
+      <div class="flex items-baseline gap-2">
+        <span class="text-[10px] uppercase tracking-wider text-slate-500">ID</span>
+        <span class="font-mono text-xs text-cyan-100">${esc(tenant.id || "")}</span>
+      </div>
+      <div class="flex items-baseline gap-2">
+        <span class="text-[10px] uppercase tracking-wider text-slate-500">Control plane</span>
+        <span class="font-mono text-xs text-slate-300">${esc(location.origin)}</span>
+      </div>
+      <div class="flex items-baseline gap-2">
+        <span class="text-[10px] uppercase tracking-wider text-slate-500">Signed in as</span>
+        <span>${esc(user.email || "")} ${badge(user.role || "user", user.role === "tenant_admin" ? "green" : "cyan")}</span>
+      </div>
+    </div>
+  `);
+}
+
+function recommendedQuickstartCard(catalog) {
+  // The browser extension is the fastest path from "blank tenant" to "first
+  // event in dashboard". Surface it as the recommended starter so prospects
+  // don't have to choose between five packages on their first visit.
+  const ext = (Array.isArray(catalog) ? catalog : []).find((p) =>
+    ["extension", "browser_extension"].includes(p.category)
+  );
+  if (!ext) return "";
+  const adminCta = session.role === "tenant_admin"
+    ? `<button class="customerBootstrapBtn rounded-xl bg-cyan-500 px-3 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400" data-package-key="${esc(ext.package_key)}" data-package-title="${esc(ext.title)}" type="button">Issue Bootstrap Token</button>`
+    : `<span class="text-xs text-slate-500">A tenant admin can issue the bootstrap token here.</span>`;
+  return card(`
+    <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+      <div>
+        <div class="inline-flex items-center gap-2 rounded-full bg-cyan-500/15 px-2 py-0.5 text-[10px] uppercase tracking-wider text-cyan-200">Recommended starter · ~3 min</div>
+        <div class="mt-2 text-lg font-semibold">Browser extension (${esc(ext.title)})</div>
+        <p class="mt-1 max-w-2xl text-sm text-slate-400">Fastest path from a blank tenant to a live event. No daemon install, no system permissions — just load the unpacked extension in Chrome, paste the bootstrap token, and you'll see your first event in Telemetry within seconds.</p>
+      </div>
+      <a class="shrink-0 rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200 hover:bg-slate-800" href="${esc(ext.download_url)}">Download ZIP →</a>
+    </div>
+    <ol class="mt-5 grid gap-3 text-sm md:grid-cols-2">
+      <li class="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+        <div class="text-[10px] uppercase tracking-wider text-slate-500">Step 1 · Issue token</div>
+        <p class="mt-1 text-slate-300">Click below to mint a one-time bootstrap token scoped to this tenant. Tokens are shown once and expire in 30 minutes.</p>
+        <div class="mt-3">${adminCta}</div>
+      </li>
+      <li class="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+        <div class="text-[10px] uppercase tracking-wider text-slate-500">Step 2 · Load extension</div>
+        <p class="mt-1 text-slate-300">Unzip the bundle, then in Chrome go to <span class="font-mono text-xs text-cyan-200">chrome://extensions</span>, toggle <em>Developer mode</em>, click <em>Load unpacked</em>, and select the unzipped folder.</p>
+      </li>
+      <li class="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+        <div class="text-[10px] uppercase tracking-wider text-slate-500">Step 3 · Paste token + URL</div>
+        <p class="mt-1 text-slate-300">Open the extension's <em>Options</em> page. Set Control Plane URL and paste the bootstrap token; click Save. The extension redeems the token for an install-scoped API key automatically.</p>
+        <div class="mt-3">${copyableSnippet(location.origin)}</div>
+      </li>
+      <li class="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+        <div class="text-[10px] uppercase tracking-wider text-slate-500">Step 4 · Trigger an event</div>
+        <p class="mt-1 text-slate-300">Visit any site and the extension reports a <span class="font-mono text-cyan-200">page_visit</span> event. The Tenant Signal card above will light up green within 30 seconds.</p>
+        <a class="mt-3 inline-block text-xs text-cyan-200 hover:text-cyan-100" href="#/telemetry">Watch the Telemetry view →</a>
+      </li>
+    </ol>
+    <div id="customerBootstrapResult" class="mt-4"></div>
+  `);
+}
+
 async function viewOnboarding() {
-  const overview = await api("/api/customer/overview").catch(() => ({}));
+  const [overview, settings, catalog] = await Promise.all([
+    api("/api/customer/overview").catch(() => ({})),
+    api("/api/customer/settings").catch(() => ({})),
+    api("/api/customer/downloads/catalog").catch(() => []),
+  ]);
   const readiness = readinessFromOverview(overview);
-  const catalog = await api("/api/customer/downloads/catalog").catch(() => []);
   const sdkPackages = (Array.isArray(catalog) ? catalog : []).filter((pkg) =>
     ["sdk", "rasp"].includes(pkg.category)
   );
+
+  // Keep the existing tenantScopedConfigPage render at the bottom so the
+  // onboarding settings form (checklist + sdk_languages config) doesn't
+  // disappear — we just insert richer content before and after it.
   const snippets = [
-    { title: "Node.js", body: "Install the CyberArmor SDK and set the tenant API key created from this portal.", badge: "npm", tone: "green" },
-    { title: "Python", body: "Configure the Python client with tenant-scoped policy and audit settings.", badge: "pip", tone: "cyan" },
-    { title: "Go / Java / .NET", body: "Use tenant-scoped credentials and validate audit events after integration.", badge: "server SDKs", tone: "slate" },
-    { title: "Browser Extensions", body: "Enroll browser-side controls against this tenant's policy boundary.", badge: "endpoint ready", tone: "amber" },
-    { title: "Verification", body: "Run a login, provider call, policy decision, and audit-log check before production rollout.", badge: "QA checklist", tone: "green" },
-    { title: "SSO", body: "Configure OIDC under Identity / SSO or Settings before inviting tenant users at scale.", badge: "tenant admin", tone: "cyan" },
+    { title: "Node.js",    body: "npm install @cyberarmor/sdk; configure with the tenant API key created from the API Keys tab.", badge: "npm",        tone: "green" },
+    { title: "Python",     body: "pip install cyberarmor-sdk; set CYBERARMOR_API_KEY and CYBERARMOR_TENANT_ID env vars.",          badge: "pip",        tone: "cyan"  },
+    { title: "Go / Java / .NET", body: "Server SDKs use the same tenant-scoped credentials; verify by inspecting Audit Logs.", badge: "server SDKs", tone: "slate" },
+    { title: "RASP",       body: "Embed the RASP shim in the application process; policies match by host and path.",              badge: "in-process", tone: "violet" },
+    { title: "Verification", body: "After install, generate one event from each integration and confirm both Telemetry and Audit show the row.", badge: "QA",     tone: "green" },
+    { title: "SSO",        body: "Configure OIDC under Settings before inviting tenant users at scale.",                          badge: "tenant admin", tone: "cyan" },
   ];
-  await tenantScopedConfigPage("onboarding", "SDK & Onboarding", "Tenant quickstart guides and integration checklist", snippets, {
+  await tenantScopedConfigPage("onboarding", "SDK & Onboarding", "Quickstart, live tenant signal, and per-language install snippets", snippets, {
     checklist: ["create_api_key", "configure_sdk", "send_test_event", "verify_policy_decision", "confirm_audit_log"],
     sdk_languages: ["nodejs", "python", "go", "java", "dotnet"],
   });
   const app = $("#app");
   if (!app) return;
+
+  // Prepend the dynamic, tenant-aware sections.
   app.insertAdjacentHTML("afterbegin", `
+    ${tenantContextStrip(settings)}
+    <div class="mt-4"></div>
+    ${tenantSignalCard(overview)}
+    <div class="mt-4"></div>
+    ${recommendedQuickstartCard(catalog)}
+    <div class="mt-4"></div>
     ${card(`
       <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div>
@@ -2768,7 +2931,10 @@ async function viewOnboarding() {
     `)}
     <div class="mt-4"></div>
   `);
+
+  // Append the SDK/RASP/Add-in catalog at the bottom (unchanged grid).
   app.insertAdjacentHTML("beforeend", `
+    <div class="mt-4"></div>
     ${card(`
       <div class="text-lg font-semibold">SDK, RASP, and Add-in Packages</div>
       <p class="mt-2 text-sm text-slate-400">Download the package, issue a one-time bootstrap token, then redeem it into an install-scoped credential during setup instead of embedding a shared secret.</p>
@@ -2779,7 +2945,7 @@ async function viewOnboarding() {
             <div class="mt-2 text-base font-semibold">${esc(pkg.title)}</div>
             <p class="mt-2 text-sm text-slate-400">${esc(pkg.description || "")}</p>
             ${browserCoverageNote(pkg)}
-            <div class="mt-3 rounded-xl bg-slate-950 px-3 py-2 text-xs font-mono text-cyan-200">${esc(pkg.install_hint || "")}</div>
+            ${pkg.install_hint ? `<div class="mt-3">${copyableSnippet(pkg.install_hint, { maxHeight: "max-h-24" })}</div>` : ""}
             <div class="mt-4 flex flex-wrap gap-2">
               <a class="rounded-xl bg-cyan-500 px-3 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400" href="${esc(pkg.download_url)}">Download ZIP</a>
               ${session.role === "tenant_admin"
@@ -2790,11 +2956,11 @@ async function viewOnboarding() {
           </div>
         `).join("") || `<div class="text-sm text-slate-500">Package catalog unavailable.</div>`}
       </div>
-      <div id="customerBootstrapResult" class="mt-4"></div>
     `)}
   `);
   bindCustomerBootstrapButtons();
   bindCustomerBootstrapHelpButtons();
+  bindCopyButtons(app);
 }
 
 async function viewUsers() {
