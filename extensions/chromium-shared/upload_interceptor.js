@@ -73,10 +73,16 @@
   // --- fetch() wrapper -------------------------------------------------
 
   const origFetch = window.fetch;
+  // Diagnostic toggle: set window.__cyberarmor_debug = true in DevTools to
+  // log every wrapped fetch. Off by default so production pages stay quiet.
+  const dbg = (...args) => { if (window.__cyberarmor_debug) console.log("[CyberArmor upload]", ...args); };
+  console.log("[CyberArmor] upload interceptor installed (fetch:", typeof origFetch, ", XHR:", typeof XMLHttpRequest, ")");
   if (typeof origFetch === "function") {
     window.fetch = async function patchedFetch(input, init) {
       try {
         const body = init && init.body;
+        const url = typeof input === "string" ? input : (input && input.url) || "";
+        if (window.__cyberarmor_debug) dbg("fetch", url, "body=", body && body.constructor && body.constructor.name);
         // FormData → multipart upload candidate. Blob/File bodies on their
         // own are valid too (PUT to S3-style endpoints), but skip strings
         // and ArrayBuffers — those are JSON / opaque uploads we can't
