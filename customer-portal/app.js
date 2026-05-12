@@ -1712,9 +1712,49 @@ async function viewPolicies() {
   });
 }
 
+// --- Endpoints helpers ---
+
+const ENDPOINT_HEALTH_META = {
+  healthy:        { label: "Healthy",   color: "bg-emerald-500/20 text-emerald-200", dot: "bg-emerald-400" },
+  warn:           { label: "Warning",   color: "bg-amber-500/20 text-amber-200",     dot: "bg-amber-300" },
+  stale:          { label: "Stale",     color: "bg-amber-500/15 text-amber-100",     dot: "bg-amber-500" },
+  offline:        { label: "Offline",   color: "bg-rose-500/20 text-rose-200",       dot: "bg-rose-400" },
+  never_reported: { label: "No telemetry", color: "bg-slate-700/40 text-slate-200",  dot: "bg-slate-500" },
+  unknown:        { label: "Unknown",   color: "bg-slate-700/40 text-slate-300",     dot: "bg-slate-500" },
+};
+
+function endpointHealthBadge(h) {
+  const meta = ENDPOINT_HEALTH_META[h] || ENDPOINT_HEALTH_META.unknown;
+  return `<span class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wider ${meta.color}">
+    <span class="h-1.5 w-1.5 rounded-full ${meta.dot}"></span>${esc(meta.label)}
+  </span>`;
+}
+
+function relativeSince(mins) {
+  if (mins == null) return "—";
+  if (mins < 1)  return "just now";
+  if (mins < 60) return `${Math.round(mins)}m ago`;
+  if (mins < 24 * 60) return `${Math.round(mins / 60)}h ago`;
+  return `${Math.round(mins / (24 * 60))}d ago`;
+}
+
+function platformBadgeHtml(platform) {
+  const p = String(platform || "").toLowerCase();
+  // Recognise common values from the agents — Darwin/macOS, Windows, Linux.
+  const isMac = p.includes("darwin") || p.includes("mac");
+  const isWin = p.includes("win");
+  const isLin = p.includes("linux");
+  const cls = isMac ? "bg-slate-700/40 text-slate-200"
+             : isWin ? "bg-cyan-500/20 text-cyan-200"
+             : isLin ? "bg-amber-500/15 text-amber-200"
+             : "bg-slate-700/40 text-slate-300";
+  const label = isMac ? "macOS" : isWin ? "Windows" : isLin ? "Linux" : (platform || "—");
+  return `<span class="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold ${cls}">${esc(label)}</span>`;
+}
+
 async function viewEndpoints() {
   $("#pageTitle").textContent = "Endpoints";
-  $("#pageSubtitle").textContent = "Tenant-scoped endpoint and agent inventory";
+  $("#pageSubtitle").textContent = "Endpoint and extension fleet — heartbeats, health, and event volume";
   const [agents, catalog] = await Promise.all([
     api("/api/customer/agents?limit=500"),
     api("/api/customer/downloads/catalog").catch(() => []),
@@ -1722,8 +1762,61 @@ async function viewEndpoints() {
   const endpointPackages = (Array.isArray(catalog) ? catalog : []).filter((pkg) =>
     ["agent", "extension", "browser_extension"].includes(pkg.category)
   );
+  const rows = Array.isArray(agents) ? agents : [];
+
+  // Aggregate health and platform mix for the top summary strip. Health bucket
+  // is computed server-side (see _classify_agent_health) so the badge meaning
+  // is consistent across all surfaces.
+  const healthCounts = { healthy: 0, warn: 0, stale: 0, offline: 0, never_reported: 0, unknown: 0 };
+  const platformCounts = { macOS: 0, Windows: 0, Linux: 0, other: 0 };
+  let totalEvents24h = 0;
+  for (const r of rows) {
+    const h = r.health || "unknown";
+    healthCounts[h] = (healthCounts[h] || 0) + 1;
+    const p = String(r.platform || r.os || "").toLowerCase();
+    if (p.includes("darwin") || p.includes("mac"))      platformCounts.macOS++;
+    else if (p.includes("win"))                         platformCounts.Windows++;
+    else if (p.includes("linux"))                       platformCounts.Linux++;
+    else                                                platformCounts.other++;
+    if (typeof r.event_count_24h === "number") totalEvents24h += r.event_count_24h;
+  }
+
+  const summaryCard = card(`
+    <div class="flex flex-wrap items-center gap-4">
+      <div class="flex flex-col">
+        <span class="text-[10px] uppercase tracking-wider text-slate-500">Endpoints</span>
+        <span class="text-2xl font-semibold tabular-nums text-slate-100">${rows.length}</span>
+      </div>
+      <div class="mx-2 h-10 w-px bg-slate-800"></div>
+      ${["healthy", "warn", "stale", "offline", "never_reported"].filter((k) => healthCounts[k] > 0).map((k) => {
+        const meta = ENDPOINT_HEALTH_META[k];
+        return `<div class="flex items-center gap-2 rounded-2xl border border-slate-800 bg-slate-900/60 px-3 py-2">
+          <span class="h-2 w-2 rounded-full ${meta.dot}"></span>
+          <div class="flex flex-col leading-tight">
+            <span class="text-[10px] uppercase tracking-wider text-slate-500">${esc(meta.label)}</span>
+            <span class="font-mono text-sm tabular-nums text-slate-100">${healthCounts[k]}</span>
+          </div>
+        </div>`;
+      }).join("")}
+      <div class="mx-2 h-10 w-px bg-slate-800"></div>
+      ${["macOS", "Windows", "Linux", "other"].filter((p) => platformCounts[p] > 0).map((p) =>
+        `<div class="flex flex-col rounded-2xl border border-slate-800 bg-slate-900/60 px-3 py-2 leading-tight">
+          <span class="text-[10px] uppercase tracking-wider text-slate-500">${esc(p)}</span>
+          <span class="font-mono text-sm tabular-nums text-slate-100">${platformCounts[p]}</span>
+        </div>`
+      ).join("")}
+      <div class="ml-auto flex flex-col text-right">
+        <span class="text-[10px] uppercase tracking-wider text-slate-500">Fleet events 24h</span>
+        <span class="font-mono text-sm tabular-nums text-slate-100">${totalEvents24h}</span>
+      </div>
+    </div>
+  `);
+
   $("#app").innerHTML = `
-    <div id="endpointsList"></div>
+    <div class="space-y-4">
+      ${summaryCard}
+      <div id="endpointsList"></div>
+    </div>
     <div class="mt-4"></div>
     ${card(`
       <div class="flex items-center justify-between gap-3">
@@ -1759,45 +1852,69 @@ async function viewEndpoints() {
 
   mountListView({
     container: $("#endpointsList"),
-    rows: Array.isArray(agents) ? agents : [],
+    rows,
     filename: `endpoints_${session.tenant_id || "tenant"}`,
     columns: [
-      { key: "agent_id",  label: "Agent ID", type: "text",
-        value: (r) => r.agent_id || "",
-        render: (r) => `<span class="font-mono text-xs">${esc(r.agent_id || "")}</span>` },
-      { key: "hostname",  label: "Hostname", type: "text",
-        value: (r) => r.hostname || "" },
-      { key: "username",  label: "User",     type: "text",
-        value: (r) => r.username || "" },
-      { key: "platform",  label: "Platform", type: "enum",
-        value: (r) => r.platform || r.os || "" },
-      { key: "status",    label: "Status",   type: "enum",
-        value: (r) => r.status || "unknown",
-        render: (r) => badge(r.status || "unknown", r.status === "running" ? "green" : "slate") },
-      { key: "version",   label: "Version",  type: "text",
-        value: (r) => r.version || "" },
-      { key: "last_seen", label: "Last Seen", type: "date",
-        value: (r) => r.last_seen || "",
-        render: (r) => `<span class="text-xs text-slate-400">${esc(fmt(r.last_seen))}</span>` },
+      // Lead with the human-readable asset, not the UUID.
+      { key: "hostname", label: "Endpoint", type: "text",
+        value: (r) => r.hostname || r.agent_id || "",
+        render: (r) => {
+          const host = r.hostname || "";
+          const aid = r.agent_id || "";
+          return `<div class="leading-tight">
+            <div class="text-sm font-medium text-slate-100">${esc(host || "(no hostname)")}</div>
+            ${aid ? `<div class="font-mono text-[10px] text-slate-500">${esc(aid.slice(0, 12))}…</div>` : ""}
+          </div>`;
+        } },
+      { key: "health", label: "Health", type: "enum",
+        value: (r) => r.health || "unknown",
+        render: (r) => endpointHealthBadge(r.health) },
+      { key: "minutes_since_heartbeat", label: "Last seen", type: "number",
+        value: (r) => r.minutes_since_heartbeat == null ? Number.POSITIVE_INFINITY : r.minutes_since_heartbeat,
+        render: (r) => `<span class="text-xs text-slate-400 tabular-nums" title="${esc(fmt(r.last_seen))}">${esc(relativeSince(r.minutes_since_heartbeat))}</span>` },
+      { key: "platform", label: "Platform", type: "enum",
+        value: (r) => r.platform || r.os || "",
+        render: (r) => platformBadgeHtml(r.platform || r.os) },
+      { key: "username", label: "User", type: "text",
+        value: (r) => r.username || "",
+        render: (r) => r.username ? `<span class="text-xs text-slate-200">${esc(r.username)}</span>` : `<span class="text-slate-700">—</span>` },
+      { key: "version", label: "Version", type: "text",
+        value: (r) => r.version || "",
+        render: (r) => r.version ? `<span class="font-mono text-[11px] text-slate-300">${esc(r.version)}</span>` : `<span class="text-slate-700">—</span>` },
+      { key: "event_count_24h", label: "Events 24h", type: "number",
+        value: (r) => Number(r.event_count_24h) || 0,
+        render: (r) => {
+          const n = Number(r.event_count_24h) || 0;
+          const cls = n === 0 ? "text-slate-600" : n > 100 ? "text-cyan-200 font-semibold" : "text-slate-200";
+          return `<span class="${cls} tabular-nums">${n}</span>`;
+        } },
+      { key: "active_monitor_count", label: "Monitors", type: "number", sortable: false,
+        value: (r) => Number(r.active_monitor_count) || 0,
+        render: (r) => r.active_monitor_count != null
+          ? `<span class="text-xs text-slate-300 tabular-nums">${r.active_monitor_count}</span>`
+          : `<span class="text-slate-700">—</span>` },
     ],
     onRowClick: (agent) => openReadOnlyModal({
       title: `Endpoint — ${agent.hostname || agent.agent_id || ""}`,
       record: agent,
       fields: [
-        { key: "agent_id",  label: "Agent ID" },
         { key: "hostname",  label: "Hostname" },
+        { key: "agent_id",  label: "Agent ID",       render: (r) => r.agent_id ? `<span class="font-mono text-xs">${esc(r.agent_id)}</span>` : "" },
+        { key: "health",    label: "Health",         render: (r) => endpointHealthBadge(r.health) },
+        { key: "last_seen", label: "Last heartbeat", render: (r) => `${esc(fmt(r.last_seen))}<div class="text-xs text-slate-500">${esc(relativeSince(r.minutes_since_heartbeat))}</div>` },
         { key: "username",  label: "User" },
-        { key: "platform",  label: "Platform" },
+        { key: "platform",  label: "Platform",       render: (r) => platformBadgeHtml(r.platform || r.os) },
         { key: "os",        label: "OS" },
         { key: "version",   label: "Agent Version" },
-        { key: "status",    label: "Status",  render: (r) => badge(r.status || "unknown", r.status === "running" ? "green" : "slate") },
-        { key: "last_seen", label: "Last Seen", render: (r) => esc(fmt(r.last_seen)) },
+        { key: "status",    label: "Status",         render: (r) => badge(r.status || "unknown", r.status === "running" ? "green" : "slate") },
+        { key: "event_count_24h",     label: "Events (24h)" },
+        { key: "active_monitor_count", label: "Active monitors" },
         { key: "registered_at", label: "Registered", render: (r) => esc(fmt(r.registered_at)) },
         { key: "ip_address", label: "IP" },
-        { key: "tenant_id", label: "Tenant" },
+        { key: "tenant_id",  label: "Tenant" },
       ],
     }),
-    emptyMessage: "No endpoints found for this tenant.",
+    emptyMessage: "No endpoints found for this tenant. Install an endpoint agent or browser extension from the cards below to start populating this list.",
   });
 }
 

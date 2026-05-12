@@ -1907,6 +1907,34 @@ def _call_policy_service(
     return resp.json()
 
 
+def _classify_agent_health(last_seen_iso: Optional[str], now: datetime) -> Tuple[str, Optional[float]]:
+    """Map last_seen to (health bucket, minutes_since_heartbeat).
+
+    Buckets sized for a 30-60s heartbeat cadence:
+      healthy        — last heartbeat within 5 min
+      warn           — within 1 hour (something is throttling but agent's alive)
+      stale          — within 24 hours (operator should investigate)
+      offline        — older than 24 hours (likely uninstalled or laptop closed)
+      never_reported — registered but no telemetry / heartbeat ever
+    """
+    if not last_seen_iso:
+        return "never_reported", None
+    try:
+        last_seen = datetime.fromisoformat(str(last_seen_iso).replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return "unknown", None
+    if last_seen.tzinfo is None:
+        last_seen = last_seen.replace(tzinfo=timezone.utc)
+    minutes = max(0.0, (now - last_seen).total_seconds() / 60.0)
+    if minutes < 5:
+        return "healthy", minutes
+    if minutes < 60:
+        return "warn", minutes
+    if minutes < 24 * 60:
+        return "stale", minutes
+    return "offline", minutes
+
+
 def _tenant_agent_rows(db: Session, tenant_id: str, limit: int = 200) -> List[Dict[str, Any]]:
     agents_by_id: Dict[str, Dict[str, Any]] = {
         a.get("agent_id"): dict(a)
@@ -1944,6 +1972,40 @@ def _tenant_agent_rows(db: Session, tenant_id: str, limit: int = 200) -> List[Di
             "os": payload.get("os", ""),
             "version": payload.get("version") or payload.get("agent_version", ""),
         }
+
+    # Per-agent 24h event volume — single grouped query rather than N+1.
+    now = datetime.now(timezone.utc)
+    day_ago = now - timedelta(days=1)
+    event_counts: Dict[str, int] = {}
+    if agents_by_id:
+        event_count_rows = (
+            db.query(
+                TelemetryRecord.agent_id,
+                func.count(TelemetryRecord.id),
+            )
+            .filter(TelemetryRecord.tenant_id == tenant_id)
+            .filter(TelemetryRecord.occurred_at >= day_ago)
+            .filter(TelemetryRecord.agent_id.isnot(None))
+            .group_by(TelemetryRecord.agent_id)
+            .all()
+        )
+        event_counts = {aid: count for aid, count in event_count_rows}
+
+    # Enrich each row with the derived fields the customer-portal renders.
+    for aid, rec in agents_by_id.items():
+        health, mins = _classify_agent_health(rec.get("last_seen"), now)
+        rec["health"] = health
+        rec["minutes_since_heartbeat"] = round(mins, 1) if mins is not None else None
+        rec["event_count_24h"] = event_counts.get(aid, 0)
+        # active_monitors arrives as a list on heartbeat; normalise to count too
+        am = rec.get("active_monitors")
+        if isinstance(am, list):
+            rec["active_monitor_count"] = len(am)
+        elif isinstance(am, int):
+            rec["active_monitor_count"] = am
+        else:
+            rec["active_monitor_count"] = None
+
     agents = list(agents_by_id.values())
     agents.sort(key=lambda a: a.get("last_seen", ""), reverse=True)
     return agents[:limit]
