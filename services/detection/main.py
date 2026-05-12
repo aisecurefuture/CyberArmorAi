@@ -365,15 +365,24 @@ _SENSITIVE_REGEX_PATTERNS = [
     # NN-NNNNNNN format — no overlap with SSN's NNN-NN-NNNN — so the
     # structured form is a reliable signal on its own.
     ("ein", re.compile(r"\b\d{2}-\d{7}\b")),
-    # Driver's license — Maryland / Florida / similar 1-letter + 12-digit
-    # formats written with dashes or spaces (K400-6737-9051, A123 4567 8901).
-    # Distinctive shape: alphanumeric tokens that don't match (8 digits, 9
-    # digits without a letter prefix, etc.) won't trip it. Other state
-    # formats (CA's L+7 digits, TX's 8 digits, NY's 9 digits) are too short
-    # to disambiguate from random IDs and remain contextual-only.
+    # Driver's license — letter-prefix state formats. The shape is
+    # distinctive enough to run always-on:
+    #   - MD/FL dashed or spaced:  L 3-digit  4-digit  4-digit  → K400-6737-9051
+    #   - MD/FL compact (no sep):  L + 12 digits                → K400673790512
+    #   - IL compact:              L + 11 digits                → K40067379051
+    #   - WI compact:              L + 13 digits                → K4006737905123
+    # The letter prefix + tight length range (11-13 digits) rules out most
+    # tech-writing alphanumerics (AWS account IDs are 12 pure digits with
+    # no letter; container IDs are hex without uppercase; UUIDs are longer).
+    # Other state formats (CA's L+7 digits, TX's 8 digits, NY's 9 digits)
+    # are too short to disambiguate from random IDs and remain behind the
+    # CYBERARMOR_DETECTION_DL_STATES opt-in.
     (
         "drivers_license",
-        re.compile(r"\b[A-Z]\d{3}[\s-]\d{4}[\s-]\d{4}\b", re.IGNORECASE),
+        re.compile(
+            r"\b[A-Z](?:\d{3}[\s-]\d{4}[\s-]\d{4}|\d{11,13})\b",
+            re.IGNORECASE,
+        ),
     ),
     (
         "credit_card",
