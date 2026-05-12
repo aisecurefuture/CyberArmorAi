@@ -2654,6 +2654,56 @@ def customer_providers(ctx: Annotated[CustomerContext, Depends(get_customer_cont
     return _fetch_ai_router("/ai/providers", ctx.tenant_id)
 
 
+def _call_audit_graph(
+    method: str,
+    path: str,
+    tenant_id: str,
+    params: Optional[Dict[str, Any]] = None,
+) -> Any:
+    """Proxy to the audit-graph service for tenant-scoped event queries.
+    Used by the Risk Dashboard and Action Graph views; the audit service
+    natively filters by tenant_id query param so we forward it explicitly
+    on every call.
+    """
+    audit_url = os.getenv("AUDIT_SERVICE_URL", "http://audit:8005")
+    audit_key = os.getenv("AUDIT_API_SECRET", DEFAULT_API_KEY)
+    merged = {"tenant_id": tenant_id, **(params or {})}
+    try:
+        resp = httpx.request(
+            method.upper(),
+            f"{audit_url.rstrip('/')}{path}",
+            headers={**build_auth_headers(audit_url, audit_key), "x-tenant-id": tenant_id},
+            params=merged,
+            timeout=8.0,
+        )
+    except Exception as exc:
+        logger.warning("customer_audit_graph_proxy_error tenant=%s path=%s err=%s", tenant_id, path, exc)
+        raise HTTPException(status_code=502, detail="audit-graph service unavailable")
+    if resp.status_code >= 300:
+        logger.warning(
+            "customer_audit_graph_proxy_upstream_error tenant=%s path=%s status=%s body=%s",
+            tenant_id, path, resp.status_code, resp.text[:200],
+        )
+        raise HTTPException(status_code=502, detail=f"audit-graph returned {resp.status_code}")
+    try:
+        return resp.json()
+    except Exception as exc:
+        logger.warning("customer_audit_graph_proxy_decode_error tenant=%s err=%s", tenant_id, exc)
+        raise HTTPException(status_code=502, detail="audit-graph returned invalid JSON")
+
+
+@app.get("/customer/risk/events")
+def customer_risk_events(
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    limit: int = 500,
+) -> Any:
+    """Tenant-scoped audit-graph events feed for the AI Risk Dashboard and
+    Action Graph views. The audit service applies the tenant filter
+    upstream so other tenants' events stay invisible."""
+    limit = max(1, min(limit, 1000))
+    return _call_audit_graph("GET", "/events", ctx.tenant_id, params={"limit": limit})
+
+
 def _call_ai_router(
     method: str,
     path: str,

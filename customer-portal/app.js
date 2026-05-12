@@ -3151,12 +3151,197 @@ async function viewGraph() {
   ], { include_events: ["audit", "telemetry", "policy_decision"], max_depth: 5 });
 }
 
+// --- AI Risk Dashboard helpers ---
+
+// Maps an audit-graph event to a 0..1 risk score. Prefers explicit
+// risk_score fields when the SDK / agent emitted one, otherwise derives
+// from the outcome + a small heuristic over event type and action.
+function riskScoreFromEvent(ev) {
+  const explicit = ev && (ev.risk_score ?? (ev.details && ev.details.risk_score));
+  if (typeof explicit === "number" && !Number.isNaN(explicit)) {
+    return Math.max(0, Math.min(1, explicit));
+  }
+  const outcome = String(ev.outcome || "").toLowerCase();
+  const action  = String(ev.action || ev.event_type || "").toLowerCase();
+  if (outcome === "blocked" || action.includes("block")) return 0.85;
+  if (outcome === "denied")                              return 0.75;
+  if (outcome === "warn" || action.includes("warn"))     return 0.55;
+  if (outcome === "redacted" || action.includes("redact")) return 0.55;
+  if (outcome === "error" || outcome === "failed")       return 0.45;
+  return 0.1;
+}
+
+function riskGaugeHtml(score) {
+  const pct = Math.max(0, Math.min(100, Math.round(score * 100)));
+  const tone = score > 0.7 ? "bg-rose-500" : score > 0.4 ? "bg-amber-400" : "bg-emerald-400";
+  return `<div class="flex items-center gap-2">
+    <div class="flex-1 h-2 rounded-full bg-slate-800"><div class="${tone} h-2 rounded-full" style="width:${pct}%"></div></div>
+    <span class="text-xs font-mono w-9 text-right tabular-nums text-slate-300">${pct}%</span>
+  </div>`;
+}
+
+function riskMetricCard(label, value, tone, sub) {
+  const cls = tone === "rose"    ? "border-rose-900 text-rose-200"
+            : tone === "amber"   ? "border-amber-900 text-amber-200"
+            : tone === "emerald" ? "border-emerald-900 text-emerald-200"
+            : "border-slate-800 text-slate-200";
+  return `<div class="rounded-2xl border ${cls} bg-slate-950 p-4">
+    <div class="text-[10px] uppercase tracking-wider text-slate-500">${esc(label)}</div>
+    <div class="mt-1 text-2xl font-semibold tabular-nums">${esc(String(value))}</div>
+    ${sub ? `<div class="mt-1 text-[11px] text-slate-500">${esc(sub)}</div>` : ""}
+  </div>`;
+}
+
 async function viewRisk() {
-  await tenantScopedConfigPage("risk", "AI Risk Dashboard", "Tenant AI risk scores, threats, and recommendations", [
-    { title: "Risk Signals", body: "Aggregate incidents, DLP findings, shadow AI, provider posture, and delegation risk for this tenant.", badge: "tenant rollup", tone: "cyan" },
-    { title: "Recommendations", body: "Prioritize policy, onboarding, and provider hardening work for tenant admins.", badge: "actionable", tone: "green" },
-    { title: "Trend View", body: "Track changes in tenant AI risk as telemetry and audit events accumulate.", badge: "time series ready", tone: "slate" },
-  ], { weights: { incidents: 30, dlp: 25, shadow_ai: 20, provider_posture: 15, delegations: 10 }, recommendation_mode: "guided" });
+  $("#pageTitle").textContent = "AI Risk Dashboard";
+  $("#pageSubtitle").textContent = "Aggregate posture across audit events: blocked actions, risky agents, and recommendations";
+
+  let events = [];
+  let fetchError = null;
+  try {
+    const resp = await api("/api/customer/risk/events?limit=500");
+    events = Array.isArray(resp) ? resp : (resp && resp.events) || [];
+  } catch (err) {
+    fetchError = err.message || "audit-graph fetch failed";
+  }
+
+  // Aggregate. agentRisk[id] = {events, blocked, riskSum, latestTs, models}
+  const agentRisk = {};
+  let blocked = 0, highRisk = 0, riskTotal = 0;
+  for (const ev of events) {
+    const aid = ev.agent_id || "unknown";
+    const a = (agentRisk[aid] ||= { events: 0, blocked: 0, riskSum: 0, latestTs: 0, models: new Set() });
+    a.events++;
+    const rs = riskScoreFromEvent(ev);
+    a.riskSum += rs;
+    riskTotal += rs;
+    if (rs > 0.7) highRisk++;
+    if (String(ev.outcome || "").toLowerCase() === "blocked" || /block/i.test(ev.action || "")) {
+      a.blocked++;
+      blocked++;
+    }
+    const model = ev.model || (ev.details && ev.details.model);
+    if (model) a.models.add(model);
+    const ts = ev.timestamp ? Date.parse(ev.timestamp) : 0;
+    if (ts > a.latestTs) a.latestTs = ts;
+  }
+  const avgRisk = events.length ? riskTotal / events.length : 0;
+
+  // Top 10 agents by avg-risk score (highest first)
+  const topAgents = Object.entries(agentRisk)
+    .map(([id, r]) => ({ id, ...r, avg: r.events ? r.riskSum / r.events : 0 }))
+    .sort((a, b) => b.avg - a.avg)
+    .slice(0, 10);
+
+  // High-risk events list (top 8 by score, recent first as tiebreaker)
+  const highRiskItems = events
+    .map((e) => ({ e, score: riskScoreFromEvent(e), ts: e.timestamp ? Date.parse(e.timestamp) : 0 }))
+    .filter((x) => x.score > 0.5)
+    .sort((a, b) => b.score - a.score || b.ts - a.ts)
+    .slice(0, 8);
+
+  // Heuristic recommendations
+  const recs = [];
+  if (events.length === 0) {
+    recs.push({ tone: "slate", icon: "ℹ️", text: "No audit-graph events yet. Integrate the CyberArmor SDK / RASP / endpoint agent to start populating the risk dashboard." });
+  }
+  if (blocked > 5) {
+    recs.push({ tone: "rose", icon: "🚨", text: `${blocked} blocked actions in the last ${events.length} events. Review your most-violated policies and the agents driving the blocks below.` });
+  }
+  if (avgRisk > 0.5) {
+    recs.push({ tone: "amber", icon: "⚠️", text: `Fleet-average risk score ${(avgRisk * 100).toFixed(0)}% is elevated. Consider tightening allow-list rules or enabling redact-mode for high-risk providers.` });
+  }
+  if (highRisk > 0 && blocked === 0) {
+    recs.push({ tone: "amber", icon: "👀", text: `${highRisk} high-risk event${highRisk === 1 ? "" : "s"} but zero blocks. Either policies are too permissive or the events are warns-only.` });
+  }
+  if (avgRisk <= 0.3 && events.length > 0 && blocked === 0) {
+    recs.push({ tone: "emerald", icon: "✅", text: `Risk posture is healthy. Average ${(avgRisk * 100).toFixed(0)}%, no blocks in the sampled window. Continue monitoring.` });
+  }
+  if (recs.length === 0 && events.length > 0) {
+    recs.push({ tone: "slate", icon: "ℹ️", text: "No standout signals in the last sample. The dashboard re-evaluates on every load." });
+  }
+
+  const recCard = (r) => {
+    const border = r.tone === "rose"    ? "border-rose-900/50 bg-rose-950/20"
+                 : r.tone === "amber"   ? "border-amber-900/50 bg-amber-950/20"
+                 : r.tone === "emerald" ? "border-emerald-900/50 bg-emerald-950/20"
+                 : "border-slate-800 bg-slate-900/50";
+    return `<div class="flex items-start gap-3 rounded-2xl border ${border} p-3"><span>${r.icon}</span><div class="text-sm text-slate-200">${esc(r.text)}</div></div>`;
+  };
+
+  const agentRows = topAgents.length === 0
+    ? `<tr><td colspan="4" class="px-3 py-6 text-center text-sm text-slate-500">No agent activity yet</td></tr>`
+    : topAgents.map((r) => `
+        <tr class="border-t border-slate-800 hover:bg-slate-900/40">
+          <td class="px-3 py-2 font-mono text-xs text-slate-200">${esc(r.id.slice(0, 26))}${r.id.length > 26 ? "…" : ""}</td>
+          <td class="px-3 py-2 w-44">${riskGaugeHtml(r.avg)}</td>
+          <td class="px-3 py-2 text-right tabular-nums text-sm">${r.events}</td>
+          <td class="px-3 py-2 text-right tabular-nums">${r.blocked > 0 ? `<span class="text-rose-300">${r.blocked}</span>` : `<span class="text-slate-600">0</span>`}</td>
+        </tr>`).join("");
+
+  const highRiskRows = highRiskItems.length === 0
+    ? `<div class="rounded-2xl border border-emerald-900/40 bg-emerald-950/15 p-4 text-sm text-emerald-200">No high-risk events detected — system is clean ✓</div>`
+    : `<div class="space-y-2">${highRiskItems.map(({ e, score }) => {
+        const tone = score > 0.7 ? "bg-rose-500/20 text-rose-200" : "bg-amber-500/20 text-amber-200";
+        const action = e.action || e.event_type || "unknown";
+        const agent  = e.agent_id || "—";
+        const model  = e.model || (e.details && e.details.model) || "—";
+        const isBlocked = String(e.outcome || "").toLowerCase() === "blocked" || /block/i.test(action);
+        return `<div class="flex items-start gap-3 rounded-2xl border border-slate-800 bg-slate-900/40 p-3">
+          <span class="text-lg">${isBlocked ? "🚫" : "⚠️"}</span>
+          <div class="min-w-0 flex-1">
+            <div class="truncate text-sm font-medium text-slate-100">${esc(action)}</div>
+            <div class="truncate text-xs text-slate-500">${esc(agent)} → ${esc(model)}</div>
+            <div class="text-[11px] text-slate-500 tabular-nums">${esc(relativeFromIso(e.timestamp))}</div>
+          </div>
+          <span class="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${tone}">${Math.round(score * 100)}%</span>
+        </div>`;
+      }).join("")}</div>`;
+
+  $("#app").innerHTML = `
+    <div class="space-y-4">
+      ${fetchError ? `<div class="rounded-2xl border border-rose-900 bg-rose-950/30 p-3 text-sm text-rose-200">Could not load audit-graph events: ${esc(fetchError)}. The dashboard renders with zero events.</div>` : ""}
+
+      <div class="grid grid-cols-2 gap-3 md:grid-cols-4">
+        ${riskMetricCard("Avg risk score", `${(avgRisk * 100).toFixed(1)}%`,
+            avgRisk > 0.7 ? "rose" : avgRisk > 0.4 ? "amber" : "emerald",
+            `${events.length} events sampled`)}
+        ${riskMetricCard("Total events", events.length, "slate", "Audit-graph last 500")}
+        ${riskMetricCard("Blocked actions", blocked,
+            blocked > 0 ? "rose" : "emerald",
+            blocked > 0 ? "Policy enforcement fired" : "No blocks in window")}
+        ${riskMetricCard("High-risk events", highRisk,
+            highRisk > 0 ? "amber" : "emerald",
+            "Score > 70%")}
+      </div>
+
+      <div class="grid gap-4 lg:grid-cols-2">
+        ${card(`
+          <div class="font-semibold">Top agents by risk</div>
+          <p class="mt-1 text-xs text-slate-500">Highest average-risk agents in the sample, with event volume and block count.</p>
+          <div class="mt-3 overflow-x-auto">
+            <table class="w-full text-left text-sm">
+              <thead class="text-[10px] uppercase tracking-wider text-slate-500">
+                <tr><th class="px-3 py-2">Agent</th><th class="px-3 py-2">Risk</th><th class="px-3 py-2 text-right">Events</th><th class="px-3 py-2 text-right">Blocked</th></tr>
+              </thead>
+              <tbody>${agentRows}</tbody>
+            </table>
+          </div>
+        `)}
+        ${card(`
+          <div class="font-semibold">High-risk events</div>
+          <p class="mt-1 text-xs text-slate-500">Top 8 events with risk score above 50%, sorted high to low.</p>
+          <div class="mt-3">${highRiskRows}</div>
+        `)}
+      </div>
+
+      ${card(`
+        <div class="font-semibold">Recommendations</div>
+        <p class="mt-1 text-xs text-slate-500">Heuristic guidance derived from the current event sample. Re-evaluates on every load.</p>
+        <div class="mt-3 space-y-2">${recs.map(recCard).join("")}</div>
+      `)}
+    </div>
+  `;
 }
 
 async function viewDelegations() {
