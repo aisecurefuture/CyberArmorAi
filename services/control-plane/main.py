@@ -2622,6 +2622,94 @@ def _telemetry_to_incident(
     }
 
 
+@app.post("/customer/admin/backfill-agent-users")
+def customer_backfill_agent_users(
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+    db: Annotated[Session, Depends(get_db)],
+    overwrite: bool = False,
+) -> Dict[str, Any]:
+    """One-shot backfill: stamp telemetry rows + ingested incidents with the
+    user/hostname from the live agent registry.
+
+    Read-time enrichment in /customer/incidents already shows the current
+    user, but other consumers (evidence export, SIEM forwarding, audit
+    review) read the underlying TelemetryRecord rows directly. This admin
+    endpoint persists the mapping so downstream systems see the same
+    association.
+
+    By default we only fill rows whose ``user_id`` / ``hostname`` are
+    empty. Pass ``overwrite=true`` to replace existing values too — use
+    sparingly; it can clobber per-request user attribution emitted by the
+    proxy / SDK.
+    """
+    directory: Dict[str, Dict[str, Any]] = {
+        a["agent_id"]: a for a in _tenant_agent_rows(db, ctx.tenant_id, limit=1000)
+        if a.get("agent_id")
+    }
+    if not directory:
+        return {"tenant_id": ctx.tenant_id, "agents_in_registry": 0,
+                "telemetry_updated": 0, "incidents_updated": 0,
+                "note": "agent registry is empty — nothing to backfill from"}
+
+    telemetry_rows = (
+        db.query(TelemetryRecord)
+        .filter(TelemetryRecord.tenant_id == ctx.tenant_id)
+        .filter(TelemetryRecord.agent_id.in_(list(directory.keys())))
+        .all()
+    )
+    tel_updated = 0
+    for r in telemetry_rows:
+        dir_entry = directory.get(r.agent_id) or {}
+        new_user = dir_entry.get("username") or None
+        new_host = dir_entry.get("hostname") or None
+        changed = False
+        if new_user and (overwrite or not r.user_id):
+            if r.user_id != new_user:
+                r.user_id = new_user
+                changed = True
+        if new_host and (overwrite or not r.hostname):
+            if r.hostname != new_host:
+                r.hostname = new_host
+                changed = True
+        if changed:
+            tel_updated += 1
+    if tel_updated:
+        db.commit()
+
+    inc_updated = 0
+    tenant_incidents = _INCIDENTS.get(ctx.tenant_id, {})
+    for req_id, inc in tenant_incidents.items():
+        aid = inc.get("agent_id")
+        if not aid or aid not in directory:
+            continue
+        dir_entry = directory[aid]
+        changed = False
+        new_user = dir_entry.get("username") or None
+        new_host = dir_entry.get("hostname") or None
+        if new_user and (overwrite or not inc.get("user_id")):
+            if inc.get("user_id") != new_user:
+                inc["user_id"] = new_user
+                changed = True
+        if new_host and (overwrite or not inc.get("hostname")):
+            if inc.get("hostname") != new_host:
+                inc["hostname"] = new_host
+                changed = True
+        if changed:
+            inc_updated += 1
+
+    logger.info(
+        "backfill_agent_users tenant=%s overwrite=%s telemetry_updated=%s incidents_updated=%s agents=%s",
+        ctx.tenant_id, overwrite, tel_updated, inc_updated, len(directory),
+    )
+    return {
+        "tenant_id": ctx.tenant_id,
+        "agents_in_registry": len(directory),
+        "telemetry_updated": tel_updated,
+        "incidents_updated": inc_updated,
+        "overwrite": overwrite,
+    }
+
+
 @app.get("/customer/incidents")
 def customer_incidents(
     ctx: Annotated[CustomerContext, Depends(get_customer_context)],
