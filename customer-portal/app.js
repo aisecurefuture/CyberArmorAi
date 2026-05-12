@@ -3735,12 +3735,412 @@ async function viewPolicyStudio() {
   }
 }
 
+// Time windows for the action graph. Matches the convention used by the
+// compliance and telemetry views. All filtering is client-side because
+// /customer/risk/events is limit-based; we ask for the cap and prune.
+const GRAPH_WINDOWS = [
+  { id: "24h", label: "Last 24h", ms: 24 * 60 * 60 * 1000 },
+  { id: "7d",  label: "Last 7d",  ms: 7  * 24 * 60 * 60 * 1000 },
+  { id: "30d", label: "Last 30d", ms: 30 * 24 * 60 * 60 * 1000 },
+  { id: "all", label: "All time", ms: null },
+];
+
+const GRAPH_NODE_STYLE = {
+  human:    { fill: "#1e3a8a", stroke: "#93c5fd", icon: "👤", label: "Human"    },
+  agent:    { fill: "#064e3b", stroke: "#6ee7b7", icon: "🤖", label: "Agent"    },
+  provider: { fill: "#713f12", stroke: "#fcd34d", icon: "🛰", label: "Provider" },
+  model:    { fill: "#4c1d95", stroke: "#c4b5fd", icon: "🧠", label: "Model"    },
+  tool:     { fill: "#7c2d12", stroke: "#fdba74", icon: "🔧", label: "Tool"     },
+  action:   { fill: "#7f1d1d", stroke: "#fca5a5", icon: "⚡", label: "Action"   },
+};
+
+const GRAPH_OUTCOME_TONE = {
+  blocked:  "#f43f5e",
+  warn:     "#f59e0b",
+  redacted: "#f59e0b",
+  allow:    "#10b981",
+  ok:       "#22d3ee",
+};
+
 async function viewGraph() {
-  await tenantScopedConfigPage("graph", "Action Graph", "Visualize tenant agent-to-model action chains", [
-    { title: "Agent Nodes", body: "Show tenant agents, delegated identities, and model interactions once audit graph events are present.", badge: "tenant graph", tone: "cyan" },
-    { title: "Edges", body: "Trace requests, tool calls, provider hops, and policy decisions across the tenant boundary.", badge: "audit linked", tone: "green" },
-    { title: "Gaps", body: "Use missing edges to spot SDK or onboarding gaps for this tenant.", badge: "needs telemetry", tone: "amber" },
-  ], { include_events: ["audit", "telemetry", "policy_decision"], max_depth: 5 });
+  $("#pageTitle").textContent = "Action Graph";
+  $("#pageSubtitle").textContent = "Tenant agent ↔ provider ↔ model/tool action chains, derived from audit + endpoint telemetry";
+
+  // Local view state. `windowId` persists across re-renders; `selected` is
+  // the clicked node key (or null) and drives the right-side detail panel.
+  let windowId = "7d";
+  let selected = null;
+  let allEvents = [];
+  let sources = null;
+  let fetchError = null;
+
+  async function load() {
+    try {
+      const resp = await api("/api/customer/risk/events?limit=500");
+      allEvents = Array.isArray(resp) ? resp : (resp && resp.events) || [];
+      sources = (resp && resp.sources) || null;
+      fetchError = null;
+    } catch (err) {
+      allEvents = [];
+      fetchError = err.message || "event fetch failed";
+    }
+  }
+
+  function eventsInWindow() {
+    const w = GRAPH_WINDOWS.find((x) => x.id === windowId);
+    if (!w || w.ms == null) return allEvents;
+    const cutoff = Date.now() - w.ms;
+    return allEvents.filter((ev) => {
+      const t = Date.parse(ev.timestamp || "");
+      return Number.isFinite(t) && t >= cutoff;
+    });
+  }
+
+  // Build the columnar graph: human(0) → agent(1) → provider(2) → model/tool(3) → action(4).
+  // Nodes are keyed by `${type}:${id}` so the same string appearing as both
+  // a model and a tool stays distinct. Edges are aggregated by (from,to) and
+  // tinted by the worst outcome observed across them.
+  function buildGraph(events) {
+    const nodes = new Map();
+    const edgeMap = new Map();
+    const addNode = (type, id, column) => {
+      if (!id) return null;
+      const key = `${type}:${id}`;
+      if (!nodes.has(key)) {
+        nodes.set(key, { key, type, id, column, events: 0, blocked: 0, latestTs: 0 });
+      }
+      return key;
+    };
+    const addEdge = (from, to, outcome, ts) => {
+      if (!from || !to) return;
+      const key = `${from}|${to}`;
+      let e = edgeMap.get(key);
+      if (!e) { e = { from, to, count: 0, blocked: 0, latestTs: 0, outcomes: {} }; edgeMap.set(key, e); }
+      e.count++;
+      e.outcomes[outcome] = (e.outcomes[outcome] || 0) + 1;
+      if (outcome === "blocked") e.blocked++;
+      if (ts > e.latestTs) e.latestTs = ts;
+    };
+    const bumpNode = (key, outcome, ts) => {
+      const n = nodes.get(key);
+      if (!n) return;
+      n.events++;
+      if (outcome === "blocked") n.blocked++;
+      if (ts > n.latestTs) n.latestTs = ts;
+    };
+
+    for (const ev of events) {
+      const ts = Date.parse(ev.timestamp || "") || 0;
+      const outcome = String(ev.outcome || "ok").toLowerCase();
+      const human = ev.human_id || (ev.details && (ev.details.human_id || ev.details.user_id || ev.details.username));
+      const agent = ev.agent_id || (ev.details && ev.details.agent_id);
+      const provider = ev.provider || (ev.details && ev.details.provider);
+      const model = ev.model || (ev.details && (ev.details.model || ev.details.model_id));
+      const tool = ev.details && (ev.details.tool_name || ev.details.tool);
+      const action = ev.action || ev.event_type || "event";
+
+      const hk = addNode("human", human, 0);
+      const ak = addNode("agent", agent, 1);
+      const pk = addNode("provider", provider, 2);
+      const mk = addNode("model", model, 3);
+      const tk = addNode("tool", tool, 3);
+      const xk = addNode("action", action, 4);
+
+      [hk, ak, pk, mk, tk, xk].forEach((k) => { if (k) bumpNode(k, outcome, ts); });
+      // Chain edges; skip missing links so a thin event (e.g., agent → action
+      // only) still draws a line rather than dropping out of the graph.
+      const chain = [hk, ak, pk || mk || tk, mk || tk, xk].filter(Boolean);
+      for (let i = 0; i < chain.length - 1; i++) addEdge(chain[i], chain[i + 1], outcome, ts);
+      // Cross-link model ↔ tool when both present so callers see the pair.
+      if (mk && tk) addEdge(mk, tk, outcome, ts);
+    }
+    return { nodes: [...nodes.values()], edges: [...edgeMap.values()] };
+  }
+
+  function renderSvg(graph) {
+    const { nodes, edges } = graph;
+    if (nodes.length === 0) {
+      return `<div class="rounded-2xl border border-slate-800 bg-slate-950 p-8 text-center text-sm text-slate-400">No graph data in this window yet. Send telemetry, run an SDK workflow, or pick a wider time range.</div>`;
+    }
+    const cols = new Map();
+    for (const n of nodes) {
+      if (!cols.has(n.column)) cols.set(n.column, []);
+      cols.get(n.column).push(n);
+    }
+    // Stable per-column ordering: most-used nodes near the top so the chart
+    // reads top-down by signal strength rather than insertion order.
+    for (const list of cols.values()) list.sort((a, b) => b.events - a.events || a.id.localeCompare(b.id));
+    const colCount = 5;
+    const maxRows = Math.max(1, ...[...cols.values()].map((l) => l.length));
+    const W = 1180;
+    const H = Math.max(380, maxRows * 78 + 80);
+    const xFor = (c) => 90 + c * ((W - 180) / (colCount - 1));
+    const yFor = (n) => {
+      const list = cols.get(n.column) || [];
+      const idx = list.findIndex((x) => x.key === n.key);
+      const gap = H / (list.length + 1);
+      return Math.round(gap * (idx + 1));
+    };
+
+    const edgeSvg = edges.map((e) => {
+      const f = nodes.find((n) => n.key === e.from);
+      const t = nodes.find((n) => n.key === e.to);
+      if (!f || !t) return "";
+      const x1 = xFor(f.column) + 60;
+      const y1 = yFor(f);
+      const x2 = xFor(t.column) - 60;
+      const y2 = yFor(t);
+      const midX = Math.round((x1 + x2) / 2);
+      const dominantOutcome = Object.entries(e.outcomes).sort((a, b) => b[1] - a[1])[0]?.[0] || "ok";
+      const stroke = e.blocked > 0 ? GRAPH_OUTCOME_TONE.blocked : (GRAPH_OUTCOME_TONE[dominantOutcome] || "#64748b");
+      const width = Math.max(1, Math.min(5, 1 + Math.log2(e.count + 1)));
+      const isFaded = selected && selected !== e.from && selected !== e.to;
+      const opacity = isFaded ? 0.15 : 0.9;
+      return `<path d="M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}" stroke="${stroke}" stroke-width="${width}" fill="none" opacity="${opacity}" marker-end="url(#graphArrow)"></path>
+        <title>${esc(`${e.count} event${e.count === 1 ? "" : "s"}${e.blocked ? ` · ${e.blocked} blocked` : ""}`)}</title>`;
+    }).join("");
+
+    const nodeSvg = nodes.map((n) => {
+      const s = GRAPH_NODE_STYLE[n.type] || GRAPH_NODE_STYLE.action;
+      const x = xFor(n.column);
+      const y = yFor(n);
+      const isSel = selected === n.key;
+      const isFaded = selected && !isSel;
+      const opacity = isFaded ? 0.3 : 1;
+      const strokeW = isSel ? 2.5 : 1.5;
+      const ringR = isSel ? 32 : 0;
+      const blockedDot = n.blocked > 0
+        ? `<circle cx="50" cy="-22" r="9" fill="#0f172a" stroke="${GRAPH_OUTCOME_TONE.blocked}" stroke-width="1.5"></circle><text x="50" y="-19" text-anchor="middle" fill="${GRAPH_OUTCOME_TONE.blocked}" font-size="10" font-weight="700">${n.blocked > 9 ? "9+" : n.blocked}</text>`
+        : "";
+      const labelTxt = String(n.id).slice(0, 18) + (String(n.id).length > 18 ? "…" : "");
+      return `<g class="graphNode" data-node-key="${esc(n.key)}" style="cursor:pointer;opacity:${opacity}" transform="translate(${x},${y})">
+        ${isSel ? `<circle r="${ringR}" fill="none" stroke="${s.stroke}" stroke-width="1.5" stroke-dasharray="3 3" opacity="0.7"></circle>` : ""}
+        <rect x="-60" y="-24" width="120" height="48" rx="14" fill="${s.fill}" stroke="${s.stroke}" stroke-width="${strokeW}"></rect>
+        <text x="-48" y="6" font-size="16">${s.icon}</text>
+        <text x="-28" y="-4" fill="#f8fafc" font-size="10" font-weight="700">${esc(s.label.toUpperCase())}</text>
+        <text x="-28" y="11" fill="#cbd5e1" font-size="10" font-family="monospace">${esc(labelTxt)}</text>
+        ${blockedDot}
+        <title>${esc(n.id)} · ${n.events} event${n.events === 1 ? "" : "s"}${n.blocked ? ` · ${n.blocked} blocked` : ""}</title>
+      </g>`;
+    }).join("");
+
+    return `
+      <div class="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-950">
+        <svg id="actionGraphSvg" viewBox="0 0 ${W} ${H}" class="min-w-[1080px] w-full" role="img" aria-label="Tenant action graph">
+          <defs>
+            <marker id="graphArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"></path>
+            </marker>
+          </defs>
+          ${edgeSvg}${nodeSvg}
+        </svg>
+      </div>`;
+  }
+
+  function detailPanel(events, graph) {
+    if (!selected) {
+      return `<div class="rounded-2xl border border-slate-800 bg-slate-950 p-4 text-sm text-slate-400">
+        <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-2">Inspector</div>
+        Click any node in the graph to see its events, peers, and decisions.
+      </div>`;
+    }
+    const node = graph.nodes.find((n) => n.key === selected);
+    if (!node) {
+      return `<div class="rounded-2xl border border-slate-800 bg-slate-950 p-4 text-sm text-slate-400">Selected node is no longer in this window.</div>`;
+    }
+    const s = GRAPH_NODE_STYLE[node.type] || GRAPH_NODE_STYLE.action;
+    const nodeEvents = events.filter((ev) => eventReferencesNode(ev, node));
+    const peerMap = new Map();
+    for (const e of graph.edges) {
+      if (e.from !== node.key && e.to !== node.key) continue;
+      const peerKey = e.from === node.key ? e.to : e.from;
+      const peer = graph.nodes.find((n) => n.key === peerKey);
+      if (!peer) continue;
+      const p = peerMap.get(peerKey) || { peer, count: 0, blocked: 0 };
+      p.count += e.count;
+      p.blocked += e.blocked;
+      peerMap.set(peerKey, p);
+    }
+    const peers = [...peerMap.values()].sort((a, b) => b.count - a.count).slice(0, 8);
+    const recent = nodeEvents.slice(0, 8);
+    return `
+      <div class="rounded-2xl border border-slate-800 bg-slate-950 p-4">
+        <div class="flex items-baseline justify-between gap-2">
+          <div class="flex items-center gap-2">
+            <span class="inline-flex h-7 w-7 items-center justify-center rounded-lg" style="background:${s.fill}1a;color:${s.stroke}">${s.icon}</span>
+            <div>
+              <div class="text-[10px] uppercase tracking-wider text-slate-500">${esc(s.label)}</div>
+              <div class="font-mono text-sm text-slate-100 break-all">${esc(node.id)}</div>
+            </div>
+          </div>
+          <button id="graphClearSelection" type="button" class="text-xs text-slate-400 hover:text-slate-200">Clear</button>
+        </div>
+        <div class="mt-3 grid grid-cols-3 gap-2">
+          <div class="rounded-xl bg-slate-900 px-3 py-2"><div class="text-[10px] uppercase tracking-wider text-slate-500">Events</div><div class="text-lg font-semibold tabular-nums">${node.events}</div></div>
+          <div class="rounded-xl bg-slate-900 px-3 py-2"><div class="text-[10px] uppercase tracking-wider text-slate-500">Blocked</div><div class="text-lg font-semibold tabular-nums ${node.blocked > 0 ? "text-rose-300" : ""}">${node.blocked}</div></div>
+          <div class="rounded-xl bg-slate-900 px-3 py-2"><div class="text-[10px] uppercase tracking-wider text-slate-500">Last seen</div><div class="text-xs text-slate-300">${node.latestTs ? esc(new Date(node.latestTs).toLocaleString()) : "—"}</div></div>
+        </div>
+        <div class="mt-4">
+          <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-2">Peers (${peers.length})</div>
+          ${peers.length === 0 ? `<div class="text-xs text-slate-500">No peers in this window.</div>` : `
+            <div class="space-y-1">${peers.map((p) => {
+              const ps = GRAPH_NODE_STYLE[p.peer.type] || GRAPH_NODE_STYLE.action;
+              return `<button data-node-key="${esc(p.peer.key)}" class="graphPeerBtn flex w-full items-center justify-between rounded-lg bg-slate-900 px-2 py-1.5 text-left hover:bg-slate-800">
+                <span class="flex items-center gap-2 min-w-0">
+                  <span class="text-sm">${ps.icon}</span>
+                  <span class="font-mono text-xs text-slate-200 truncate">${esc(p.peer.id)}</span>
+                </span>
+                <span class="flex items-center gap-2 text-[10px] text-slate-400">
+                  <span>${p.count}</span>
+                  ${p.blocked > 0 ? `<span class="rounded-full bg-rose-500/20 px-1.5 py-0.5 text-rose-200">${p.blocked} blk</span>` : ""}
+                </span>
+              </button>`;
+            }).join("")}</div>
+          `}
+        </div>
+        <div class="mt-4">
+          <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-2">Recent events (${recent.length} of ${nodeEvents.length})</div>
+          ${recent.length === 0 ? `<div class="text-xs text-slate-500">No events for this node in window.</div>` : `
+            <div class="space-y-1">${recent.map((ev) => {
+              const tone = String(ev.outcome || "").toLowerCase() === "blocked" ? "bg-rose-500/20 text-rose-200"
+                         : String(ev.outcome || "").toLowerCase() === "warn"    ? "bg-amber-500/20 text-amber-200"
+                         : "bg-slate-700/40 text-slate-200";
+              return `<div class="rounded-lg bg-slate-900 px-2 py-1.5">
+                <div class="flex items-center justify-between gap-2">
+                  <span class="font-mono text-xs text-slate-200 truncate">${esc(String(ev.action || ev.event_type || ""))}</span>
+                  <span class="rounded-full px-1.5 py-0.5 text-[10px] uppercase tracking-wider ${tone}">${esc(String(ev.outcome || "ok"))}</span>
+                </div>
+                <div class="mt-0.5 text-[10px] text-slate-500">${esc(ev.timestamp ? new Date(ev.timestamp).toLocaleString() : "")}</div>
+              </div>`;
+            }).join("")}</div>
+          `}
+        </div>
+      </div>`;
+  }
+
+  function eventReferencesNode(ev, node) {
+    const det = ev.details || {};
+    switch (node.type) {
+      case "human":    return (ev.human_id || det.human_id || det.user_id || det.username) === node.id;
+      case "agent":    return (ev.agent_id || det.agent_id) === node.id;
+      case "provider": return (ev.provider || det.provider) === node.id;
+      case "model":    return (ev.model || det.model || det.model_id) === node.id;
+      case "tool":     return (det.tool_name || det.tool) === node.id;
+      case "action":   return (ev.action || ev.event_type) === node.id;
+      default: return false;
+    }
+  }
+
+  function render() {
+    const events = eventsInWindow();
+    const graph = buildGraph(events);
+
+    const blockedCount = events.filter((ev) => String(ev.outcome || "").toLowerCase() === "blocked").length;
+    const countByType = (t) => graph.nodes.filter((n) => n.type === t).length;
+
+    $("#app").innerHTML = `
+      <div class="space-y-4">
+        ${fetchError ? `<div class="rounded-2xl border border-rose-900 bg-rose-950/30 p-3 text-sm text-rose-200">Could not load events: ${esc(fetchError)}.</div>` : ""}
+        ${card(`
+          <div class="flex flex-wrap items-center gap-4">
+            ${riskMetricCard("Humans",    countByType("human"),    "slate")}
+            ${riskMetricCard("Agents",    countByType("agent"),    "emerald")}
+            ${riskMetricCard("Providers", countByType("provider"), "amber")}
+            ${riskMetricCard("Models",    countByType("model"),    "slate")}
+            ${riskMetricCard("Tools",     countByType("tool"),     "slate")}
+            ${riskMetricCard("Edges",     graph.edges.length,      "slate")}
+            ${riskMetricCard("Blocked",   blockedCount,            blockedCount > 0 ? "rose" : "emerald")}
+            <div class="ml-auto flex flex-col leading-tight">
+              <span class="text-[10px] uppercase tracking-wider text-slate-500">Time window</span>
+              <div class="mt-1 flex flex-wrap gap-1" id="graphWindowPicker">
+                ${GRAPH_WINDOWS.map((w) => `
+                  <button type="button" data-window-id="${w.id}" class="rounded-full px-2 py-1 text-[11px] ${windowId === w.id ? "bg-cyan-500 text-slate-950 font-semibold" : "bg-slate-900 border border-slate-700 text-slate-300 hover:bg-slate-800"}">${esc(w.label)}</button>
+                `).join("")}
+              </div>
+            </div>
+            <button id="graphRefreshBtn" type="button" class="rounded-2xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-200 hover:bg-slate-800">Refresh</button>
+          </div>
+          <div class="mt-3 flex flex-wrap items-center gap-3 text-xs text-slate-400">
+            ${Object.entries(GRAPH_NODE_STYLE).map(([k, s]) => `
+              <span class="inline-flex items-center gap-1.5"><span class="inline-block h-2.5 w-2.5 rounded-full" style="background:${s.stroke}"></span>${esc(s.label)}</span>
+            `).join("")}
+            <span class="ml-2 text-slate-600">·</span>
+            <span class="inline-flex items-center gap-1.5"><span class="inline-block h-0.5 w-6" style="background:${GRAPH_OUTCOME_TONE.blocked}"></span>Blocked</span>
+            <span class="inline-flex items-center gap-1.5"><span class="inline-block h-0.5 w-6" style="background:${GRAPH_OUTCOME_TONE.warn}"></span>Warn / Redact</span>
+            <span class="inline-flex items-center gap-1.5"><span class="inline-block h-0.5 w-6" style="background:${GRAPH_OUTCOME_TONE.ok}"></span>OK / Allow</span>
+            ${sources ? `<span class="ml-auto text-[11px] text-slate-500">Sources: ${sources.audit_graph ?? 0} audit + ${sources.telemetry ?? 0} telemetry</span>` : ""}
+          </div>
+        `)}
+        <div class="grid gap-4 lg:grid-cols-[1fr_360px]">
+          <div>${renderSvg(graph)}</div>
+          <div>${detailPanel(events, graph)}</div>
+        </div>
+        ${card(`
+          <div class="font-semibold">Recent actions <span class="text-xs text-slate-500">(${Math.min(events.length, 25)} of ${events.length})</span></div>
+          <div class="mt-3 overflow-x-auto">
+            <table class="w-full text-left text-sm">
+              <thead class="text-[10px] uppercase tracking-wider text-slate-500"><tr>
+                <th class="px-3 py-2">Time</th><th class="px-3 py-2">Human</th><th class="px-3 py-2">Agent</th><th class="px-3 py-2">Provider</th><th class="px-3 py-2">Model / Tool</th><th class="px-3 py-2">Action</th><th class="px-3 py-2">Outcome</th>
+              </tr></thead>
+              <tbody>${events.slice(0, 25).map((ev) => {
+                const det = ev.details || {};
+                const outcome = String(ev.outcome || "ok").toLowerCase();
+                const tone = outcome === "blocked" ? "bg-rose-500/20 text-rose-200"
+                           : outcome === "warn" || outcome === "redacted" ? "bg-amber-500/20 text-amber-200"
+                           : outcome === "allow" ? "bg-emerald-500/20 text-emerald-200"
+                           : "bg-slate-700/40 text-slate-200";
+                return `<tr class="border-t border-slate-800">
+                  <td class="px-3 py-2 text-xs text-slate-400">${esc(ev.timestamp ? new Date(ev.timestamp).toLocaleString() : "—")}</td>
+                  <td class="px-3 py-2 font-mono text-xs">${esc(String(ev.human_id || det.human_id || det.user_id || "—").slice(0, 22))}</td>
+                  <td class="px-3 py-2 font-mono text-xs">${esc(String(ev.agent_id || "—").slice(0, 22))}</td>
+                  <td class="px-3 py-2 font-mono text-xs">${esc(String(ev.provider || det.provider || "—").slice(0, 18))}</td>
+                  <td class="px-3 py-2 font-mono text-xs">${esc(String(ev.model || det.model || det.tool_name || "—").slice(0, 24))}</td>
+                  <td class="px-3 py-2 font-mono text-xs">${esc(String(ev.action || ev.event_type || "").slice(0, 26))}</td>
+                  <td class="px-3 py-2"><span class="rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wider ${tone}">${esc(outcome)}</span></td>
+                </tr>`;
+              }).join("") || `<tr><td colspan="7" class="px-3 py-8 text-center text-sm text-slate-500">No actions in this window.</td></tr>`}</tbody>
+            </table>
+          </div>
+        `)}
+      </div>
+    `;
+
+    // Wire up: time window picker
+    document.querySelectorAll("#graphWindowPicker button").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        if (windowId === btn.dataset.windowId) return;
+        windowId = btn.dataset.windowId;
+        selected = null;
+        render();
+      });
+    });
+    // Refresh
+    const refreshBtn = $("#graphRefreshBtn");
+    if (refreshBtn) refreshBtn.addEventListener("click", async () => {
+      refreshBtn.disabled = true;
+      refreshBtn.textContent = "Loading…";
+      await load();
+      render();
+    });
+    // Node clicks (SVG)
+    document.querySelectorAll(".graphNode").forEach((g) => {
+      g.addEventListener("click", () => {
+        const key = g.getAttribute("data-node-key");
+        selected = (selected === key) ? null : key;
+        render();
+      });
+    });
+    // Peer buttons in side panel
+    document.querySelectorAll(".graphPeerBtn").forEach((btn) => {
+      btn.addEventListener("click", () => { selected = btn.dataset.nodeKey; render(); });
+    });
+    // Clear selection
+    const clearBtn = $("#graphClearSelection");
+    if (clearBtn) clearBtn.addEventListener("click", () => { selected = null; render(); });
+  }
+
+  await load();
+  render();
 }
 
 // --- AI Risk Dashboard helpers ---
