@@ -247,12 +247,27 @@ def _get_nested(obj: dict, path: str):
     return cur
 
 
+def _stringify(v) -> str:
+    """Match JavaScript's String() for primitives the policy editor emits.
+
+    Python's str(True) is 'True', but JS's String(true) is 'true' — the
+    dashboard stores boolean condition values as the lowercase strings,
+    so capital-T booleans never matched. Do the same coercion for None
+    so 'null'-style policies behave consistently too.
+    """
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if v is None:
+        return "null"
+    return str(v)
+
+
 def _equals_loose(actual, expected) -> bool:
     if actual == expected:
         return True
     if actual is None or expected is None:
         return False
-    return str(actual) == str(expected)
+    return _stringify(actual) == _stringify(expected)
 
 
 def _eval_leaf(rule: dict, context: dict) -> bool:
