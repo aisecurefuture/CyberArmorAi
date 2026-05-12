@@ -2692,16 +2692,103 @@ def _call_audit_graph(
         raise HTTPException(status_code=502, detail="audit-graph returned invalid JSON")
 
 
+def _telemetry_to_risk_event(r: "TelemetryRecord") -> Dict[str, Any]:
+    """Project a TelemetryRecord into the audit-graph event shape the
+    Risk Dashboard expects. Endpoint agents and browser extensions write
+    to TelemetryRecord, while SDK/RASP/proxy-agent write to the audit
+    service. Until we unify the streams server-side, the dashboard reads
+    both and the projection lets us merge them.
+    """
+    payload = _coerce_meta(r.payload) or {}
+    bucket = _classify_action(r.event_type)
+    # outcome mirrors the action-class bucket so the dashboard's heuristic
+    # risk_score derivation (blocked → 0.85, warn → 0.55, …) works for
+    # endpoint events that don't carry an explicit risk_score.
+    outcome_map = {
+        "block":   "blocked",
+        "redact":  "redacted",
+        "warn":    "warn",
+        "allow":   "allow",
+        "detect":  "warn",       # detect events surface as warn-tier risk
+        "monitor": "ok",
+    }
+    return {
+        "event_id":   r.id,
+        "tenant_id":  r.tenant_id,
+        "agent_id":   r.agent_id or payload.get("agent_id"),
+        "human_id":   r.user_id or payload.get("user_id") or payload.get("username"),
+        "model":      payload.get("model") or payload.get("tool_name") or payload.get("provider"),
+        "provider":   payload.get("provider") or payload.get("source") or r.source,
+        "event_type": r.event_type,
+        "action":     r.event_type,
+        "outcome":    outcome_map.get(bucket, "ok"),
+        "timestamp":  r.occurred_at.isoformat() if r.occurred_at else None,
+        "details":    payload,
+        # carry the derived risk class so the frontend can apply a tighter
+        # default risk_score for known-bad event types without re-deriving
+        "action_class": bucket,
+    }
+
+
 @app.get("/customer/risk/events")
 def customer_risk_events(
     ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    db: Annotated[Session, Depends(get_db)],
     limit: int = 500,
 ) -> Any:
-    """Tenant-scoped audit-graph events feed for the AI Risk Dashboard and
-    Action Graph views. The audit service applies the tenant filter
-    upstream so other tenants' events stay invisible."""
+    """Tenant-scoped event feed for the AI Risk Dashboard and Action Graph.
+
+    Reads from both event streams:
+      - audit-graph service (`AuditEventModel`) — SDK / RASP / proxy-agent
+        writes. May be empty for tenants that only run endpoint agents.
+      - control-plane TelemetryRecord — endpoint agent + browser extension
+        writes. Projected into the audit-graph event shape so the
+        frontend doesn't have to merge formats.
+
+    Both queries are tenant-scoped. Events are returned newest-first up
+    to ``limit`` total; the dashboard re-aggregates regardless of source.
+    """
     limit = max(1, min(limit, 1000))
-    return _call_audit_graph("GET", "/events", ctx.tenant_id, params={"limit": limit})
+
+    # 1) audit-graph events (may be empty / unreachable; non-fatal)
+    audit_events: List[Dict[str, Any]] = []
+    try:
+        audit_resp = _call_audit_graph("GET", "/events", ctx.tenant_id, params={"limit": limit})
+        audit_events = audit_resp.get("events", []) if isinstance(audit_resp, dict) else (audit_resp or [])
+    except HTTPException as exc:
+        # 502 from the proxy — log and continue with telemetry only
+        logger.info("risk_events_audit_graph_unavailable tenant=%s detail=%s", ctx.tenant_id, exc.detail)
+
+    # 2) control-plane telemetry projected into the same shape
+    telemetry_rows = (
+        db.query(TelemetryRecord)
+        .filter(TelemetryRecord.tenant_id == ctx.tenant_id)
+        .order_by(desc(TelemetryRecord.occurred_at), desc(TelemetryRecord.created_at))
+        .limit(limit)
+        .all()
+    )
+    projected = [_telemetry_to_risk_event(r) for r in telemetry_rows]
+
+    # 3) Merge newest-first. event_id collisions don't happen across stores
+    #    (different ID schemes) so a simple concat + resort is correct.
+    def ts_key(ev: Dict[str, Any]) -> float:
+        ts = ev.get("timestamp")
+        if not ts:
+            return 0.0
+        try:
+            return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
+        except (ValueError, TypeError):
+            return 0.0
+
+    combined = sorted(audit_events + projected, key=ts_key, reverse=True)[:limit]
+    return {
+        "events": combined,
+        "total": len(combined),
+        "sources": {
+            "audit_graph": len(audit_events),
+            "telemetry":   len(projected),
+        },
+    }
 
 
 def _call_ai_router(

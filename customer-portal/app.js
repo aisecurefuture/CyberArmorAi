@@ -3197,12 +3197,14 @@ async function viewRisk() {
   $("#pageSubtitle").textContent = "Aggregate posture across audit events: blocked actions, risky agents, and recommendations";
 
   let events = [];
+  let sourceBreakdown = null;
   let fetchError = null;
   try {
     const resp = await api("/api/customer/risk/events?limit=500");
     events = Array.isArray(resp) ? resp : (resp && resp.events) || [];
+    if (resp && resp.sources) sourceBreakdown = resp.sources;
   } catch (err) {
-    fetchError = err.message || "audit-graph fetch failed";
+    fetchError = err.message || "event fetch failed";
   }
 
   // Aggregate. agentRisk[id] = {events, blocked, riskSum, latestTs, models}
@@ -3300,7 +3302,13 @@ async function viewRisk() {
 
   $("#app").innerHTML = `
     <div class="space-y-4">
-      ${fetchError ? `<div class="rounded-2xl border border-rose-900 bg-rose-950/30 p-3 text-sm text-rose-200">Could not load audit-graph events: ${esc(fetchError)}. The dashboard renders with zero events.</div>` : ""}
+      ${fetchError ? `<div class="rounded-2xl border border-rose-900 bg-rose-950/30 p-3 text-sm text-rose-200">Could not load events: ${esc(fetchError)}. The dashboard renders with zero events.</div>` : ""}
+      ${sourceBreakdown ? `<div class="flex flex-wrap items-baseline gap-3 text-xs text-slate-500">
+        <span class="uppercase tracking-wider">Sources</span>
+        <span>Endpoint / extension telemetry: <span class="font-mono tabular-nums text-slate-300">${sourceBreakdown.telemetry ?? 0}</span></span>
+        <span>SDK / RASP / proxy (audit-graph): <span class="font-mono tabular-nums text-slate-300">${sourceBreakdown.audit_graph ?? 0}</span></span>
+        ${sourceBreakdown.audit_graph === 0 && sourceBreakdown.telemetry > 0 ? `<span class="text-amber-300">Tip: SDK / RASP integrations write to audit-graph and unlock richer risk scoring per agent.</span>` : ""}
+      </div>` : ""}
 
       <div class="grid grid-cols-2 gap-3 md:grid-cols-4">
         ${riskMetricCard("Avg risk score", `${(avgRisk * 100).toFixed(1)}%`,
