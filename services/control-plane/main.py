@@ -575,15 +575,47 @@ class AuditLogOut(BaseModel):
     id: str
     tenant_id: Optional[str] = None
     principal: Optional[str] = None
+    # principal_kind / principal_label: derived UI-friendly forms of the
+    # raw principal column. The raw value can be a PQC envelope (1000+
+    # chars of base64), a JWT bearer string, or "anonymous"; the kind is
+    # the human bucket and the label is a short, safe display string.
+    principal_kind: Optional[str] = None
+    principal_label: Optional[str] = None
     path: str
     method: str
     status: str
     duration_s: str
+    duration_ms: Optional[float] = None
+    client_ip: Optional[str] = None
     meta: Optional[Dict[str, Any]] = None
     created_at: datetime
 
     class Config:
         from_attributes = True
+
+
+def _classify_principal(raw: Optional[str]) -> Tuple[str, str]:
+    """Map a raw audit-log principal to (kind, short label).
+
+    Audit middleware writes whatever Authorization / x-api-key header
+    arrived on the request — which can be a PQC: envelope, Bearer JWT,
+    plaintext API key, or "anonymous". None of those are readable in a
+    table cell, so summarise them here and let the frontend show the
+    raw value only on the detail modal.
+    """
+    if not raw or raw == "anonymous":
+        return "anonymous", "anonymous"
+    s = str(raw)
+    if s.lower().startswith("bearer "):
+        return "jwt", f"jwt:{s.split(' ', 1)[1][:8]}…"
+    if s.startswith("PQC:") or s.startswith("ca_pqc_"):
+        # Stable short fingerprint that survives across renders: last 8 of
+        # the encoded body, prefixed so it's obvious what we're showing.
+        body = s.split(":", 1)[1] if ":" in s else s
+        return "pqc_api_key", f"pqc:…{body[-8:]}"
+    if s.startswith("ca_"):
+        return "api_key", f"api_key:{s[:6]}…{s[-4:]}"
+    return "raw", (s[:20] + "…") if len(s) > 24 else s
 
 
 def _hash_bootstrap_token(token: str) -> str:
@@ -2240,7 +2272,7 @@ def customer_audit(
     ctx: Annotated[CustomerContext, Depends(get_customer_context)],
     db: Annotated[Session, Depends(get_db)],
     limit: int = 100,
-) -> List[AuditLog]:
+) -> List[Dict[str, Any]]:
     limit = max(1, min(limit, 500))
     rows = (
         db.query(AuditLog)
@@ -2249,9 +2281,32 @@ def customer_audit(
         .limit(limit)
         .all()
     )
+    out: List[Dict[str, Any]] = []
     for r in rows:
-        r.meta = _coerce_meta(r.meta)
-    return rows
+        meta = _coerce_meta(r.meta) or {}
+        kind, label = _classify_principal(r.principal)
+        # duration_s was stored as a string. Convert to float ms for the UI;
+        # if it's malformed we surface None rather than crash.
+        try:
+            duration_ms = float(r.duration_s) * 1000.0 if r.duration_s else None
+        except (TypeError, ValueError):
+            duration_ms = None
+        out.append({
+            "id": r.id,
+            "tenant_id": r.tenant_id,
+            "principal": r.principal,
+            "principal_kind": kind,
+            "principal_label": label,
+            "path": r.path,
+            "method": r.method,
+            "status": r.status,
+            "duration_s": r.duration_s,
+            "duration_ms": duration_ms,
+            "client_ip": meta.get("client_ip") if isinstance(meta, dict) else None,
+            "meta": meta,
+            "created_at": r.created_at,
+        })
+    return out
 
 
 @app.get("/customer/incidents")

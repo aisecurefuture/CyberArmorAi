@@ -1926,46 +1926,215 @@ async function viewTelemetry() {
   });
 }
 
+// --- Audit Log helpers ---
+
+// Method → semantic color so a busy log scans visually. GET is the dominant
+// noise; we mute it. Writes are the interesting events; we tint them.
+function methodBadgeHtml(method) {
+  const m = String(method || "").toUpperCase();
+  const map = {
+    GET:     "bg-slate-700/40 text-slate-300",
+    HEAD:    "bg-slate-700/40 text-slate-300",
+    OPTIONS: "bg-slate-700/40 text-slate-400",
+    POST:    "bg-cyan-500/20 text-cyan-200",
+    PUT:     "bg-amber-500/20 text-amber-200",
+    PATCH:   "bg-amber-500/20 text-amber-200",
+    DELETE:  "bg-rose-500/20 text-rose-200",
+  };
+  return `<span class="inline-flex w-14 justify-center rounded px-1.5 py-0.5 text-[10px] font-bold tracking-wide ${map[m] || "bg-slate-700/40 text-slate-300"}">${esc(m || "—")}</span>`;
+}
+
+// Status → traffic light. 2xx green, 3xx cyan, 4xx amber, 5xx red.
+function statusBadgeHtml(status) {
+  const s = String(status || "");
+  const first = s.charAt(0);
+  const cls = first === "2" ? "bg-emerald-500/20 text-emerald-200"
+            : first === "3" ? "bg-cyan-500/20 text-cyan-200"
+            : first === "4" ? "bg-amber-500/20 text-amber-200"
+            : first === "5" ? "bg-rose-500/20 text-rose-200"
+            : "bg-slate-700/40 text-slate-300";
+  return `<span class="inline-flex w-12 justify-center rounded-full px-2 py-0.5 text-[10px] font-mono font-semibold ${cls}">${esc(s || "—")}</span>`;
+}
+
+function principalLabelHtml(record) {
+  const kind = record.principal_kind || "raw";
+  const label = record.principal_label || record.principal || "anonymous";
+  const kindClass = {
+    anonymous:   "bg-slate-700/40 text-slate-300",
+    api_key:     "bg-cyan-500/15 text-cyan-200",
+    pqc_api_key: "bg-violet-500/15 text-violet-200",
+    jwt:         "bg-emerald-500/15 text-emerald-200",
+    raw:         "bg-slate-700/40 text-slate-300",
+  }[kind] || "bg-slate-700/40 text-slate-300";
+  return `<span class="inline-flex max-w-[20ch] truncate items-center gap-1 rounded px-1.5 py-0.5 font-mono text-[11px] ${kindClass}" title="${esc(label)}">${esc(label)}</span>`;
+}
+
+function durationLabel(ms) {
+  if (ms == null || Number.isNaN(ms)) return "";
+  if (ms < 1)    return `<span class="text-emerald-300">&lt;1ms</span>`;
+  if (ms < 100)  return `<span class="text-emerald-300">${ms.toFixed(0)}ms</span>`;
+  if (ms < 500)  return `<span class="text-amber-200">${ms.toFixed(0)}ms</span>`;
+  if (ms < 2000) return `<span class="text-amber-300">${ms.toFixed(0)}ms</span>`;
+  return `<span class="text-rose-300 font-semibold">${(ms / 1000).toFixed(2)}s</span>`;
+}
+
+// Routes the audit log is full of as side-effects of the portal session
+// (auth polling, health checks, etc.). The "Hide noise" filter chip masks
+// these so the operator can see real activity.
+const AUDIT_NOISE_PATTERNS = [
+  /^\/customer-auth\/session\b/,
+  /^\/customer\/(settings|overview)\b/,
+  /^\/health\b/, /^\/ready\b/, /^\/metrics\b/, /^\/favicon\.ico$/,
+];
+function isNoisePath(path) {
+  return AUDIT_NOISE_PATTERNS.some((re) => re.test(path || ""));
+}
+
 async function viewAudit() {
   $("#pageTitle").textContent = "Audit Logs";
-  $("#pageSubtitle").textContent = "Tenant-scoped audit trail";
-  const events = await api("/api/customer/audit?limit=250");
-  $("#app").innerHTML = `<div id="auditList"></div>`;
-  mountListView({
-    container: $("#auditList"),
-    rows: Array.isArray(events) ? events : [],
-    filename: `audit_${session.tenant_id || "tenant"}`,
-    columns: [
-      { key: "created_at", label: "Time",   type: "date",
-        value: (r) => r.created_at || "",
-        render: (r) => `<span class="text-xs text-slate-400">${esc(fmt(r.created_at))}</span>` },
-      { key: "method",     label: "Method", type: "enum",
-        value: (r) => r.method || "" },
-      { key: "path",       label: "Path",   type: "text",
-        value: (r) => r.path || "" },
-      { key: "status",     label: "Status", type: "enum",
-        value: (r) => String(r.status || ""),
-        render: (r) => badge(String(r.status || ""), String(r.status || "").startsWith("2") ? "green" : "amber") },
-      { key: "meta_size",  label: "Meta",   type: "number", sortable: false,
-        value: (r) => r.meta ? Object.keys(r.meta).length : 0,
-        render: (r) => r.meta && Object.keys(r.meta).length ? `<span class="text-xs text-slate-400">${Object.keys(r.meta).length} field${Object.keys(r.meta).length === 1 ? "" : "s"}</span>` : `<span class="text-slate-700">—</span>`,
-        csv: (r) => JSON.stringify(r.meta || {}) },
-    ],
-    onRowClick: (event) => openReadOnlyModal({
-      title: `Audit Event — ${fmt(event.created_at)}`,
-      record: event,
-      fields: [
-        { key: "created_at", label: "Time",    render: (r) => esc(fmt(r.created_at)) },
-        { key: "method",     label: "Method" },
-        { key: "path",       label: "Path" },
-        { key: "status",     label: "Status",  render: (r) => badge(String(r.status || ""), String(r.status || "").startsWith("2") ? "green" : "amber") },
-        { key: "actor",      label: "Actor" },
-        { key: "tenant_id",  label: "Tenant" },
-        { key: "ip",         label: "IP" },
+  $("#pageSubtitle").textContent = "Every API call against this tenant's control plane";
+  const events = await api("/api/customer/audit?limit=500");
+  const rows = Array.isArray(events) ? events : [];
+
+  // UI state local to this view.
+  const state = {
+    statusClass: "all",   // "all" | "2xx" | "3xx" | "4xx" | "5xx"
+    methodFilter: "all",  // "all" | "writes" | <single method>
+    hideNoise: true,
+  };
+
+  // Pre-compute counts for the summary strip. We always count against the
+  // un-filtered set so the operator can see what's there before narrowing.
+  const totals = { all: rows.length, "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0 };
+  const methodTotals = {};
+  let p95Ms = 0;
+  const durations = [];
+  for (const r of rows) {
+    const c = String(r.status || "").charAt(0);
+    if (c === "2") totals["2xx"]++;
+    else if (c === "3") totals["3xx"]++;
+    else if (c === "4") totals["4xx"]++;
+    else if (c === "5") totals["5xx"]++;
+    const m = String(r.method || "").toUpperCase();
+    methodTotals[m] = (methodTotals[m] || 0) + 1;
+    if (typeof r.duration_ms === "number") durations.push(r.duration_ms);
+  }
+  if (durations.length) {
+    durations.sort((a, b) => a - b);
+    p95Ms = durations[Math.floor(durations.length * 0.95)] || durations.at(-1);
+  }
+
+  function visibleRows() {
+    return rows.filter((r) => {
+      if (state.hideNoise && isNoisePath(r.path)) return false;
+      const c = String(r.status || "").charAt(0);
+      if (state.statusClass !== "all" && state.statusClass !== `${c}xx`) return false;
+      const m = String(r.method || "").toUpperCase();
+      if (state.methodFilter === "writes" && ["GET", "HEAD", "OPTIONS"].includes(m)) return false;
+      if (state.methodFilter !== "all" && state.methodFilter !== "writes" && state.methodFilter !== m) return false;
+      return true;
+    });
+  }
+
+  function chipCls(active) {
+    return active
+      ? "rounded-full bg-cyan-500/20 text-cyan-100 border border-cyan-400/40 px-3 py-1 text-xs"
+      : "rounded-full bg-slate-900 text-slate-300 border border-slate-800 hover:border-slate-700 px-3 py-1 text-xs";
+  }
+  function summaryCard(label, value, key, tone) {
+    return `<button data-status-chip="${key}" class="${chipCls(state.statusClass === key)} flex items-center gap-2">
+      <span class="text-[10px] uppercase tracking-wider text-slate-400">${esc(label)}</span>
+      <span class="font-mono text-sm ${tone || "text-slate-100"}">${value}</span>
+    </button>`;
+  }
+
+  function render() {
+    const filtered = visibleRows();
+    $("#app").innerHTML = `
+      <div class="space-y-4">
+        ${card(`
+          <div class="flex flex-wrap items-center gap-2">
+            ${summaryCard("Total", totals.all, "all", "text-slate-100")}
+            ${summaryCard("2xx", totals["2xx"], "2xx", "text-emerald-300")}
+            ${summaryCard("3xx", totals["3xx"], "3xx", "text-cyan-300")}
+            ${summaryCard("4xx", totals["4xx"], "4xx", "text-amber-300")}
+            ${summaryCard("5xx", totals["5xx"], "5xx", "text-rose-300")}
+            <div class="mx-2 h-5 w-px bg-slate-800"></div>
+            <button data-method-chip="all" class="${chipCls(state.methodFilter === "all")}">All methods</button>
+            <button data-method-chip="writes" class="${chipCls(state.methodFilter === "writes")}">Writes only</button>
+            ${["POST","PUT","PATCH","DELETE","GET"].filter((m) => methodTotals[m]).map((m) =>
+              `<button data-method-chip="${m}" class="${chipCls(state.methodFilter === m)}">${m} <span class="text-slate-500">·${methodTotals[m]}</span></button>`
+            ).join("")}
+            <div class="mx-2 h-5 w-px bg-slate-800"></div>
+            <label class="flex items-center gap-2 text-xs text-slate-300">
+              <input type="checkbox" id="auditHideNoise" ${state.hideNoise ? "checked" : ""}>
+              <span>Hide session polling</span>
+            </label>
+            <div class="ml-auto text-xs text-slate-400">p95 latency: <span class="font-mono ${p95Ms >= 500 ? "text-amber-300" : "text-slate-200"}">${p95Ms.toFixed(0)}ms</span></div>
+          </div>
+        `)}
+        <div id="auditList"></div>
+      </div>
+    `;
+
+    mountListView({
+      container: $("#auditList"),
+      rows: filtered,
+      filename: `audit_${session.tenant_id || "tenant"}`,
+      columns: [
+        { key: "created_at", label: "Time",    type: "date",
+          value: (r) => r.created_at || "",
+          render: (r) => `<span class="text-xs text-slate-400 tabular-nums">${esc(fmt(r.created_at))}</span>` },
+        { key: "method",     label: "Method",  type: "enum",
+          value: (r) => String(r.method || "").toUpperCase(),
+          render: (r) => methodBadgeHtml(r.method) },
+        { key: "path",       label: "Path",    type: "text",
+          value: (r) => r.path || "",
+          render: (r) => `<span class="font-mono text-xs text-slate-200">${esc(r.path || "")}</span>` },
+        { key: "status",     label: "Status",  type: "enum",
+          value: (r) => String(r.status || ""),
+          render: (r) => statusBadgeHtml(r.status) },
+        { key: "duration_ms", label: "Took",   type: "number",
+          value: (r) => Number(r.duration_ms) || 0,
+          render: (r) => `<span class="text-xs tabular-nums">${durationLabel(r.duration_ms)}</span>` },
+        { key: "principal",  label: "Actor",   type: "text", sortable: false,
+          value: (r) => r.principal_label || r.principal || "anonymous",
+          render: (r) => principalLabelHtml(r) },
+        { key: "client_ip",  label: "Client",  type: "text",
+          value: (r) => r.client_ip || "",
+          render: (r) => r.client_ip ? `<span class="font-mono text-[11px] text-slate-400">${esc(r.client_ip)}</span>` : `<span class="text-slate-700">—</span>` },
       ],
-    }),
-    emptyMessage: "No audit logs found for this tenant.",
-  });
+      onRowClick: (event) => openReadOnlyModal({
+        title: `${event.method || ""} ${event.path || ""} → ${event.status || ""}`,
+        record: event,
+        fields: [
+          { key: "created_at",  label: "Time",     render: (r) => esc(fmt(r.created_at)) },
+          { key: "method",      label: "Method",   render: (r) => methodBadgeHtml(r.method) },
+          { key: "path",        label: "Path",     render: (r) => `<span class="font-mono text-sm">${esc(r.path || "")}</span>` },
+          { key: "status",      label: "Status",   render: (r) => statusBadgeHtml(r.status) },
+          { key: "duration_ms", label: "Duration", render: (r) => `<span class="font-mono">${durationLabel(r.duration_ms)}</span>` },
+          { key: "principal",   label: "Actor",    render: (r) => principalLabelHtml(r) + (r.principal_label !== r.principal ? `<div class="mt-1 break-all font-mono text-[10px] text-slate-500">${esc(r.principal || "")}</div>` : "") },
+          { key: "tenant_id",   label: "Tenant" },
+          { key: "client_ip",   label: "Client IP", render: (r) => r.client_ip ? `<span class="font-mono">${esc(r.client_ip)}</span>` : "" },
+        ],
+      }),
+      emptyMessage: filtered.length === 0 && rows.length > 0
+        ? "No matching audit events. Try widening the filters."
+        : "No audit logs found for this tenant. Authenticated portal and agent activity show up here.",
+    });
+
+    // Wire chip handlers — re-render full view on each click.
+    document.querySelectorAll("[data-status-chip]").forEach((el) => {
+      el.addEventListener("click", () => { state.statusClass = el.dataset.statusChip; render(); });
+    });
+    document.querySelectorAll("[data-method-chip]").forEach((el) => {
+      el.addEventListener("click", () => { state.methodFilter = el.dataset.methodChip; render(); });
+    });
+    const noiseToggle = $("#auditHideNoise");
+    if (noiseToggle) noiseToggle.addEventListener("change", () => { state.hideNoise = noiseToggle.checked; render(); });
+  }
+
+  render();
 }
 
 async function viewIncidents() {
