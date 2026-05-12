@@ -2381,13 +2381,331 @@ async function viewIdentity() {
   await viewSettings();
 }
 
+// Catalog of detection patterns the detection-service ships with. Used for
+// the Detection Patterns card so customers see what we can find on their
+// behalf and whether any active policy actually references each class.
+// Keep aligned with shared/policy-builder.js _BUILTIN_REDACT_CATALOG.
+const DLP_PATTERN_CATALOG = [
+  { id: "pii.ssn",                label: "SSN",                  group: "PII" },
+  { id: "pii.ein",                label: "EIN",                  group: "PII" },
+  { id: "pii.credit_card",        label: "Credit Card",          group: "PII" },
+  { id: "pii.email",              label: "Email",                group: "PII" },
+  { id: "pii.phone",              label: "Phone",                group: "PII" },
+  { id: "pii.iban",               label: "IBAN",                 group: "PII" },
+  { id: "pii.drivers_license",    label: "Driver's License",     group: "PII" },
+  { id: "pii.passport",           label: "Passport",             group: "PII" },
+  { id: "pii.bank_routing",       label: "ABA Routing",          group: "PII" },
+  { id: "pii.date_of_birth",      label: "Date of Birth",        group: "PII" },
+  { id: "pii.person_name",        label: "Person Name (NER)",    group: "PII" },
+  { id: "pii.location",           label: "Location (NER)",       group: "PII" },
+  { id: "pii.organization",       label: "Organization (NER)",   group: "PII" },
+  { id: "pii.ip_address",         label: "IP Address",           group: "PII" },
+  { id: "pii.url",                label: "URL",                  group: "PII" },
+  { id: "pii.crypto_address",     label: "Crypto Address",       group: "PII" },
+  { id: "secret.aws_access_key",  label: "AWS Access Key",       group: "Secrets" },
+  { id: "secret.gcp_api_key",     label: "GCP API Key",          group: "Secrets" },
+  { id: "secret.github_token",    label: "GitHub Token",         group: "Secrets" },
+  { id: "secret.openai_key",      label: "OpenAI Key",           group: "Secrets" },
+  { id: "secret.anthropic_key",   label: "Anthropic Key",        group: "Secrets" },
+  { id: "secret.slack_token",     label: "Slack Token",          group: "Secrets" },
+  { id: "secret.stripe_key",      label: "Stripe Key",           group: "Secrets" },
+  { id: "secret.api_key",         label: "Generic API Key",      group: "Secrets" },
+  { id: "secret.password",        label: "Password",             group: "Secrets" },
+  { id: "secret.private_key",     label: "Private Key",          group: "Secrets" },
+  { id: "secret.jwt",             label: "JWT",                  group: "Secrets" },
+];
+
+const DLP_DEFAULT_LABELS = [
+  { label: "PUBLIC",        color: "emerald", desc: "No restrictions"                            },
+  { label: "INTERNAL",      color: "slate",   desc: "Internal use only"                          },
+  { label: "CONFIDENTIAL",  color: "amber",   desc: "Business sensitive"                         },
+  { label: "RESTRICTED",    color: "rose",    desc: "Highly sensitive (PII, PHI, PCI, secrets)"  },
+];
+
+function dlpLabelPill(label, color, extra = "") {
+  const tone = {
+    emerald: "bg-emerald-500/20 text-emerald-200",
+    slate:   "bg-slate-700/40  text-slate-200",
+    amber:   "bg-amber-500/20  text-amber-200",
+    rose:    "bg-rose-500/20   text-rose-200",
+    cyan:    "bg-cyan-500/15   text-cyan-200",
+  }[color] || "bg-slate-700/40 text-slate-200";
+  return `<span class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${tone} ${extra}">${esc(label)}</span>`;
+}
+
 async function viewDlp() {
-  await tenantScopedConfigPage("dlp", "DLP & Data Class.", "Tenant data classification and loss prevention", [
-    { title: "Classification Labels", body: "Define tenant labels such as Public, Internal, Confidential, and Restricted.", badge: "tenant taxonomy", tone: "cyan" },
-    { title: "Detection Patterns", body: "Track PII, secrets, credentials, and regulated data classes for this tenant.", badge: "policy linked", tone: "green" },
-    { title: "Credential Leak Prevention", body: "Use redaction-mode decisions for AI-bound prompts and responses that contain keys, tokens, passwords, or other secrets.", badge: "pre-breach control", tone: "amber" },
-    { title: "Response Actions", body: "Connect DLP findings to redact, block, escalate, or audit-only policy outcomes.", badge: "enforcement ready", tone: "slate" },
-  ], { labels: ["Public", "Internal", "Confidential", "Restricted"], patterns: ["pii", "secrets", "credentials"], default_action: "redact" }, true);
+  $("#pageTitle").textContent = "DLP & Data Class.";
+  $("#pageSubtitle").textContent = "Tenant data classification labels, custom rules, detection patterns, and live scan";
+  const canEdit = session.role === "tenant_admin";
+
+  let policies = [];
+  let dlpConfig = {};
+  let loadError = null;
+  try {
+    const [polRes, cfgRes] = await Promise.allSettled([
+      api("/api/customer/policies"),
+      api("/api/customer/config/dlp"),
+    ]);
+    if (polRes.status === "fulfilled") {
+      policies = Array.isArray(polRes.value) ? polRes.value : [];
+    }
+    if (cfgRes.status === "fulfilled") {
+      dlpConfig = (cfgRes.value && cfgRes.value.config) || {};
+    }
+  } catch (err) {
+    loadError = err.message || "DLP fetch failed";
+  }
+
+  // Compute which detection classes are referenced by at least one active
+  // (enabled, non-archived) tenant policy. We surface this on the patterns
+  // card so the customer can tell at a glance which detections are wired up
+  // to enforcement vs. just available in the catalog.
+  const activeRedactClasses = new Set();
+  for (const p of policies) {
+    if (p.enabled === false) continue;
+    if (p.archived === true) continue;
+    const classes = Array.isArray(p.redact_classes) ? p.redact_classes : [];
+    for (const c of classes) activeRedactClasses.add(String(c));
+  }
+
+  // Tenant-defined custom classification rules:
+  //   dlpConfig.rules = [ { pattern: "...", label: "RESTRICTED" }, ... ]
+  // We treat dlpConfig as the canonical store and merge a sane default
+  // shape on first load.
+  if (!Array.isArray(dlpConfig.rules)) dlpConfig.rules = [];
+  if (!Array.isArray(dlpConfig.labels)) dlpConfig.labels = [];
+
+  function labelsCard() {
+    const customLabels = (dlpConfig.labels || []).filter((l) => l && l.label);
+    return card(`
+      <div class="font-semibold">Data Classification Labels</div>
+      <p class="mt-1 text-xs text-slate-500">Default sensitivity levels for tenant <span class="font-mono text-cyan-100">${esc(session.tenant_id)}</span>. Custom labels (if any) layer on top.</p>
+      <div class="mt-3 space-y-2">
+        ${DLP_DEFAULT_LABELS.map((l) => `
+          <div class="flex items-center justify-between rounded-xl bg-slate-900 px-3 py-2">
+            <div class="flex items-center gap-2">${dlpLabelPill(l.label, l.color)}<span class="text-xs text-slate-400">${esc(l.desc)}</span></div>
+          </div>
+        `).join("")}
+        ${customLabels.length === 0 ? "" : `
+          <div class="pt-2 text-[10px] uppercase tracking-wider text-slate-500">Custom</div>
+          ${customLabels.map((l) => `
+            <div class="flex items-center justify-between rounded-xl bg-slate-900 px-3 py-2">
+              <div class="flex items-center gap-2">${dlpLabelPill(String(l.label), l.color || "cyan")}<span class="text-xs text-slate-400">${esc(l.desc || "")}</span></div>
+            </div>
+          `).join("")}
+        `}
+      </div>
+    `);
+  }
+
+  function rulesCard() {
+    const rows = dlpConfig.rules || [];
+    return card(`
+      <div class="font-semibold">Custom Classification Rules</div>
+      <p class="mt-1 text-xs text-slate-500">Override auto-classification for specific regex patterns or path globs. Rules are applied first-match-wins, top to bottom.</p>
+      ${canEdit ? `
+        <div class="mt-3 flex flex-wrap gap-2">
+          <input id="dlpRulePattern" type="text" class="flex-1 min-w-[200px] rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm font-mono" placeholder="Pattern (regex or path glob)" />
+          <select id="dlpRuleLabel" class="rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm">
+            ${DLP_DEFAULT_LABELS.map((l) => `<option value="${esc(l.label)}"${l.label === "CONFIDENTIAL" ? " selected" : ""}>${esc(l.label)}</option>`).join("")}
+          </select>
+          <button id="dlpAddRule" type="button" class="rounded-xl bg-cyan-500 px-3 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400">Add</button>
+        </div>
+        <div id="dlpRuleMessage" class="mt-2 text-xs text-slate-500"></div>
+      ` : `<div class="mt-3 text-xs text-slate-500">View only — tenant admins can manage rules.</div>`}
+      <div class="mt-3 space-y-1">
+        ${rows.length === 0
+          ? `<div class="rounded-xl border border-dashed border-slate-800 px-3 py-4 text-center text-xs text-slate-500">No custom rules yet.</div>`
+          : rows.map((r, idx) => `
+            <div class="flex items-center justify-between rounded-xl bg-slate-900 px-3 py-2">
+              <div class="flex items-center gap-2 min-w-0">
+                <span class="font-mono text-xs text-slate-200 truncate">${esc(r.pattern || "")}</span>
+                <span class="text-slate-600">→</span>
+                ${dlpLabelPill(String(r.label || "INTERNAL"), (DLP_DEFAULT_LABELS.find((d) => d.label === String(r.label).toUpperCase()) || {}).color || "cyan")}
+              </div>
+              ${canEdit ? `<button data-rule-idx="${idx}" class="dlpRemoveRule text-xs text-rose-300 hover:text-rose-200" type="button">Remove</button>` : ""}
+            </div>
+          `).join("")}
+      </div>
+    `);
+  }
+
+  function patternsCard() {
+    const groups = ["PII", "Secrets"];
+    return card(`
+      <div class="flex items-baseline justify-between">
+        <div class="font-semibold">DLP Detection Patterns</div>
+        <div class="text-[10px] uppercase tracking-wider text-slate-500">${activeRedactClasses.size} of ${DLP_PATTERN_CATALOG.length} active in policy</div>
+      </div>
+      <p class="mt-1 text-xs text-slate-500">Catalog of structured detectors. <span class="text-emerald-300">Enforced</span> = referenced by an enabled tenant redact policy; <span class="text-slate-400">Available</span> = supported by the detector but not yet wired to enforcement.</p>
+      ${groups.map((g) => `
+        <div class="mt-3">
+          <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-1">${esc(g)}</div>
+          <div class="space-y-1">
+            ${DLP_PATTERN_CATALOG.filter((p) => p.group === g).map((p) => {
+              const enforced = activeRedactClasses.has(p.id);
+              return `<div class="flex items-center justify-between rounded-xl bg-slate-900 px-3 py-1.5">
+                <div class="flex items-center gap-2 min-w-0">
+                  <span class="text-sm text-slate-200">${esc(p.label)}</span>
+                  <span class="font-mono text-[10px] text-slate-500 truncate">${esc(p.id)}</span>
+                </div>
+                ${enforced
+                  ? `<span class="rounded-full bg-emerald-500/20 px-2 py-0.5 text-[10px] font-semibold uppercase text-emerald-200">enforced</span>`
+                  : `<span class="rounded-full bg-slate-700/40 px-2 py-0.5 text-[10px] uppercase text-slate-300">available</span>`}
+              </div>`;
+            }).join("")}
+          </div>
+        </div>
+      `).join("")}
+    `);
+  }
+
+  function scanCard() {
+    return card(`
+      <div class="font-semibold">Scan &amp; Classify Content</div>
+      <p class="mt-1 text-xs text-slate-500">Paste content to classify against tenant rules and DLP detection patterns. Calls <span class="font-mono">/api/customer/scan/sensitive-data</span>.</p>
+      <textarea id="dlpScanInput" rows="4" class="mt-3 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm" placeholder="Paste content to classify..."></textarea>
+      <div class="mt-3 flex items-center gap-2">
+        <button id="dlpScanRun" type="button" class="rounded-xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400">Classify</button>
+        <span id="dlpScanStatus" class="text-xs text-slate-500"></span>
+      </div>
+      <div id="dlpScanResult" class="mt-3"></div>
+    `);
+  }
+
+  function classifyResult(text, scanResult) {
+    // Decide a single label for the snippet: any custom rule pattern match
+    // wins first (in order), otherwise we derive from detection findings:
+    // any secret / SSN / credit card / passport / DL → RESTRICTED,
+    // any other PII → CONFIDENTIAL, otherwise INTERNAL. Empty input is PUBLIC.
+    if (!text) return { label: "PUBLIC", reason: "no content" };
+    for (const rule of dlpConfig.rules || []) {
+      if (!rule || !rule.pattern) continue;
+      let matched = false;
+      try {
+        const re = new RegExp(rule.pattern);
+        matched = re.test(text);
+      } catch {
+        // Treat invalid regex as a substring match for resilience.
+        matched = text.includes(rule.pattern);
+      }
+      if (matched) {
+        return { label: String(rule.label || "CONFIDENTIAL").toUpperCase(), reason: `Custom rule matched: ${rule.pattern}` };
+      }
+    }
+    const findings = Array.isArray(scanResult && scanResult.findings) ? scanResult.findings : [];
+    if (findings.length === 0) return { label: "INTERNAL", reason: "No sensitive patterns detected" };
+    const restrictedClasses = new Set(["ssn","ein","credit_card","passport","drivers_license","bank_routing","private_key","aws_access_key","gcp_api_key","github_token","openai_key","anthropic_key","slack_token","stripe_key","api_key","password","jwt"]);
+    const hasRestricted = findings.some((f) => {
+      const t = String(f.type || f.class || f.name || "").toLowerCase();
+      return [...restrictedClasses].some((c) => t.includes(c));
+    });
+    if (hasRestricted) return { label: "RESTRICTED", reason: `${findings.length} sensitive finding${findings.length === 1 ? "" : "s"} (includes regulated data)` };
+    return { label: "CONFIDENTIAL", reason: `${findings.length} PII finding${findings.length === 1 ? "" : "s"}` };
+  }
+
+  function render() {
+    $("#app").innerHTML = `
+      <div class="space-y-4">
+        ${loadError ? `<div class="rounded-2xl border border-rose-900 bg-rose-950/30 p-3 text-sm text-rose-200">Could not load DLP state: ${esc(loadError)}.</div>` : ""}
+        <div class="grid gap-4 lg:grid-cols-2">
+          ${labelsCard()}
+          ${rulesCard()}
+          ${patternsCard()}
+          ${scanCard()}
+        </div>
+      </div>
+    `;
+
+    if (canEdit) {
+      const addBtn = $("#dlpAddRule");
+      if (addBtn) addBtn.addEventListener("click", addRule);
+      document.querySelectorAll(".dlpRemoveRule").forEach((btn) => {
+        btn.addEventListener("click", () => removeRule(Number(btn.dataset.ruleIdx)));
+      });
+    }
+    const scanBtn = $("#dlpScanRun");
+    if (scanBtn) scanBtn.addEventListener("click", runScan);
+  }
+
+  async function persistConfig() {
+    await api("/api/customer/config/dlp", {
+      method: "PUT",
+      body: JSON.stringify({ config: dlpConfig }),
+    });
+  }
+
+  async function addRule() {
+    const pattern = ($("#dlpRulePattern").value || "").trim();
+    const label = $("#dlpRuleLabel").value || "CONFIDENTIAL";
+    const msg = $("#dlpRuleMessage");
+    if (!pattern) { msg.textContent = "Enter a pattern."; msg.className = "mt-2 text-xs text-rose-300"; return; }
+    dlpConfig.rules.push({ pattern, label });
+    msg.textContent = "Saving...";
+    msg.className = "mt-2 text-xs text-slate-400";
+    try {
+      await persistConfig();
+      render();
+    } catch (err) {
+      dlpConfig.rules.pop();
+      msg.textContent = err.message;
+      msg.className = "mt-2 text-xs text-rose-300";
+    }
+  }
+
+  async function removeRule(idx) {
+    if (!Number.isInteger(idx) || idx < 0 || idx >= dlpConfig.rules.length) return;
+    const removed = dlpConfig.rules.splice(idx, 1)[0];
+    try {
+      await persistConfig();
+      render();
+    } catch (err) {
+      dlpConfig.rules.splice(idx, 0, removed);
+      render();
+      alert(`Could not save: ${err.message}`);
+    }
+  }
+
+  async function runScan() {
+    const text = ($("#dlpScanInput").value || "").trim();
+    const status = $("#dlpScanStatus");
+    const out = $("#dlpScanResult");
+    if (!text) { status.textContent = "Enter content to classify."; return; }
+    status.textContent = "Scanning...";
+    out.innerHTML = "";
+    try {
+      const result = await api("/api/customer/scan/sensitive-data", {
+        method: "POST",
+        body: JSON.stringify({ text }),
+      });
+      status.textContent = "";
+      const cls = classifyResult(text, result);
+      const color = (DLP_DEFAULT_LABELS.find((l) => l.label === cls.label) || { color: "slate" }).color;
+      const findings = Array.isArray(result.findings) ? result.findings : [];
+      out.innerHTML = `
+        <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+          <div class="flex items-center gap-2">
+            <span class="text-[10px] uppercase tracking-wider text-slate-500">Classification</span>
+            ${dlpLabelPill(cls.label, color)}
+            <span class="text-xs text-slate-400">${esc(cls.reason)}</span>
+          </div>
+          ${findings.length > 0 ? `
+            <div class="mt-3 flex flex-wrap gap-1">
+              ${findings.map((f) => `<span class="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] text-amber-200">${esc(String(f.type || f.class || f.name || "match"))}${f.severity ? ` · ${esc(String(f.severity))}` : ""}</span>`).join("")}
+            </div>
+          ` : ""}
+          <details class="mt-3 rounded-xl border border-slate-800 bg-slate-950 p-2">
+            <summary class="cursor-pointer text-[10px] font-semibold uppercase tracking-wider text-slate-400">Raw scan JSON</summary>
+            <pre class="mt-2 max-h-64 overflow-auto text-xs text-slate-300">${esc(JSON.stringify(result, null, 2))}</pre>
+          </details>
+        </div>`;
+    } catch (err) {
+      status.textContent = "";
+      out.innerHTML = `<div class="rounded-xl border border-rose-900 bg-rose-950/30 px-3 py-2 text-sm text-rose-200">${esc(err.message)}</div>`;
+    }
+  }
+
+  render();
 }
 
 async function viewReports() {
