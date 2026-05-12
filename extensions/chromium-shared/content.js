@@ -457,6 +457,68 @@
     });
   }
 
+  // --- Upload interceptor bridge --------------------------------------
+  //
+  // upload_interceptor.js runs in the page's MAIN world so it can wrap
+  // window.fetch / XMLHttpRequest. It can't talk to chrome.runtime, so
+  // it posts requests on window.message; we forward them to the
+  // background's policy evaluator and post the decision back.
+
+  function _absoluteUrl(maybeRelative) {
+    try { return new URL(String(maybeRelative || ""), window.location.href).href; }
+    catch { return String(maybeRelative || window.location.href); }
+  }
+
+  window.addEventListener("message", (event) => {
+    if (event.source !== window) return;
+    const msg = event.data;
+    if (!msg || msg.type !== "cyberarmor:upload_request") return;
+    if (typeof chrome === "undefined" || !chrome.runtime) {
+      // No extension context — fail open so the page still works.
+      window.postMessage({ type: "cyberarmor:upload_decision", id: msg.id, action: "allow" }, "*");
+      return;
+    }
+    const files = Array.isArray(msg.files) ? msg.files : [];
+    const url = _absoluteUrl(msg.url);
+    chrome.runtime.sendMessage({
+      type: "evaluate_policy",
+      context: {
+        request: { url, type: "upload", method: "post", hostname: (() => { try { return new URL(url).hostname; } catch { return ""; } })() },
+        content: {
+          has_pii: false,
+          pii_classes: [],
+          has_file_upload: true,
+          file_count: files.length,
+          file_names: files.map((f) => String(f.name || "")),
+          file_types: [...new Set(files.map((f) => String(f.type || "")).filter(Boolean))],
+        },
+      },
+    }, (resp) => {
+      const result = resp && resp.result;
+      // Default = allow if no policy matched or evaluator unavailable.
+      const action = (result && result.matched && result.action) || "allow";
+      const policy = (result && result.policy) || "";
+      window.postMessage({
+        type: "cyberarmor:upload_decision",
+        id: msg.id,
+        action,
+        policy,
+      }, "*");
+      // Mirror the form-submit logging: only emit telemetry when we
+      // actually intervened, so noisy upload-heavy pages don't flood.
+      if (action === "block_upload") {
+        sendTelemetry("policy_block_upload_fetch", {
+          url, policy, file_count: files.length,
+          file_names: files.map((f) => String(f.name || "")),
+          file_types: [...new Set(files.map((f) => String(f.type || "")).filter(Boolean))],
+        });
+        const namesPreview = files.slice(0, 3).map((f) => f.name).join(", ");
+        const extra = files.length > 3 ? ` and ${files.length - 3} more` : "";
+        showWarningBanner(`Upload blocked by policy "${policy}". Files: ${namesPreview}${extra}.`);
+      }
+    });
+  });
+
   // --- Query String Scanning ---
 
   function scanQueryStrings() {

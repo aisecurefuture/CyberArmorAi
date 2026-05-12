@@ -33,6 +33,13 @@
       "run_at": "document_idle"
     },
     {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["upload_interceptor.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": true
+    },
+    {
       "matches": [
         "https://chat.openai.com/*",
         "https://chatgpt.com/*",
