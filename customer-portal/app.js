@@ -60,6 +60,80 @@ function emptyRow(message, colspan) {
   return `<tr><td class="px-3 py-8 text-center text-slate-500" colspan="${colspan}">${esc(message)}</td></tr>`;
 }
 
+// Lightweight pager for inline tables that don't go through mountListView.
+// Caller owns state ({page, pageSize}) and re-renders on change.
+//
+//   const pager = simplePager({ total: 1234, state: tableState });
+//   tbody.innerHTML = visible.map(rowHtml).join("");
+//   container.insertAdjacentHTML("beforeend", pager.html);
+//   pager.wire(rootEl, () => render());
+const SIMPLE_PAGER_SIZES = [25, 50, 100, 250, "all"];
+
+function simplePager({ total, state, idPrefix = "pg" }) {
+  if (!state.pageSize) state.pageSize = 50;
+  if (!state.page) state.page = 1;
+  const pages = state.pageSize === "all" ? 1 : Math.max(1, Math.ceil(total / state.pageSize));
+  if (state.page > pages) state.page = pages;
+
+  const sliced = (rows) => {
+    if (state.pageSize === "all") return rows;
+    const start = (state.page - 1) * state.pageSize;
+    return rows.slice(start, start + state.pageSize);
+  };
+
+  const first = total === 0 ? 0 : (state.pageSize === "all" ? 1 : (state.page - 1) * state.pageSize + 1);
+  const last = state.pageSize === "all" ? total : Math.min(total, state.page * state.pageSize);
+  const prevDisabled = state.page <= 1;
+  const nextDisabled = state.page >= pages;
+
+  const html = `
+    <div class="flex flex-wrap items-center justify-between gap-3 px-1 py-2 text-xs text-slate-400">
+      <div>
+        Rows <span class="font-mono text-slate-200">${first}–${last}</span> of
+        <span class="font-mono text-slate-200">${total}</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <label class="text-slate-500">Rows per page
+          <select data-pager-act="size" data-pager-id="${idPrefix}" class="ml-1 rounded-lg border border-slate-800 bg-slate-900 px-2 py-1 text-xs text-slate-200">
+            ${SIMPLE_PAGER_SIZES.map((opt) =>
+              `<option value="${opt}"${opt === state.pageSize ? " selected" : ""}>${opt === "all" ? "All" : opt}</option>`
+            ).join("")}
+          </select>
+        </label>
+        <button type="button" data-pager-act="first" data-pager-id="${idPrefix}" class="rounded-lg border border-slate-800 px-2 py-1 ${prevDisabled ? "opacity-40 pointer-events-none" : "hover:bg-slate-900"}">«</button>
+        <button type="button" data-pager-act="prev"  data-pager-id="${idPrefix}" class="rounded-lg border border-slate-800 px-2 py-1 ${prevDisabled ? "opacity-40 pointer-events-none" : "hover:bg-slate-900"}">‹ Prev</button>
+        <span class="px-1 text-slate-500">Page <span class="font-mono text-slate-200">${state.page}</span> of <span class="font-mono text-slate-200">${pages}</span></span>
+        <button type="button" data-pager-act="next"  data-pager-id="${idPrefix}" class="rounded-lg border border-slate-800 px-2 py-1 ${nextDisabled ? "opacity-40 pointer-events-none" : "hover:bg-slate-900"}">Next ›</button>
+        <button type="button" data-pager-act="last"  data-pager-id="${idPrefix}" class="rounded-lg border border-slate-800 px-2 py-1 ${nextDisabled ? "opacity-40 pointer-events-none" : "hover:bg-slate-900"}">»</button>
+      </div>
+    </div>
+  `;
+
+  function wire(rootEl, rerender) {
+    rootEl.querySelectorAll(`[data-pager-id="${idPrefix}"]`).forEach((el) => {
+      const act = el.dataset.pagerAct;
+      if (act === "size") {
+        el.addEventListener("change", () => {
+          const v = el.value;
+          state.pageSize = v === "all" ? "all" : Number(v);
+          state.page = 1;
+          rerender();
+        });
+      } else {
+        el.addEventListener("click", () => {
+          if (act === "first") state.page = 1;
+          else if (act === "last") state.page = pages;
+          else if (act === "prev") state.page = Math.max(1, state.page - 1);
+          else if (act === "next") state.page = Math.min(pages, state.page + 1);
+          rerender();
+        });
+      }
+    });
+  }
+
+  return { html, wire, sliced, pages };
+}
+
 function fmt(value) {
   if (!value) return "";
   try { return new Date(value).toLocaleString(); } catch { return String(value); }
@@ -3988,6 +4062,7 @@ async function viewAgents() {
   let kindFilter = "all";  // "all" | one of AGENT_KIND_META keys
   let search = "";
   let selectedAgentId = null;
+  const aiPager = { page: 1, pageSize: 50 };
 
   let allEvents = [];
   let sources = null;
@@ -4271,6 +4346,8 @@ async function viewAgents() {
     const filtered = agents.filter(passesFilter)
       .sort((a, b) => (b.blocked - a.blocked) || (b.events - a.events) || (b.latestTs - a.latestTs));
 
+    const pager = simplePager({ total: filtered.length, state: aiPager, idPrefix: "agentDir" });
+    const pageRows = pager.sliced(filtered);
     return `
       <div class="space-y-4">
         ${eventsError ? `<div class="rounded-2xl border border-rose-900 bg-rose-950/30 p-3 text-sm text-rose-200">Could not load events: ${esc(eventsError)}.</div>` : ""}
@@ -4293,12 +4370,13 @@ async function viewAgents() {
                   </tr>
                 </thead>
                 <tbody id="aiAgentRows">
-                  ${filtered.length === 0
+                  ${pageRows.length === 0
                     ? `<tr><td colspan="8" class="px-3 py-8 text-center text-sm text-slate-500">No agents match the current filter / window.</td></tr>`
-                    : filtered.map(aiAgentRow).join("")}
+                    : pageRows.map(aiAgentRow).join("")}
                 </tbody>
               </table>
             </div>
+            ${filtered.length > 0 ? pager.html : ""}
             ${sources ? `<div class="mt-3 text-[11px] text-slate-500">Sources: ${sources.audit_graph ?? 0} audit + ${sources.telemetry ?? 0} telemetry</div>` : ""}
           `)}
           <div>${detailPanel(filtered)}</div>
@@ -4353,6 +4431,7 @@ async function viewAgents() {
         if (windowId === btn.dataset.windowId) return;
         windowId = btn.dataset.windowId;
         selectedAgentId = null;
+        aiPager.page = 1;
         render();
       });
     });
@@ -4360,22 +4439,35 @@ async function viewAgents() {
       btn.addEventListener("click", () => {
         kindFilter = btn.dataset.kindFilter;
         selectedAgentId = null;
+        aiPager.page = 1;
         render();
       });
     });
+    {
+      // Recompute total against the same filter the render pass used so
+      // the pager renders consistent button states.
+      const events = eventsInWindow();
+      const filtered = buildAgents(events).filter(passesFilter);
+      const pager = simplePager({ total: filtered.length, state: aiPager, idPrefix: "agentDir" });
+      pager.wire(document, () => render());
+    }
     const sb = $("#agentSearch");
     if (sb) {
       sb.addEventListener("input", () => {
         search = sb.value;
-        // Re-render rows in place to avoid losing input focus on every keypress.
+        // Search changes invalidate the page index. Re-render rows in
+        // place to avoid losing input focus on every keypress.
+        aiPager.page = 1;
         const events = eventsInWindow();
         const filtered = buildAgents(events).filter(passesFilter)
           .sort((a, b) => (b.blocked - a.blocked) || (b.events - a.events) || (b.latestTs - a.latestTs));
+        const pager = simplePager({ total: filtered.length, state: aiPager, idPrefix: "agentDir" });
+        const pageRows = pager.sliced(filtered);
         const tbody = $("#aiAgentRows");
         if (tbody) {
-          tbody.innerHTML = filtered.length === 0
+          tbody.innerHTML = pageRows.length === 0
             ? `<tr><td colspan="8" class="px-3 py-8 text-center text-sm text-slate-500">No agents match the current filter / window.</td></tr>`
-            : filtered.map(aiAgentRow).join("");
+            : pageRows.map(aiAgentRow).join("");
           bindRowClicks();
         }
       });
@@ -4574,6 +4666,7 @@ async function viewGraph() {
   let allEvents = [];
   let sources = null;
   let fetchError = null;
+  const recentPager = { page: 1, pageSize: 25 };
 
   async function load() {
     try {
@@ -4876,14 +4969,17 @@ async function viewGraph() {
           <div>${renderSvg(graph)}</div>
           <div>${detailPanel(events, graph)}</div>
         </div>
-        ${card(`
-          <div class="font-semibold">Recent actions <span class="text-xs text-slate-500">(${Math.min(events.length, 25)} of ${events.length})</span></div>
+        ${(() => {
+          const pager = simplePager({ total: events.length, state: recentPager, idPrefix: "graphRecent" });
+          const pageEvents = pager.sliced(events);
+          return card(`
+          <div class="font-semibold">Recent actions <span class="text-xs text-slate-500">(${events.length} total)</span></div>
           <div class="mt-3 overflow-x-auto">
             <table class="w-full text-left text-sm">
               <thead class="text-[10px] uppercase tracking-wider text-slate-500"><tr>
                 <th class="px-3 py-2">Time</th><th class="px-3 py-2">Human</th><th class="px-3 py-2">Agent</th><th class="px-3 py-2">Provider</th><th class="px-3 py-2">Model / Tool</th><th class="px-3 py-2">Action</th><th class="px-3 py-2">Outcome</th>
               </tr></thead>
-              <tbody>${events.slice(0, 25).map((ev) => {
+              <tbody>${pageEvents.map((ev) => {
                 const det = ev.details || {};
                 const outcome = String(ev.outcome || "ok").toLowerCase();
                 const tone = outcome === "blocked" ? "bg-rose-500/20 text-rose-200"
@@ -4902,9 +4998,15 @@ async function viewGraph() {
               }).join("") || `<tr><td colspan="7" class="px-3 py-8 text-center text-sm text-slate-500">No actions in this window.</td></tr>`}</tbody>
             </table>
           </div>
-        `)}
+          ${events.length > 0 ? pager.html : ""}
+        `);
+        })()}
       </div>
     `;
+    {
+      const pager = simplePager({ total: events.length, state: recentPager, idPrefix: "graphRecent" });
+      pager.wire(document, () => render());
+    }
 
     // Wire up: time window picker
     document.querySelectorAll("#graphWindowPicker button").forEach((btn) => {
@@ -4912,6 +5014,7 @@ async function viewGraph() {
         if (windowId === btn.dataset.windowId) return;
         windowId = btn.dataset.windowId;
         selected = null;
+        recentPager.page = 1;
         render();
       });
     });
@@ -5170,6 +5273,7 @@ async function viewDelegations() {
   let statusFilter = "all"; // all | active | revoked | expired
   let search = "";
   let createMessage = null;
+  const delPager = { page: 1, pageSize: 50 };
 
   async function load() {
     try {
@@ -5323,7 +5427,10 @@ async function viewDelegations() {
             </div>
           </div>
         `)}
-        ${card(`
+        ${(() => {
+          const pager = simplePager({ total: filtered.length, state: delPager, idPrefix: "del" });
+          const pageRows = pager.sliced(filtered);
+          return card(`
           <div class="overflow-x-auto">
             <table class="w-full text-left text-sm">
               <thead class="text-[10px] uppercase tracking-wider text-slate-500">
@@ -5339,24 +5446,30 @@ async function viewDelegations() {
                 </tr>
               </thead>
               <tbody>
-                ${filtered.length === 0
+                ${pageRows.length === 0
                   ? `<tr><td colspan="8" class="px-3 py-8 text-center text-sm text-slate-500">${delegations.length === 0 ? "No delegations yet. Issue one above to create the first chain." : "No delegations match the current filters."}</td></tr>`
-                  : filtered.map(rowHtml).join("")}
+                  : pageRows.map(rowHtml).join("")}
               </tbody>
             </table>
           </div>
-        `)}
+          ${filtered.length > 0 ? pager.html : ""}
+        `);
+        })()}
       </div>
     `;
+    {
+      const pager = simplePager({ total: filtered.length, state: delPager, idPrefix: "del" });
+      pager.wire(document, () => render());
+    }
 
     document.querySelectorAll("[data-status-chip]").forEach((btn) => {
-      btn.addEventListener("click", () => { statusFilter = btn.dataset.statusChip; render(); });
+      btn.addEventListener("click", () => { statusFilter = btn.dataset.statusChip; delPager.page = 1; render(); });
     });
     const sb = $("#delSearch");
     if (sb) {
       const caret = sb.selectionStart;
       sb.focus(); if (caret != null) sb.setSelectionRange(caret, caret);
-      sb.addEventListener("input", () => { search = sb.value; render(); });
+      sb.addEventListener("input", () => { search = sb.value; delPager.page = 1; render(); });
     }
     document.querySelectorAll(".revokeDelegationBtn").forEach((btn) => {
       btn.addEventListener("click", () => revoke(btn.dataset.chainId));

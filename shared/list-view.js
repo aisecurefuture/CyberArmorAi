@@ -323,6 +323,12 @@ function _filterCellHtml(col, filter, idx) {
 
 // ─── mountListView ────────────────────────────────────────────────────────
 
+// Page-size options for the pager. Stored in state and persisted under
+// the same key namespace as the table so different lists remember their
+// preferred size independently.
+const _PAGE_SIZE_OPTIONS = [25, 50, 100, 250, "all"];
+const _DEFAULT_PAGE_SIZE = 50;
+
 export function mountListView(opts) {
   const {
     container,
@@ -331,6 +337,7 @@ export function mountListView(opts) {
     filename = "export",
     onRowClick = null,
     emptyMessage = "No records found.",
+    pageSize: initialPageSize = _DEFAULT_PAGE_SIZE,
   } = opts;
 
   // Auto-populate enumValues from data when not specified
@@ -351,7 +358,20 @@ export function mountListView(opts) {
     filters: Object.fromEntries(columns.map((c) => [c.key, _initialFilter(c)])),
     rows,
     columns,
+    page: 1,
+    pageSize: _PAGE_SIZE_OPTIONS.includes(initialPageSize) ? initialPageSize : _DEFAULT_PAGE_SIZE,
   };
+
+  // Convenience: rows visible after filter/sort but BEFORE pagination.
+  // CSV export uses this so a paginated view still exports the full set.
+  function filteredRows() {
+    return _applySortFilter(state.rows, state.columns, state);
+  }
+  function pagedRows(all) {
+    if (state.pageSize === "all") return all;
+    const start = (state.page - 1) * state.pageSize;
+    return all.slice(start, start + state.pageSize);
+  }
 
   function _initialFilter(col) {
     if (col.type === "date") return { from: "", to: "" };
@@ -360,12 +380,16 @@ export function mountListView(opts) {
     return { value: "" };
   }
 
+  // Backwards-compat: pre-pagination callers expect visibleRows() to
+  // return what's currently in view. Keep the name and return the paged
+  // slice; use filteredRows() when you need the full set.
   function visibleRows() {
-    return _applySortFilter(state.rows, state.columns, state);
+    return pagedRows(filteredRows());
   }
 
   function clearAllFilters() {
     for (const col of columns) state.filters[col.key] = _initialFilter(col);
+    state.page = 1;
     render();
   }
 
@@ -373,12 +397,14 @@ export function mountListView(opts) {
     const col = columns[idx];
     if (!col) return;
     state.filters[col.key] = _initialFilter(col);
+    state.page = 1;
     render();
   }
 
   function exportCsv() {
-    const visible = visibleRows();
-    const csv = rowsToCsv(visible, columns);
+    // CSV always carries the full filtered set, not just the current page.
+    const all = filteredRows();
+    const csv = rowsToCsv(all, columns);
     const date = new Date().toISOString().slice(0, 10);
     downloadCsv(`${filename}_${date}.csv`, csv);
   }
@@ -396,11 +422,60 @@ export function mountListView(opts) {
     if (state.sortKey !== key) { state.sortKey = key; state.sortDir = "asc"; }
     else if (state.sortDir === "asc") { state.sortDir = "desc"; }
     else { state.sortKey = null; state.sortDir = "asc"; }
+    state.page = 1;
     render();
   }
 
+  function totalPages(filteredCount) {
+    if (state.pageSize === "all") return 1;
+    return Math.max(1, Math.ceil(filteredCount / state.pageSize));
+  }
+
+  function _pagerHtml(filteredCount) {
+    if (filteredCount === 0) return "";
+    const pages = totalPages(filteredCount);
+    // Clamp page to valid range — keeps the pager honest after filters
+    // shrink the row set below the current page's start index.
+    if (state.page > pages) state.page = pages;
+    const first = state.pageSize === "all" ? 1 : (state.page - 1) * state.pageSize + 1;
+    const last = state.pageSize === "all" ? filteredCount : Math.min(filteredCount, state.page * state.pageSize);
+    const prevDisabled = state.page <= 1;
+    const nextDisabled = state.page >= pages;
+    const sizeOpts = _PAGE_SIZE_OPTIONS.map((opt) =>
+      `<option value="${opt}"${opt === state.pageSize ? " selected" : ""}>${opt === "all" ? "All" : opt}</option>`
+    ).join("");
+    return `
+      <div class="flex flex-wrap items-center justify-between gap-3 px-1 py-2 text-xs text-slate-400">
+        <div>
+          Rows <span class="font-mono text-slate-200">${first}–${last}</span> of
+          <span class="font-mono text-slate-200">${filteredCount}</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <label class="text-slate-500">Rows per page
+            <select data-action="page-size" class="ml-1 rounded-lg border border-slate-800 bg-slate-900 px-2 py-1 text-xs text-slate-200">
+              ${sizeOpts}
+            </select>
+          </label>
+          <button type="button" data-action="page-first"
+            class="rounded-lg border border-slate-800 px-2 py-1 ${prevDisabled ? "opacity-40 pointer-events-none" : "hover:bg-slate-900"}">«</button>
+          <button type="button" data-action="page-prev"
+            class="rounded-lg border border-slate-800 px-2 py-1 ${prevDisabled ? "opacity-40 pointer-events-none" : "hover:bg-slate-900"}">‹ Prev</button>
+          <span class="px-1 text-slate-500">Page <span class="font-mono text-slate-200">${state.page}</span> of <span class="font-mono text-slate-200">${pages}</span></span>
+          <button type="button" data-action="page-next"
+            class="rounded-lg border border-slate-800 px-2 py-1 ${nextDisabled ? "opacity-40 pointer-events-none" : "hover:bg-slate-900"}">Next ›</button>
+          <button type="button" data-action="page-last"
+            class="rounded-lg border border-slate-800 px-2 py-1 ${nextDisabled ? "opacity-40 pointer-events-none" : "hover:bg-slate-900"}">»</button>
+        </div>
+      </div>
+    `;
+  }
+
   function render() {
-    const visible = visibleRows();
+    const all = filteredRows();
+    // Clamp page if filters shrank the set so we never render an empty page.
+    const pages = totalPages(all.length);
+    if (state.page > pages) state.page = pages;
+    const visible = pagedRows(all);
     const headerCells = columns.map((c) => {
       const sortable = c.sortable !== false;
       const click = sortable ? `data-sort="${c.key}"` : "";
@@ -429,8 +504,9 @@ export function mountListView(opts) {
       <section class="rounded-3xl border border-slate-800 bg-slate-950/80 p-4 shadow-xl shadow-slate-950/40">
         <div class="flex flex-wrap items-center justify-between gap-3 px-1 py-2">
           <div class="text-xs text-slate-400">
-            Showing <span class="font-mono text-slate-200">${visible.length}</span> of
-            <span class="font-mono text-slate-200">${state.rows.length}</span> rows
+            ${all.length === state.rows.length
+              ? `<span class="font-mono text-slate-200">${state.rows.length}</span> rows`
+              : `Showing <span class="font-mono text-slate-200">${all.length}</span> of <span class="font-mono text-slate-200">${state.rows.length}</span> rows`}
           </div>
           <div class="flex items-center gap-2">
             <button type="button" data-action="clear-filters" class="rounded-xl border border-slate-800 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-900 ${anyFilters ? "" : "opacity-40 pointer-events-none"}">× Clear filters</button>
@@ -443,6 +519,7 @@ export function mountListView(opts) {
             <tbody>${bodyRows || emptyHtml}</tbody>
           </table>
         </div>
+        ${_pagerHtml(all.length)}
       </section>
     `;
     _wire();
@@ -468,6 +545,7 @@ export function mountListView(opts) {
         else if (kind === "date-to") f.to = input.value;
         else if (kind === "num-from") f.from = input.value;
         state.filters[col.key] = f;
+        state.page = 1; // filter change invalidates page position
         render();
       };
       input.addEventListener("input", handler);
@@ -479,6 +557,32 @@ export function mountListView(opts) {
       const idx = Number(id.replace(/^flt-/, ""));
       btn.addEventListener("click", () => clearOneFilter(idx));
     });
+
+    // Pager controls. Page size selector also clamps page back to 1
+    // because the new size may make the old page index meaningless.
+    const sizeSel = container.querySelector('[data-action="page-size"]');
+    if (sizeSel) sizeSel.addEventListener("change", () => {
+      const v = sizeSel.value;
+      state.pageSize = v === "all" ? "all" : Number(v);
+      state.page = 1;
+      render();
+    });
+    const goto = (delta) => {
+      const all = filteredRows();
+      const pages = totalPages(all.length);
+      if (delta === "first") state.page = 1;
+      else if (delta === "last") state.page = pages;
+      else state.page = Math.max(1, Math.min(pages, state.page + delta));
+      render();
+    };
+    const prevBtn = container.querySelector('[data-action="page-prev"]');
+    const nextBtn = container.querySelector('[data-action="page-next"]');
+    const firstBtn = container.querySelector('[data-action="page-first"]');
+    const lastBtn = container.querySelector('[data-action="page-last"]');
+    if (prevBtn)  prevBtn.addEventListener("click",  () => goto(-1));
+    if (nextBtn)  nextBtn.addEventListener("click",  () => goto(1));
+    if (firstBtn) firstBtn.addEventListener("click", () => goto("first"));
+    if (lastBtn)  lastBtn.addEventListener("click",  () => goto("last"));
 
     if (onRowClick) {
       container.querySelectorAll("tbody tr[data-row-idx]").forEach((tr) => {
