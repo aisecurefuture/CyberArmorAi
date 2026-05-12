@@ -3118,24 +3118,36 @@ def _call_agent_identity(
         raise HTTPException(status_code=502, detail="agent-identity returned invalid JSON")
 
 
-def _tenant_agent_id_set(tenant_id: str) -> set[str]:
-    """Return the set of agent_ids known to belong to ``tenant_id`` per the
-    agent-identity service. Tolerant: returns an empty set if the service
-    is unavailable, so list-delegations degrades gracefully rather than
-    leaking other tenants' chains.
+def _tenant_agent_id_set(db: Session, tenant_id: str) -> set[str]:
+    """Return the set of agent_ids known to belong to ``tenant_id``.
+
+    Source of truth is the control-plane's own agent registry — the same
+    one /customer/agents and the Agent Directory read from. The
+    agent-identity service has its own AgentModel for SDK-registered
+    agents, but endpoint-bootstrap agents live in ``_AGENTS`` /
+    TelemetryRecord and never enter agent-identity, so checking only
+    upstream would reject every dropdown choice the portal offers.
+
+    We union both sources: any agent the portal can show the user should
+    be a valid delegation target.
     """
+    out: set[str] = set()
+    for row in _tenant_agent_rows(db, tenant_id, limit=1000):
+        aid = row.get("agent_id")
+        if aid:
+            out.add(str(aid))
+    # Layer in agent-identity's view too, so SDK-registered agents that
+    # never emit telemetry through this control-plane are still valid.
     try:
         rows = _call_agent_identity("GET", "/agents", tenant_id, params={"tenant_id": tenant_id, "limit": 1000})
     except HTTPException:
-        return set()
+        rows = []
     if isinstance(rows, dict):
         rows = rows.get("agents") or []
-    if not isinstance(rows, list):
-        return set()
-    out: set[str] = set()
-    for r in rows:
-        if isinstance(r, dict) and r.get("agent_id"):
-            out.add(str(r["agent_id"]))
+    if isinstance(rows, list):
+        for r in rows:
+            if isinstance(r, dict) and r.get("agent_id"):
+                out.add(str(r["agent_id"]))
     return out
 
 
@@ -3149,6 +3161,7 @@ class CustomerDelegationCreate(BaseModel):
 @app.get("/customer/delegations")
 def customer_list_delegations(
     ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    db: Annotated[Session, Depends(get_db)],
     status: Optional[str] = None,
     limit: int = 200,
 ) -> Dict[str, Any]:
@@ -3159,7 +3172,7 @@ def customer_list_delegations(
     filtered list plus the total upstream count so the operator can
     see whether anything was hidden.
     """
-    tenant_agents = _tenant_agent_id_set(ctx.tenant_id)
+    tenant_agents = _tenant_agent_id_set(db, ctx.tenant_id)
     params: Dict[str, Any] = {"limit": max(1, min(limit, 1000))}
     if status:
         params["status"] = status
@@ -3183,9 +3196,10 @@ def customer_list_delegations(
 def customer_create_delegation(
     payload: CustomerDelegationCreate,
     ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+    db: Annotated[Session, Depends(get_db)],
 ) -> Dict[str, Any]:
     """Create a delegation. The agent must belong to this tenant."""
-    tenant_agents = _tenant_agent_id_set(ctx.tenant_id)
+    tenant_agents = _tenant_agent_id_set(db, ctx.tenant_id)
     if payload.agent_id not in tenant_agents:
         raise HTTPException(status_code=403, detail="agent_id is not owned by this tenant")
     body: Dict[str, Any] = {
@@ -3202,9 +3216,10 @@ def customer_create_delegation(
 def customer_revoke_delegation(
     chain_id: str,
     ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+    db: Annotated[Session, Depends(get_db)],
 ) -> Dict[str, Any]:
     """Revoke a delegation. The delegation must reference an agent owned by this tenant."""
-    tenant_agents = _tenant_agent_id_set(ctx.tenant_id)
+    tenant_agents = _tenant_agent_id_set(db, ctx.tenant_id)
     try:
         existing = _call_agent_identity("GET", f"/delegations/{chain_id}", ctx.tenant_id)
     except HTTPException as exc:
