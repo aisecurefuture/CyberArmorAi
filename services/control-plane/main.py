@@ -2649,6 +2649,429 @@ def customer_evidence_export(
     }
 
 
+class ReportRequest(BaseModel):
+    """Request payload for /customer/reports/generate.
+
+    ``report_type`` selects which named report to assemble; ``since`` /
+    ``until`` are ISO-8601 timestamps that bound the data window. If both
+    are omitted, the report covers all tenant data on hand.
+    """
+    report_type: str
+    since: Optional[str] = None
+    until: Optional[str] = None
+
+
+_REPORT_CATALOG = [
+    {"id": "executive",            "title": "Executive Summary",       "description": "High-level posture and top recommendations for leadership."},
+    {"id": "ai_risk",              "title": "AI Risk Report",          "description": "Top-risk agents, blocked actions, providers, and models."},
+    {"id": "dlp",                  "title": "DLP Activity Report",     "description": "Sensitive-data findings by class and most-affected events."},
+    {"id": "endpoint_health",      "title": "Endpoint Health Report",  "description": "Agent reachability, heartbeat freshness, and version mix."},
+    {"id": "policy_effectiveness", "title": "Policy Effectiveness",    "description": "Per-policy hit rate, blocked/allowed split, and unused policies."},
+]
+
+
+def _parse_window(since: Optional[str], until: Optional[str]) -> tuple[Optional[datetime], Optional[datetime]]:
+    """Parse ISO-8601 timestamps tolerant of trailing Z. Returns (since, until)."""
+    def _one(v: Optional[str]) -> Optional[datetime]:
+        if not v:
+            return None
+        try:
+            return datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            return None
+    return _one(since), _one(until)
+
+
+def _events_in_window(
+    db: Session,
+    tenant_id: str,
+    since: Optional[datetime],
+    until: Optional[datetime],
+    limit: int = 2000,
+) -> tuple[list["TelemetryRecord"], list["AuditLog"], list[Dict[str, Any]]]:
+    """Pull telemetry + audit + incidents for the tenant inside the window."""
+    tq = db.query(TelemetryRecord).filter(TelemetryRecord.tenant_id == tenant_id)
+    if since is not None:
+        tq = tq.filter(TelemetryRecord.occurred_at >= since)
+    if until is not None:
+        tq = tq.filter(TelemetryRecord.occurred_at <= until)
+    telemetry = tq.order_by(desc(TelemetryRecord.occurred_at)).limit(limit).all()
+
+    aq = db.query(AuditLog).filter(AuditLog.tenant_id == tenant_id)
+    if since is not None:
+        aq = aq.filter(AuditLog.created_at >= since)
+    if until is not None:
+        aq = aq.filter(AuditLog.created_at <= until)
+    audit = aq.order_by(desc(AuditLog.created_at)).limit(limit).all()
+
+    all_incidents = list(_INCIDENTS.get(tenant_id, {}).values())
+    incidents: list[Dict[str, Any]] = []
+    for inc in all_incidents:
+        ts_raw = inc.get("received_at") or inc.get("created_at")
+        ts_dt: Optional[datetime] = None
+        if ts_raw:
+            try:
+                ts_dt = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                ts_dt = None
+        if since is not None and (ts_dt is None or ts_dt < since):
+            continue
+        if until is not None and (ts_dt is None or ts_dt > until):
+            continue
+        incidents.append(inc)
+    incidents.sort(key=lambda x: x.get("received_at", ""), reverse=True)
+    return telemetry, audit, incidents
+
+
+def _build_executive_report(
+    *,
+    overview: Dict[str, Any],
+    telemetry: list["TelemetryRecord"],
+    audit: list["AuditLog"],
+    incidents: list[Dict[str, Any]],
+    policies: Any,
+    agents: list[Dict[str, Any]],
+    providers: Any,
+) -> list[Dict[str, Any]]:
+    buckets: Dict[str, int] = {}
+    for r in telemetry:
+        b = _classify_action(r.event_type)
+        buckets[b] = buckets.get(b, 0) + 1
+    blocked = buckets.get("block", 0)
+    redacted = buckets.get("redact", 0)
+    detected = buckets.get("detect", 0)
+    online_agents = sum(1 for a in agents if str(a.get("status") or "").lower() in ("running", "online", "ok"))
+    provider_count = len((providers or {}).get("providers", [])) if isinstance(providers, dict) else 0
+    policy_count = len(policies) if isinstance(policies, list) else 0
+    enabled_policies = sum(1 for p in (policies or []) if isinstance(p, dict) and p.get("enabled") is not False)
+
+    recs: list[str] = []
+    if blocked > 0:
+        recs.append(f"{blocked} blocked actions in window — review top agents and tighten policies as needed.")
+    if detected > redacted + blocked and detected > 5:
+        recs.append(f"{detected} detect-tier events not yet enforced — consider promoting common detections to redact/block.")
+    if provider_count == 0:
+        recs.append("No AI providers configured — connect at least one to enable runtime decisioning.")
+    if policy_count and enabled_policies == 0:
+        recs.append("All tenant policies are disabled — enable at least one to enforce decisions.")
+    if not recs:
+        recs.append("Posture is healthy in this window. Continue monitoring.")
+
+    return [
+        {"id": "summary", "title": "Summary", "type": "metrics", "metrics": [
+            {"label": "Telemetry events", "value": len(telemetry), "tone": "slate"},
+            {"label": "Audit events",     "value": len(audit),     "tone": "slate"},
+            {"label": "Incidents",        "value": len(incidents), "tone": "amber" if incidents else "emerald"},
+            {"label": "Blocked actions",  "value": blocked,        "tone": "rose"  if blocked else "emerald"},
+            {"label": "Redacted",         "value": redacted,       "tone": "amber" if redacted else "emerald"},
+            {"label": "Online agents",    "value": f"{online_agents}/{len(agents)}", "tone": "emerald" if online_agents == len(agents) and agents else "amber"},
+            {"label": "AI providers",     "value": provider_count, "tone": "slate"},
+            {"label": "Enabled policies", "value": f"{enabled_policies}/{policy_count}", "tone": "slate"},
+        ]},
+        {"id": "recommendations", "title": "Recommendations", "type": "list", "items": recs},
+        {"id": "action_mix", "title": "Action class mix", "type": "table",
+         "columns": ["Class", "Events"],
+         "rows": sorted(
+             [[k, v] for k, v in buckets.items()],
+             key=lambda r: r[1], reverse=True,
+         )},
+    ]
+
+
+def _build_ai_risk_report(
+    *,
+    telemetry: list["TelemetryRecord"],
+    incidents: list[Dict[str, Any]],
+) -> list[Dict[str, Any]]:
+    agent_stats: Dict[str, Dict[str, Any]] = {}
+    provider_stats: Dict[str, int] = {}
+    model_stats: Dict[str, int] = {}
+    blocked = 0
+    for r in telemetry:
+        bucket = _classify_action(r.event_type)
+        payload = _coerce_meta(r.payload) or {}
+        aid = r.agent_id or payload.get("agent_id") or "unknown"
+        a = agent_stats.setdefault(aid, {"events": 0, "blocked": 0, "redacted": 0})
+        a["events"] += 1
+        if bucket == "block":
+            a["blocked"] += 1
+            blocked += 1
+        if bucket == "redact":
+            a["redacted"] += 1
+        prov = payload.get("provider") or r.source
+        if prov:
+            provider_stats[prov] = provider_stats.get(prov, 0) + 1
+        model = payload.get("model")
+        if model:
+            model_stats[model] = model_stats.get(model, 0) + 1
+
+    top_agents = sorted(
+        agent_stats.items(),
+        key=lambda kv: (kv[1]["blocked"], kv[1]["events"]),
+        reverse=True,
+    )[:10]
+    top_providers = sorted(provider_stats.items(), key=lambda kv: kv[1], reverse=True)[:10]
+    top_models = sorted(model_stats.items(), key=lambda kv: kv[1], reverse=True)[:10]
+    block_incidents = [i for i in incidents if str(i.get("decision") or "").lower() in ("block", "deny")]
+
+    return [
+        {"id": "summary", "title": "Summary", "type": "metrics", "metrics": [
+            {"label": "Telemetry events", "value": len(telemetry), "tone": "slate"},
+            {"label": "Blocked actions",  "value": blocked,        "tone": "rose"  if blocked else "emerald"},
+            {"label": "Distinct agents",  "value": len(agent_stats), "tone": "slate"},
+            {"label": "Block incidents",  "value": len(block_incidents), "tone": "rose" if block_incidents else "emerald"},
+        ]},
+        {"id": "top_agents", "title": "Top agents by risk", "type": "table",
+         "columns": ["Agent", "Events", "Blocked", "Redacted"],
+         "rows": [[aid, s["events"], s["blocked"], s["redacted"]] for aid, s in top_agents]},
+        {"id": "top_providers", "title": "AI providers seen", "type": "table",
+         "columns": ["Provider", "Events"],
+         "rows": [[p, n] for p, n in top_providers]},
+        {"id": "top_models", "title": "Models seen", "type": "table",
+         "columns": ["Model", "Events"],
+         "rows": [[m, n] for m, n in top_models]},
+    ]
+
+
+def _build_dlp_report(*, telemetry: list["TelemetryRecord"]) -> list[Dict[str, Any]]:
+    class_hits: Dict[str, int] = {}
+    redact_events = 0
+    detect_events = 0
+    by_event_type: Dict[str, int] = {}
+    by_hostname: Dict[str, int] = {}
+    for r in telemetry:
+        bucket = _classify_action(r.event_type)
+        payload = _coerce_meta(r.payload) or {}
+        if bucket in ("redact", "detect", "block"):
+            by_event_type[r.event_type] = by_event_type.get(r.event_type, 0) + 1
+            if r.hostname:
+                by_hostname[r.hostname] = by_hostname.get(r.hostname, 0) + 1
+        if bucket == "redact":
+            redact_events += 1
+        if bucket == "detect":
+            detect_events += 1
+        # Telemetry payloads may carry the classes that fired in
+        # ``redaction_classes`` / ``classes`` / ``finding_types``.
+        for key in ("redaction_classes", "classes", "finding_types", "pii_classes"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                for c in value:
+                    s = str(c)
+                    class_hits[s] = class_hits.get(s, 0) + 1
+        findings = payload.get("findings")
+        if isinstance(findings, list):
+            for f in findings:
+                if isinstance(f, dict):
+                    t = f.get("type") or f.get("class") or f.get("name")
+                    if t:
+                        s = str(t)
+                        class_hits[s] = class_hits.get(s, 0) + 1
+
+    top_classes = sorted(class_hits.items(), key=lambda kv: kv[1], reverse=True)[:15]
+    top_event_types = sorted(by_event_type.items(), key=lambda kv: kv[1], reverse=True)[:10]
+    top_hosts = sorted(by_hostname.items(), key=lambda kv: kv[1], reverse=True)[:10]
+
+    return [
+        {"id": "summary", "title": "Summary", "type": "metrics", "metrics": [
+            {"label": "Redact events",  "value": redact_events, "tone": "amber" if redact_events else "emerald"},
+            {"label": "Detect events",  "value": detect_events, "tone": "amber" if detect_events else "emerald"},
+            {"label": "Class hits",     "value": sum(class_hits.values()), "tone": "slate"},
+            {"label": "Affected hosts", "value": len(by_hostname), "tone": "slate"},
+        ]},
+        {"id": "top_classes", "title": "Top sensitive-data classes", "type": "table",
+         "columns": ["Class", "Hits"],
+         "rows": [[k, v] for k, v in top_classes]},
+        {"id": "top_event_types", "title": "Top DLP event types", "type": "table",
+         "columns": ["Event type", "Count"],
+         "rows": [[k, v] for k, v in top_event_types]},
+        {"id": "top_hosts", "title": "Most-affected hosts", "type": "table",
+         "columns": ["Hostname", "Events"],
+         "rows": [[k, v] for k, v in top_hosts]},
+    ]
+
+
+def _build_endpoint_health_report(
+    *,
+    agents: list[Dict[str, Any]],
+    telemetry: list["TelemetryRecord"],
+    until: Optional[datetime],
+) -> list[Dict[str, Any]]:
+    cutoff = until or datetime.now(timezone.utc)
+    status_counts: Dict[str, int] = {}
+    version_counts: Dict[str, int] = {}
+    stale: list[list[Any]] = []
+    by_host: Dict[str, int] = {}
+    for a in agents:
+        st = str(a.get("status") or "unknown").lower()
+        status_counts[st] = status_counts.get(st, 0) + 1
+        version = str(a.get("version") or "—")
+        version_counts[version] = version_counts.get(version, 0) + 1
+        last_seen_raw = a.get("last_seen")
+        try:
+            last_seen = datetime.fromisoformat(str(last_seen_raw).replace("Z", "+00:00")) if last_seen_raw else None
+        except (ValueError, TypeError):
+            last_seen = None
+        if last_seen is None or (cutoff - last_seen) > timedelta(hours=1):
+            stale.append([a.get("agent_id"), a.get("hostname"), st, str(last_seen_raw or "—")])
+    for r in telemetry:
+        if r.hostname:
+            by_host[r.hostname] = by_host.get(r.hostname, 0) + 1
+    top_hosts = sorted(by_host.items(), key=lambda kv: kv[1], reverse=True)[:10]
+
+    return [
+        {"id": "summary", "title": "Summary", "type": "metrics", "metrics": [
+            {"label": "Agents",        "value": len(agents), "tone": "slate"},
+            {"label": "Online",        "value": status_counts.get("running", 0) + status_counts.get("online", 0) + status_counts.get("ok", 0), "tone": "emerald"},
+            {"label": "Stale (>1h)",   "value": len(stale), "tone": "amber" if stale else "emerald"},
+            {"label": "Versions",      "value": len(version_counts), "tone": "amber" if len(version_counts) > 1 else "emerald"},
+        ]},
+        {"id": "status_mix", "title": "Status mix", "type": "table",
+         "columns": ["Status", "Agents"],
+         "rows": sorted([[k, v] for k, v in status_counts.items()], key=lambda r: r[1], reverse=True)},
+        {"id": "version_mix", "title": "Version mix", "type": "table",
+         "columns": ["Version", "Agents"],
+         "rows": sorted([[k, v] for k, v in version_counts.items()], key=lambda r: r[1], reverse=True)},
+        {"id": "stale", "title": "Stale agents (no heartbeat in last hour)", "type": "table",
+         "columns": ["Agent", "Hostname", "Status", "Last seen"],
+         "rows": stale[:20]},
+        {"id": "top_hosts", "title": "Most-active hosts (telemetry)", "type": "table",
+         "columns": ["Hostname", "Events"],
+         "rows": [[k, v] for k, v in top_hosts]},
+    ]
+
+
+def _build_policy_effectiveness_report(
+    *,
+    policies: Any,
+    telemetry: list["TelemetryRecord"],
+) -> list[Dict[str, Any]]:
+    policy_list = policies if isinstance(policies, list) else []
+    # Map telemetry hits onto policies by name when payload carries a policy
+    # reference. This isn't perfect but covers the proxy / RASP path that
+    # stamps ``policy_id`` / ``policy_name`` on the event.
+    hits_by_policy: Dict[str, Dict[str, int]] = {}
+    for r in telemetry:
+        payload = _coerce_meta(r.payload) or {}
+        key = payload.get("policy_name") or payload.get("policy_id") or payload.get("policy")
+        if not key:
+            continue
+        bucket = _classify_action(r.event_type)
+        h = hits_by_policy.setdefault(str(key), {"events": 0, "blocked": 0, "redacted": 0})
+        h["events"] += 1
+        if bucket == "block":   h["blocked"] += 1
+        if bucket == "redact":  h["redacted"] += 1
+
+    rows: list[list[Any]] = []
+    unused: list[list[Any]] = []
+    for p in policy_list:
+        if not isinstance(p, dict):
+            continue
+        name = str(p.get("name") or p.get("id") or "")
+        pid = str(p.get("id") or "")
+        action = str(p.get("action") or "monitor")
+        enabled = "yes" if p.get("enabled") is not False else "no"
+        stats = hits_by_policy.get(name) or hits_by_policy.get(pid) or {"events": 0, "blocked": 0, "redacted": 0}
+        rows.append([name or pid, action, enabled, stats["events"], stats["blocked"], stats["redacted"]])
+        if stats["events"] == 0 and p.get("enabled") is not False:
+            unused.append([name or pid, action])
+    rows.sort(key=lambda r: r[3], reverse=True)
+
+    return [
+        {"id": "summary", "title": "Summary", "type": "metrics", "metrics": [
+            {"label": "Policies",         "value": len(policy_list), "tone": "slate"},
+            {"label": "With hits",        "value": sum(1 for r in rows if r[3] > 0), "tone": "emerald"},
+            {"label": "Unused (enabled)", "value": len(unused), "tone": "amber" if unused else "emerald"},
+        ]},
+        {"id": "by_policy", "title": "Policy hits", "type": "table",
+         "columns": ["Policy", "Action", "Enabled", "Events", "Blocked", "Redacted"],
+         "rows": rows},
+        {"id": "unused", "title": "Unused enabled policies", "type": "table",
+         "columns": ["Policy", "Action"],
+         "rows": unused},
+    ]
+
+
+@app.get("/customer/reports/catalog")
+def customer_reports_catalog(
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+) -> Dict[str, Any]:
+    """Catalog of named reports the customer can generate.
+
+    Returned shape mirrors what the portal needs to render the gallery —
+    {id, title, description} per entry. Static for now; once we have
+    per-tenant report templates this becomes per-tenant.
+    """
+    return {"reports": list(_REPORT_CATALOG)}
+
+
+@app.post("/customer/reports/generate")
+def customer_reports_generate(
+    payload: ReportRequest,
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    db: Annotated[Session, Depends(get_db)],
+) -> Dict[str, Any]:
+    """Assemble a named tenant report over an optional ISO-8601 window."""
+    rid = payload.report_type
+    if rid not in {r["id"] for r in _REPORT_CATALOG}:
+        raise HTTPException(status_code=400, detail=f"unknown report_type: {rid}")
+    since_dt, until_dt = _parse_window(payload.since, payload.until)
+    telemetry, audit, incidents = _events_in_window(db, ctx.tenant_id, since_dt, until_dt, limit=2000)
+    policies = _fetch_policy_service(f"/policies/{ctx.tenant_id}", ctx.tenant_id)
+    agents = _tenant_agent_rows(db, ctx.tenant_id, limit=500)
+    providers = _fetch_ai_router("/ai/providers", ctx.tenant_id)
+
+    if rid == "executive":
+        overview = {
+            "policy_count": len(policies) if isinstance(policies, list) else 0,
+            "audit_count": len(audit),
+            "telemetry_count": len(telemetry),
+            "incident_count": len(incidents),
+            "agent_count": len(agents),
+        }
+        sections = _build_executive_report(
+            overview=overview,
+            telemetry=telemetry,
+            audit=audit,
+            incidents=incidents,
+            policies=policies,
+            agents=agents,
+            providers=providers,
+        )
+    elif rid == "ai_risk":
+        sections = _build_ai_risk_report(telemetry=telemetry, incidents=incidents)
+    elif rid == "dlp":
+        sections = _build_dlp_report(telemetry=telemetry)
+    elif rid == "endpoint_health":
+        sections = _build_endpoint_health_report(agents=agents, telemetry=telemetry, until=until_dt)
+    elif rid == "policy_effectiveness":
+        sections = _build_policy_effectiveness_report(policies=policies, telemetry=telemetry)
+    else:
+        # Defensive — _REPORT_CATALOG validation above should make this
+        # unreachable, but keep so adding catalog entries before handlers
+        # surfaces a clean 501 rather than a NameError.
+        raise HTTPException(status_code=501, detail=f"report builder for {rid} not implemented")
+
+    catalog_entry = next(r for r in _REPORT_CATALOG if r["id"] == rid)
+    return {
+        "report_type": rid,
+        "title": catalog_entry["title"],
+        "description": catalog_entry["description"],
+        "tenant": {"id": ctx.tenant_id},
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "window": {
+            "since": since_dt.isoformat() if since_dt else None,
+            "until": until_dt.isoformat() if until_dt else None,
+        },
+        "counts": {
+            "telemetry": len(telemetry),
+            "audit": len(audit),
+            "incidents": len(incidents),
+            "agents": len(agents),
+        },
+        "sections": sections,
+    }
+
+
 @app.get("/customer/providers")
 def customer_providers(ctx: Annotated[CustomerContext, Depends(get_customer_context)]) -> Any:
     return _fetch_ai_router("/ai/providers", ctx.tenant_id)

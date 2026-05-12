@@ -2708,50 +2708,263 @@ async function viewDlp() {
   render();
 }
 
+// Time windows for report generation. Mirrors the compliance picker so
+// the operator switches between views without context whiplash.
+const REPORT_WINDOWS = [
+  { id: "24h", label: "Last 24h", ms: 24 * 60 * 60 * 1000 },
+  { id: "7d",  label: "Last 7d",  ms: 7  * 24 * 60 * 60 * 1000 },
+  { id: "30d", label: "Last 30d", ms: 30 * 24 * 60 * 60 * 1000 },
+  { id: "all", label: "All time", ms: null },
+];
+
+const REPORT_ICONS = {
+  executive:            "🧭",
+  ai_risk:              "🤖",
+  dlp:                  "🛡️",
+  endpoint_health:      "💻",
+  policy_effectiveness: "📐",
+};
+
+function reportMetricTone(tone) {
+  return tone === "rose"    ? "border-rose-900 text-rose-200"
+       : tone === "amber"   ? "border-amber-900 text-amber-200"
+       : tone === "emerald" ? "border-emerald-900 text-emerald-200"
+       :                      "border-slate-800 text-slate-200";
+}
+
+function renderReportSection(section) {
+  if (!section || typeof section !== "object") return "";
+  const title = String(section.title || "");
+  if (section.type === "metrics") {
+    const metrics = Array.isArray(section.metrics) ? section.metrics : [];
+    return `
+      <div>
+        <div class="text-sm font-semibold mb-2">${esc(title)}</div>
+        <div class="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          ${metrics.map((m) => `
+            <div class="rounded-2xl border bg-slate-950 p-3 ${reportMetricTone(m.tone)}">
+              <div class="text-[10px] uppercase tracking-wider text-slate-500">${esc(String(m.label || ""))}</div>
+              <div class="mt-1 text-xl font-semibold tabular-nums">${esc(String(m.value ?? ""))}</div>
+            </div>
+          `).join("")}
+        </div>
+      </div>`;
+  }
+  if (section.type === "table") {
+    const cols = Array.isArray(section.columns) ? section.columns : [];
+    const rows = Array.isArray(section.rows) ? section.rows : [];
+    return `
+      <div>
+        <div class="text-sm font-semibold mb-2">${esc(title)}</div>
+        <div class="overflow-x-auto rounded-xl border border-slate-800">
+          <table class="w-full text-left text-sm">
+            <thead class="bg-slate-900/60 text-[10px] uppercase tracking-wider text-slate-500">
+              <tr>${cols.map((c) => `<th class="px-3 py-2">${esc(String(c))}</th>`).join("")}</tr>
+            </thead>
+            <tbody>
+              ${rows.length === 0
+                ? `<tr><td colspan="${cols.length || 1}" class="px-3 py-6 text-center text-xs text-slate-500">No rows.</td></tr>`
+                : rows.map((row) => `<tr class="border-t border-slate-800">${(Array.isArray(row) ? row : []).map((cell) => `<td class="px-3 py-2 ${typeof cell === "number" ? "tabular-nums" : ""}">${esc(String(cell ?? ""))}</td>`).join("")}</tr>`).join("")}
+            </tbody>
+          </table>
+        </div>
+      </div>`;
+  }
+  if (section.type === "list") {
+    const items = Array.isArray(section.items) ? section.items : [];
+    return `
+      <div>
+        <div class="text-sm font-semibold mb-2">${esc(title)}</div>
+        ${items.length === 0
+          ? `<div class="text-xs text-slate-500">None.</div>`
+          : `<ul class="list-disc pl-5 space-y-1 text-sm text-slate-200">${items.map((it) => `<li>${esc(String(it))}</li>`).join("")}</ul>`}
+      </div>`;
+  }
+  if (section.type === "text") {
+    return `<div>
+      <div class="text-sm font-semibold mb-2">${esc(title)}</div>
+      <p class="text-sm text-slate-300 whitespace-pre-wrap">${esc(String(section.body || ""))}</p>
+    </div>`;
+  }
+  return "";
+}
+
 async function viewReports() {
-  await tenantScopedConfigPage("reports", "Reports & Evidence Export", "Tenant security, compliance, and evidence export packages", [
-    { title: "Compliance Report", body: "Generate a tenant-scoped summary of framework assessment results and evidence gaps.", badge: "SOC 2 / NIST / GDPR", tone: "green" },
-    { title: "DLP Activity Report", body: "Summarize tenant data-classification hits, DLP detections, and response outcomes.", badge: "tenant data only", tone: "cyan" },
-    { title: "AI Risk Report", body: "Package tenant AI providers, agents, policy decisions, incidents, and audit findings.", badge: "executive ready", tone: "amber" },
-  ], { enabled_reports: ["compliance", "dlp", "ai_risk"], schedule: "manual", recipients: [] });
-  $("#app").insertAdjacentHTML("beforeend", `
-    <div class="mt-4"></div>
-    ${card(`
-      <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+  $("#pageTitle").textContent = "Reports";
+  $("#pageSubtitle").textContent = "Generate tenant-scoped security, risk, and compliance reports — view inline or download as JSON";
+
+  let catalog = [];
+  let catalogError = null;
+  try {
+    const resp = await api("/api/customer/reports/catalog");
+    catalog = (resp && resp.reports) || [];
+  } catch (err) {
+    catalogError = err.message || "catalog fetch failed";
+  }
+
+  // Per-view state: selected window, last-generated report, generation status.
+  let windowId = "7d";
+  let activeReport = null;        // last generated payload, rendered inline
+  let activeStatus = null;        // {reportId, state: "running"|"error", error?}
+
+  function windowBody() {
+    const w = REPORT_WINDOWS.find((x) => x.id === windowId);
+    if (!w || w.ms == null) return {};
+    const until = new Date();
+    const since = new Date(until.getTime() - w.ms);
+    return { since: since.toISOString(), until: until.toISOString() };
+  }
+
+  function reportCardHtml(entry) {
+    const isActive = activeReport && activeReport.report_type === entry.id;
+    const isLoading = activeStatus && activeStatus.reportId === entry.id && activeStatus.state === "running";
+    const hasErr   = activeStatus && activeStatus.reportId === entry.id && activeStatus.state === "error";
+    return `
+      <div class="rounded-2xl border ${isActive ? "border-cyan-700 bg-cyan-900/10" : "border-slate-800 bg-slate-950"} p-4">
+        <div class="flex items-baseline justify-between gap-2">
+          <div class="flex items-center gap-2">
+            <span class="text-lg">${REPORT_ICONS[entry.id] || "📄"}</span>
+            <div class="font-semibold text-sm">${esc(entry.title)}</div>
+          </div>
+        </div>
+        <p class="mt-2 text-xs text-slate-400">${esc(entry.description || "")}</p>
+        <div class="mt-3 flex flex-wrap gap-2">
+          <button class="generateReportBtn rounded-xl bg-cyan-500 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-50" data-report-id="${esc(entry.id)}" type="button" ${isLoading ? "disabled" : ""}>${isLoading ? "Generating…" : "Generate"}</button>
+          ${isActive ? `<button class="downloadReportBtn rounded-xl border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-800" type="button">Download JSON</button>` : ""}
+        </div>
+        ${hasErr ? `<div class="mt-2 text-xs text-rose-300">${esc(activeStatus.error || "Failed to generate.")}</div>` : ""}
+      </div>`;
+  }
+
+  function reportInlineHtml() {
+    if (!activeReport) {
+      return card(`
+        <div class="text-sm text-slate-400">Pick a report above and choose a time window. Reports render here and can be downloaded as JSON for sharing or evidence packs.</div>
+      `);
+    }
+    const r = activeReport;
+    const win = r.window || {};
+    const winLabel = win.since
+      ? `${esc(String(win.since))} → ${esc(String(win.until || "now"))}`
+      : "All time";
+    const counts = r.counts || {};
+    const sections = Array.isArray(r.sections) ? r.sections : [];
+    return card(`
+      <div class="flex items-baseline justify-between gap-2">
         <div>
-          <div class="text-lg font-semibold">Evidence Export</div>
-          <p class="mt-2 max-w-2xl text-sm text-slate-400">Create tenant-scoped JSON evidence packs for audit review, incident triage, demo validation, or customer success handoff.</p>
+          <div class="text-lg font-semibold">${esc(r.title || r.report_type)}</div>
+          <div class="mt-1 text-xs text-slate-500">${esc(String(r.generated_at || ""))} · Window: ${winLabel}</div>
+          ${r.description ? `<div class="mt-1 text-xs text-slate-400">${esc(r.description)}</div>` : ""}
         </div>
-        <div class="flex flex-wrap gap-2">
-          <button class="evidenceExport rounded-2xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400" data-scope="summary" type="button">Export Summary</button>
-          <button class="evidenceExport rounded-2xl border border-slate-700 bg-slate-900 px-4 py-2 text-sm text-slate-200 hover:bg-slate-800" data-scope="full" type="button">Export Full Pack</button>
+        <div class="text-[10px] text-slate-500 text-right">
+          <div>Telemetry: <span class="tabular-nums">${esc(String(counts.telemetry ?? 0))}</span></div>
+          <div>Audit: <span class="tabular-nums">${esc(String(counts.audit ?? 0))}</span></div>
+          <div>Incidents: <span class="tabular-nums">${esc(String(counts.incidents ?? 0))}</span></div>
+          <div>Agents: <span class="tabular-nums">${esc(String(counts.agents ?? 0))}</span></div>
         </div>
       </div>
-      <div class="mt-4 grid gap-3 md:grid-cols-3">
-        <div class="rounded-2xl border border-slate-800 bg-slate-900/60 p-4"><div class="text-sm font-semibold">Audit logs</div><p class="mt-1 text-xs text-slate-400">Policy, portal, and API activity records.</p></div>
-        <div class="rounded-2xl border border-slate-800 bg-slate-900/60 p-4"><div class="text-sm font-semibold">Telemetry</div><p class="mt-1 text-xs text-slate-400">Endpoint and runtime events for the tenant.</p></div>
-        <div class="rounded-2xl border border-slate-800 bg-slate-900/60 p-4"><div class="text-sm font-semibold">Incidents</div><p class="mt-1 text-xs text-slate-400">Runtime decisions, findings, and evidence candidates.</p></div>
+      <div class="mt-4 space-y-5">
+        ${sections.length === 0
+          ? `<div class="text-sm text-slate-500">Report returned no sections — try a wider window.</div>`
+          : sections.map(renderReportSection).join("")}
       </div>
-      <div id="evidenceExportMessage" class="mt-4 text-sm text-slate-400"></div>
-    `)}
-  `);
-  document.querySelectorAll(".evidenceExport").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const scope = button.dataset.scope || "summary";
-      const message = $("#evidenceExportMessage");
-      message.textContent = `Preparing ${scope} evidence export...`;
-      message.className = "mt-4 text-sm text-slate-400";
-      try {
-        const pack = await api(`/api/customer/evidence/export?scope=${encodeURIComponent(scope)}`);
-        downloadJson(`cyberarmor_${session.tenant_id}_${scope}_evidence_${new Date().toISOString().slice(0, 10)}.json`, pack);
-        message.textContent = "Evidence export created.";
-        message.className = "mt-4 text-sm text-emerald-300";
-      } catch (error) {
-        message.textContent = error.message;
-        message.className = "mt-4 text-sm text-rose-300";
-      }
+    `);
+  }
+
+  function render() {
+    $("#app").innerHTML = `
+      <div class="space-y-4">
+        ${catalogError ? `<div class="rounded-2xl border border-rose-900 bg-rose-950/30 p-3 text-sm text-rose-200">Could not load report catalog: ${esc(catalogError)}.</div>` : ""}
+        ${card(`
+          <div class="flex flex-wrap items-center gap-4">
+            <div class="flex flex-col leading-tight">
+              <span class="text-[10px] uppercase tracking-wider text-slate-500">Reports available</span>
+              <span class="text-2xl font-semibold tabular-nums">${catalog.length}</span>
+            </div>
+            <div class="mx-2 h-10 w-px bg-slate-800"></div>
+            <div class="flex flex-col leading-tight">
+              <span class="text-[10px] uppercase tracking-wider text-slate-500">Time window</span>
+              <div class="mt-1 flex flex-wrap gap-1" id="reportWindowPicker">
+                ${REPORT_WINDOWS.map((w) => `
+                  <button type="button" data-window-id="${w.id}" class="rounded-full px-2 py-1 text-[11px] ${windowId === w.id ? "bg-cyan-500 text-slate-950 font-semibold" : "bg-slate-900 border border-slate-700 text-slate-300 hover:bg-slate-800"}">${esc(w.label)}</button>
+                `).join("")}
+              </div>
+            </div>
+            <div class="ml-auto flex flex-wrap items-center gap-2">
+              <button id="evidenceSummaryBtn" type="button" class="rounded-2xl bg-cyan-500 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-400">Export Summary Evidence</button>
+              <button id="evidenceFullBtn"    type="button" class="rounded-2xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-200 hover:bg-slate-800">Export Full Evidence</button>
+              <span id="evidenceMessage" class="text-xs text-slate-400"></span>
+            </div>
+          </div>
+        `)}
+        <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          ${catalog.map(reportCardHtml).join("")}
+        </div>
+        <div id="reportInline">${reportInlineHtml()}</div>
+      </div>
+    `;
+
+    document.querySelectorAll("#reportWindowPicker button").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        if (windowId === btn.dataset.windowId) return;
+        windowId = btn.dataset.windowId;
+        // Window changes invalidate the current inline report — the
+        // metrics it shows came from a different window.
+        activeReport = null;
+        render();
+      });
     });
-  });
+    document.querySelectorAll(".generateReportBtn").forEach((btn) => {
+      btn.addEventListener("click", () => generateReport(btn.dataset.reportId));
+    });
+    document.querySelectorAll(".downloadReportBtn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        if (!activeReport) return;
+        const fname = `cyberarmor_${session.tenant_id}_${activeReport.report_type}_${new Date().toISOString().slice(0, 10)}.json`;
+        downloadJson(fname, activeReport);
+      });
+    });
+    const sumBtn = $("#evidenceSummaryBtn");
+    if (sumBtn) sumBtn.addEventListener("click", () => runEvidenceExport("summary"));
+    const fullBtn = $("#evidenceFullBtn");
+    if (fullBtn) fullBtn.addEventListener("click", () => runEvidenceExport("full"));
+  }
+
+  async function generateReport(reportId) {
+    if (!reportId) return;
+    activeStatus = { reportId, state: "running" };
+    render();
+    try {
+      const r = await api("/api/customer/reports/generate", {
+        method: "POST",
+        body: JSON.stringify({ report_type: reportId, ...windowBody() }),
+      });
+      activeReport = r;
+      activeStatus = null;
+      render();
+      $("#reportInline").scrollIntoView({ behavior: "smooth", block: "start" });
+    } catch (err) {
+      activeStatus = { reportId, state: "error", error: err.message };
+      render();
+    }
+  }
+
+  async function runEvidenceExport(scope) {
+    const msg = $("#evidenceMessage");
+    msg.textContent = `Preparing ${scope} evidence…`;
+    msg.className = "text-xs text-slate-400";
+    try {
+      const pack = await api(`/api/customer/evidence/export?scope=${encodeURIComponent(scope)}`);
+      downloadJson(`cyberarmor_${session.tenant_id}_${scope}_evidence_${new Date().toISOString().slice(0, 10)}.json`, pack);
+      msg.textContent = "Evidence export ready.";
+      msg.className = "text-xs text-emerald-300";
+    } catch (err) {
+      msg.textContent = err.message;
+      msg.className = "text-xs text-rose-300";
+    }
+  }
+
+  render();
 }
 
 // --- Telemetry helpers ---
