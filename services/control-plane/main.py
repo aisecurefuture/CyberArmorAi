@@ -2622,6 +2622,66 @@ def _telemetry_to_incident(
     }
 
 
+def _tenant_agent_user_map(db: Session, tenant_id: str) -> Dict[str, str]:
+    """Build agent_id → user_id for this tenant by union of sources:
+
+    1. Active delegations from agent-identity (parent_human_id is the user).
+       The Delegation Manager is the canonical place a tenant admin
+       associates a human with an agent, so this wins.
+    2. The agent registry's ``username`` field (heartbeat / bootstrap).
+
+    Revoked or expired delegations are skipped — they shouldn't drive
+    attribution. If multiple active delegations point to the same agent,
+    we keep the most recently created one.
+    """
+    out: Dict[str, str] = {}
+
+    # Source 1: active delegations.
+    try:
+        params = {"limit": 1000, "status": "active"}
+        resp = _call_agent_identity("GET", "/delegations", tenant_id, params=params)
+    except HTTPException:
+        resp = None
+    rows = []
+    if isinstance(resp, dict):
+        rows = resp.get("delegations") or []
+    elif isinstance(resp, list):
+        rows = resp
+    tenant_agents = {a.get("agent_id") for a in _tenant_agent_rows(db, tenant_id, limit=1000) if a.get("agent_id")}
+    # Index by agent_id and prefer the newest active chain so an admin can
+    # rotate the human → agent binding without revoking the old chain first.
+    rows_sorted = sorted(rows, key=lambda d: str(d.get("created_at") or ""), reverse=True)
+    now = datetime.now(timezone.utc)
+    for d in rows_sorted:
+        if not isinstance(d, dict):
+            continue
+        aid = d.get("agent_id")
+        human = d.get("parent_human_id")
+        if not aid or not human or aid not in tenant_agents:
+            continue
+        # Skip explicitly-revoked even if upstream still returns them with
+        # status=active (defensive), and drop expired chains.
+        if str(d.get("status") or "active").lower() == "revoked":
+            continue
+        exp_raw = d.get("expires_at")
+        if exp_raw:
+            try:
+                exp_dt = datetime.fromisoformat(str(exp_raw).replace("Z", "+00:00"))
+                if exp_dt < now:
+                    continue
+            except (ValueError, TypeError):
+                pass
+        out.setdefault(aid, str(human))
+
+    # Source 2: registry usernames (fallback).
+    for a in _tenant_agent_rows(db, tenant_id, limit=1000):
+        aid = a.get("agent_id")
+        uname = a.get("username")
+        if aid and uname and aid not in out:
+            out[aid] = uname
+    return out
+
+
 @app.post("/customer/admin/backfill-agent-users")
 def customer_backfill_agent_users(
     ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
@@ -2646,6 +2706,10 @@ def customer_backfill_agent_users(
         a["agent_id"]: a for a in _tenant_agent_rows(db, ctx.tenant_id, limit=1000)
         if a.get("agent_id")
     }
+    # Layer in active delegations: parent_human_id is the canonical user
+    # binding (set via the Delegation Manager). Wins over the registry
+    # username so a freshly-issued chain takes effect immediately.
+    user_map = _tenant_agent_user_map(db, ctx.tenant_id)
     if not directory:
         return {"tenant_id": ctx.tenant_id, "agents_in_registry": 0,
                 "telemetry_updated": 0, "incidents_updated": 0,
@@ -2660,7 +2724,7 @@ def customer_backfill_agent_users(
     tel_updated = 0
     for r in telemetry_rows:
         dir_entry = directory.get(r.agent_id) or {}
-        new_user = dir_entry.get("username") or None
+        new_user = user_map.get(r.agent_id) or dir_entry.get("username") or None
         new_host = dir_entry.get("hostname") or None
         changed = False
         if new_user and (overwrite or not r.user_id):
@@ -2684,7 +2748,7 @@ def customer_backfill_agent_users(
             continue
         dir_entry = directory[aid]
         changed = False
-        new_user = dir_entry.get("username") or None
+        new_user = user_map.get(aid) or dir_entry.get("username") or None
         new_host = dir_entry.get("hostname") or None
         if new_user and (overwrite or not inc.get("user_id")):
             if inc.get("user_id") != new_user:
@@ -2735,6 +2799,18 @@ def customer_incidents(
         a["agent_id"]: a for a in _tenant_agent_rows(db, ctx.tenant_id, limit=1000)
         if a.get("agent_id")
     }
+    # Delegation Manager bindings are the canonical source of truth for the
+    # agent → human mapping; fold them onto the directory rows so downstream
+    # code sees a single map to query.
+    user_map = _tenant_agent_user_map(db, ctx.tenant_id)
+    for aid, uname in user_map.items():
+        if aid in agent_directory:
+            # Win over the registry's username when a delegation exists.
+            agent_directory[aid] = {**agent_directory[aid], "username": uname}
+        else:
+            # Agent only known to agent-identity / delegations — still
+            # surface its username so the projection picks it up.
+            agent_directory[aid] = {"agent_id": aid, "username": uname}
 
     def _enrich(inc: Dict[str, Any]) -> Dict[str, Any]:
         aid = inc.get("agent_id")
