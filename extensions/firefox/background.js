@@ -254,11 +254,64 @@ function evaluateLeafRule(rule, context) {
   }
 }
 
+// Catalog of AI / collaboration upload endpoints. Kept in lock-step with
+// chromium-shared/background.js AI_UPLOAD_PATTERNS — when one changes the
+// other should too. Substring/wildcard format (no DNR-specific syntax).
+const AI_UPLOAD_PATTERNS = [
+  "chatgpt.com/backend-api/files",
+  "chat.openai.com/backend-api/files",
+  "claude.ai/api/*/upload_file",
+  "claude.ai/api/organizations/",
+  "claude.ai/api/convert_document",
+  "gemini.google.com/_/upload",
+  "gemini.google.com/_/uploads",
+  "copilot.microsoft.com/c/api/files",
+  "perplexity.ai/rest/uploads",
+  "/upload/files",
+  "/api/files/upload",
+];
+
+function urlMatchesUploadPattern(url) {
+  if (!url) return false;
+  let parsed;
+  try { parsed = new URL(url); } catch { return false; }
+  const hostPath = parsed.hostname + parsed.pathname;
+  for (const raw of AI_UPLOAD_PATTERNS) {
+    // Ordered-segment match: each * is a wildcard, every other segment
+    // must appear in hostPath in order. No regex compilation needed.
+    const segments = raw.split('*');
+    let cursor = 0;
+    let ok = true;
+    for (const seg of segments) {
+      if (!seg) continue;
+      const idx = hostPath.indexOf(seg, cursor);
+      if (idx < 0) { ok = false; break; }
+      cursor = idx + seg.length;
+    }
+    if (ok) return true;
+  }
+  return false;
+}
+
+// Coalesce per (tabId, url) so a retry loop doesn't stack banners.
+const _recentUploadBlocks = new Map();
+function _shouldShowBlockBanner(tabId, url) {
+  const key = `${tabId}:${url}`;
+  const now = Date.now();
+  const prev = _recentUploadBlocks.get(key);
+  if (prev && now - prev < 4000) return false;
+  _recentUploadBlocks.set(key, now);
+  return true;
+}
+
 // Intercept every outgoing request:
-//   1. If a tenant policy with action=block matches the URL, cancel the
-//      request at the network layer (Firefox's blocking webRequest is the
-//      Chrome-MV3 DNR equivalent — but synchronous and stronger).
-//   2. If the URL is in AI_DOMAINS and the body matches a prompt-injection
+//   1. If the URL is a known AI upload endpoint and a tenant policy with
+//      action=block_upload matches the request context, cancel it +
+//      banner. Firefox's blocking webRequest catches service-worker
+//      fetches too — no separate DNR path needed.
+//   2. If a tenant policy with action=block matches the URL, cancel the
+//      request at the network layer.
+//   3. If the URL is in AI_DOMAINS and the body matches a prompt-injection
 //      pattern, cancel it (legacy behaviour preserved).
 // Telemetry is emitted on every block so the dashboard sees Firefox events.
 browser.webRequest.onBeforeRequest.addListener(
@@ -266,6 +319,51 @@ browser.webRequest.onBeforeRequest.addListener(
     let parsedUrl;
     try { parsedUrl = new URL(details.url); } catch { return {}; }
     if (parsedUrl.protocol === 'chrome-extension:' || parsedUrl.protocol === 'moz-extension:') return {};
+
+    // --- block_upload: catalog-targeted policy enforcement ---
+    // Run before the generic block check so a single policy that covers
+    // both intents (block_upload, with a URL filter) takes the upload-
+    // specific code path and the matching banner copy.
+    if (urlMatchesUploadPattern(details.url)) {
+      try {
+        const uploadResult = evaluatePolicy({
+          request: {
+            url: details.url,
+            hostname: parsedUrl.hostname,
+            path: parsedUrl.pathname,
+            method: details.method,
+            type: 'upload',
+          },
+          content: {
+            has_file_upload: true,
+            has_pii: false,
+            pii_classes: [],
+          },
+        });
+        if (uploadResult.matched && uploadResult.action === 'block_upload') {
+          console.warn(`[CyberArmor] policy_block_upload "${uploadResult.policy}" → ${details.url}`);
+          sendTelemetry({
+            type: 'policy_block_upload_dnr',
+            payload: {
+              url: details.url,
+              tabId: details.tabId,
+              policy: uploadResult.policy,
+              method: details.method,
+              type: details.type,
+            },
+          });
+          if (typeof details.tabId === 'number' && details.tabId >= 0
+              && _shouldShowBlockBanner(details.tabId, details.url)) {
+            browser.tabs.sendMessage(details.tabId, {
+              type: 'cyberarmor:upload_blocked_dnr',
+              url: details.url,
+              policy: uploadResult.policy,
+            }).catch(() => { /* tab may have closed */ });
+          }
+          return { cancel: true };
+        }
+      } catch (e) { console.debug('[CyberArmor] block_upload evaluation error:', e); }
+    }
 
     // --- General tenant policy evaluation ---
     try {

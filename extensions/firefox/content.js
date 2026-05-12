@@ -151,6 +151,19 @@ function showWarning(message) {
   setTimeout(() => banner.remove(), 8000);
 }
 
+// Background script fires this when a blocking webRequest cancels an
+// AI upload — surface it with the same banner copy the chromium build
+// uses so the demo looks identical across browsers.
+if (typeof browser !== 'undefined' && browser.runtime && browser.runtime.onMessage) {
+  browser.runtime.onMessage.addListener((msg) => {
+    if (!msg || typeof msg !== 'object') return;
+    if (msg.type !== 'cyberarmor:upload_blocked_dnr') return;
+    let host = '';
+    try { host = new URL(msg.url || '').hostname; } catch { /* ignore */ }
+    showWarning(`File upload to ${host || 'this service'} blocked by policy "${msg.policy || 'policy'}".`);
+  });
+}
+
 // Observe DOM for new chat inputs
 const observer = new MutationObserver(() => monitorAIChatInputs());
 observer.observe(document.documentElement, { childList: true, subtree: true });

@@ -172,6 +172,97 @@ async function sendTelemetry(event) {
   }
 }
 
+// --- Policy evaluation (port of chromium-shared/background.js) ------
+//
+// Safari has no declarativeNetRequest or blocking webRequest, so policy
+// enforcement is best-effort from the page side: a MAIN-world content
+// script (upload_interceptor.js) wraps window.fetch / XHR, asks this
+// evaluator via the runtime message channel, and aborts the request
+// when the action is block_upload. Service-worker-initiated uploads
+// (ChatGPT, etc.) bypass page fetch and will *not* be caught on Safari
+// — accept the gap and document it.
+
+const AI_UPLOAD_PATTERNS = [
+  'chatgpt.com/backend-api/files',
+  'chat.openai.com/backend-api/files',
+  'claude.ai/api/*/upload_file',
+  'claude.ai/api/organizations/',
+  'claude.ai/api/convert_document',
+  'gemini.google.com/_/upload',
+  'gemini.google.com/_/uploads',
+  'copilot.microsoft.com/c/api/files',
+  'perplexity.ai/rest/uploads',
+  '/upload/files',
+  '/api/files/upload',
+];
+
+function urlMatchesUploadPattern(url) {
+  if (!url) return false;
+  let parsed;
+  try { parsed = new URL(url); } catch { return false; }
+  const hostPath = parsed.hostname + parsed.pathname;
+  for (const raw of AI_UPLOAD_PATTERNS) {
+    const segments = raw.split('*');
+    let cursor = 0;
+    let ok = true;
+    for (const seg of segments) {
+      if (!seg) continue;
+      const idx = hostPath.indexOf(seg, cursor);
+      if (idx < 0) { ok = false; break; }
+      cursor = idx + seg.length;
+    }
+    if (ok) return true;
+  }
+  return false;
+}
+
+function _equalsLoose(actual, expected) {
+  if (actual === expected) return true;
+  if (actual == null || expected == null) return false;
+  return String(actual) === String(expected);
+}
+
+function _evalLeaf(rule, context) {
+  const actual = (rule.field || '').split('.').reduce(
+    (o, k) => (o && typeof o === 'object' ? o[k] : undefined), context,
+  );
+  const expected = rule.value;
+  switch ((rule.operator || '').toLowerCase()) {
+    case 'equals':       return _equalsLoose(actual, expected);
+    case 'not_equals':   return !_equalsLoose(actual, expected);
+    case 'contains':     return String(actual || '').includes(String(expected));
+    case 'not_contains': return !String(actual || '').includes(String(expected));
+    case 'starts_with':  return String(actual || '').startsWith(String(expected));
+    case 'ends_with':    return String(actual || '').endsWith(String(expected));
+    case 'exists':       return actual != null;
+    case 'not_exists':   return actual == null;
+    case 'in':           return Array.isArray(expected) ? expected.includes(actual) : actual === expected;
+    case 'has_any':      return Array.isArray(actual) && (Array.isArray(expected) ? expected : [expected]).some((v) => actual.includes(v));
+    default: return false;
+  }
+}
+
+function _evalConditions(conds, context) {
+  if (!conds) return true;
+  const op = (conds.operator || 'AND').toUpperCase();
+  const rules = conds.rules || [];
+  if (!rules.length) return true;
+  const results = rules.map((r) => (r.rules ? _evalConditions(r, context) : _evalLeaf(r, context)));
+  return op === 'OR' ? results.some(Boolean) : results.every(Boolean);
+}
+
+function evaluatePolicy(context) {
+  let winner = null;
+  for (const p of policies || []) {
+    if (!p || p.enabled === false) continue;
+    if (!_evalConditions(p.conditions, context)) continue;
+    if (!winner) {
+      winner = { matched: true, policy: p.name || p.id || '', action: p.action || 'monitor' };
+    }
+  }
+  return winner || { matched: false };
+}
+
 browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'getStatus') {
     sendResponse({ active: true, policies: policies.length, config, lastAuthStatus });
@@ -196,6 +287,29 @@ browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'force_policy_sync' || msg.type === 'forcePolicySync') {
     configReady.then(() => syncPolicies()).then((result) => sendResponse({ ...result, policies }));
     return true;
+  }
+  if (msg.type === 'evaluate_policy') {
+    sendResponse({ result: evaluatePolicy(msg.context) });
+    return false;
+  }
+  if (msg.type === 'safari_upload_blocked') {
+    // Mirror the chromium policy_block_upload_dnr event so the Incidents
+    // view sees Safari blocks under the same event_type. tabId is read
+    // from sender so the dashboard can attribute the block to the page
+    // it happened on.
+    sendTelemetry({
+      type: 'policy_block_upload_dnr',
+      payload: {
+        url: msg.url,
+        policy: msg.policy,
+        file_count: msg.file_count,
+        file_names: msg.file_names,
+        tabId: sender.tab && sender.tab.id,
+        browser: 'safari',
+      },
+    });
+    sendResponse({ ok: true });
+    return false;
   }
   return false;
 });

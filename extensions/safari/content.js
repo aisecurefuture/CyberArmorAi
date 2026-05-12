@@ -44,4 +44,80 @@
   const cyberArmorObserver = new MutationObserver(monitorInputs);
   cyberArmorObserver.observe(document.documentElement, { childList: true, subtree: true });
   document.addEventListener('DOMContentLoaded', monitorInputs);
+
+  // --- Upload interception bridge ---
+  //
+  // upload_interceptor.js runs in the page's MAIN world and wraps fetch /
+  // XHR. It can't talk to the extension directly, so it posts a message
+  // here; we forward to the background's evaluator and post the decision
+  // back. Service-worker-initiated uploads (ChatGPT etc.) bypass the
+  // page's fetch and won't reach this bridge — Safari has no DNR or
+  // blocking webRequest, so that's a known gap on this browser.
+
+  function _showUploadBlockedBanner(url, policy) {
+    let host = '';
+    try { host = new URL(url || '').hostname; } catch { /* ignore */ }
+    const banner = document.createElement('div');
+    banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:999999;padding:12px;background:#991b1b;color:#fff;text-align:center;font-family:system-ui;font-size:14px;';
+    banner.textContent = `CyberArmor: File upload to ${host || 'this service'} blocked by policy "${policy || 'policy'}".`;
+    document.body.prepend(banner);
+    setTimeout(() => banner.remove(), 8000);
+  }
+
+  // Coalesce per URL so retry loops don't stack banners.
+  const _recentBanners = new Map();
+  function _shouldShowBanner(url) {
+    const now = Date.now();
+    const prev = _recentBanners.get(url);
+    if (prev && now - prev < 4000) return false;
+    _recentBanners.set(url, now);
+    return true;
+  }
+
+  window.addEventListener('message', (event) => {
+    if (event.source !== window) return;
+    const msg = event.data;
+    if (!msg || msg.type !== 'cyberarmor:upload_request') return;
+    if (typeof browser === 'undefined' || !browser.runtime) {
+      window.postMessage({ type: 'cyberarmor:upload_decision', id: msg.id, action: 'allow' }, '*');
+      return;
+    }
+    const files = Array.isArray(msg.files) ? msg.files : [];
+    const url = String(msg.url || '');
+    let parsedHost = '';
+    try { parsedHost = new URL(url).hostname; } catch { /* ignore */ }
+
+    browser.runtime.sendMessage({
+      type: 'evaluate_policy',
+      context: {
+        request: { url, hostname: parsedHost, type: 'upload', method: 'post' },
+        content: {
+          has_pii: false,
+          pii_classes: [],
+          has_file_upload: true,
+          file_count: files.length,
+          file_names: files.map((f) => String(f.name || '')),
+          file_types: [...new Set(files.map((f) => String(f.type || '')).filter(Boolean))],
+        },
+      },
+    }).then((resp) => {
+      const result = resp && resp.result;
+      const action = (result && result.matched && result.action) || 'allow';
+      const policy = (result && result.policy) || '';
+      window.postMessage({ type: 'cyberarmor:upload_decision', id: msg.id, action, policy }, '*');
+      if (action === 'block_upload' && _shouldShowBanner(url)) {
+        _showUploadBlockedBanner(url, policy);
+        // Telemetry routed through background via the regular message bus
+        // so the Incidents view still sees Safari blocks.
+        browser.runtime.sendMessage({
+          type: 'safari_upload_blocked',
+          url, policy, file_count: files.length,
+          file_names: files.map((f) => String(f.name || '')),
+        }).catch(() => {});
+      }
+    }).catch(() => {
+      // Failed eval → fail open so the page still works.
+      window.postMessage({ type: 'cyberarmor:upload_decision', id: msg.id, action: 'allow' }, '*');
+    });
+  });
 })();
