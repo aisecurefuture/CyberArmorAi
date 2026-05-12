@@ -2543,17 +2543,102 @@ def customer_scan_all(
     return _call_detection_service("POST", "/scan/all", ctx.tenant_id, json_body=payload.model_dump())
 
 
+def _telemetry_to_incident(r: "TelemetryRecord") -> Optional[Dict[str, Any]]:
+    """Project a TelemetryRecord row into the incident shape, but only for
+    events that represent an actual enforcement decision (block/redact/warn).
+
+    Endpoint agents and browser extensions emit block/redact/warn events as
+    telemetry — they never call /incidents/ingest. The Incidents view
+    needs to surface them anyway, so we merge a projection in at read time
+    just like /customer/risk/events does.
+    """
+    bucket = _classify_action(r.event_type)
+    if bucket not in ("block", "redact", "warn"):
+        return None
+    payload = _coerce_meta(r.payload) or {}
+
+    # Findings: prefer explicit list, else build one from the classes that
+    # fired so the Incidents inspector has structured rows to show.
+    findings: List[Dict[str, Any]] = []
+    raw_findings = payload.get("findings") if isinstance(payload, dict) else None
+    if isinstance(raw_findings, list):
+        for f in raw_findings:
+            if isinstance(f, dict):
+                findings.append(f)
+    if not findings:
+        for key in ("redaction_classes", "classes", "finding_types", "pii_classes"):
+            value = payload.get(key) if isinstance(payload, dict) else None
+            if isinstance(value, list):
+                for c in value:
+                    findings.append({"label": str(c), "type": str(c)})
+
+    reasons: List[str] = []
+    teaser = _telemetry_teaser(r.event_type, payload) if isinstance(payload, dict) else ""
+    if teaser:
+        reasons.append(teaser)
+    if payload.get("policy_name") or payload.get("policy_id"):
+        reasons.append(f"policy={payload.get('policy_name') or payload.get('policy_id')}")
+
+    severity = payload.get("severity") if isinstance(payload, dict) else None
+    metadata: Dict[str, Any] = {"derived_from": "telemetry", "source": r.source}
+    if severity:
+        metadata["severity"] = severity
+
+    return {
+        "tenant_id":    r.tenant_id,
+        "request_id":   r.id,
+        "event_type":   r.event_type,
+        "decision":     bucket,
+        "reasons":      reasons,
+        "findings":     findings,
+        "metadata":     metadata,
+        "received_at":  r.occurred_at.isoformat() if r.occurred_at else None,
+        "agent_id":     r.agent_id,
+        "user_id":      r.user_id,
+        "source":       r.source,
+    }
+
+
 @app.get("/customer/incidents")
 def customer_incidents(
     ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    db: Annotated[Session, Depends(get_db)],
     limit: int = 100,
 ) -> List[Dict[str, Any]]:
-    incidents = sorted(
-        _INCIDENTS.get(ctx.tenant_id, {}).values(),
-        key=lambda x: x.get("received_at", ""),
-        reverse=True,
+    """Tenant-scoped incident feed.
+
+    Merges two sources:
+      - _INCIDENTS: proxy / AI router runtime decisions ingested via
+        /incidents/ingest. May be empty for tenants that don't run the
+        proxy or runtime SDK.
+      - TelemetryRecord rows with an enforcement action class
+        (block/redact/warn), projected into the incident shape so endpoint
+        and browser-extension enforcement still surfaces here.
+    """
+    limit = max(1, min(limit, 500))
+
+    ingested = list(_INCIDENTS.get(ctx.tenant_id, {}).values())
+
+    telemetry_rows = (
+        db.query(TelemetryRecord)
+        .filter(TelemetryRecord.tenant_id == ctx.tenant_id)
+        .order_by(desc(TelemetryRecord.occurred_at), desc(TelemetryRecord.created_at))
+        .limit(limit * 2)  # over-fetch since we filter to block/redact/warn
+        .all()
     )
-    return incidents[: max(1, min(limit, 500))]
+    projected = [p for p in (_telemetry_to_incident(r) for r in telemetry_rows) if p]
+
+    def ts_key(inc: Dict[str, Any]) -> float:
+        ts = inc.get("received_at")
+        if not ts:
+            return 0.0
+        try:
+            return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
+        except (ValueError, TypeError):
+            return 0.0
+
+    merged = sorted(ingested + projected, key=ts_key, reverse=True)[:limit]
+    return merged
 
 
 @app.get("/customer/evidence/export")
