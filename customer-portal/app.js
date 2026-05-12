@@ -22,6 +22,7 @@ const navItems = [
   { id: "siem", label: "SIEM Config", hash: "#/siem" },
   { id: "identity", label: "Identity / SSO", hash: "#/identity" },
   { id: "dlp", label: "DLP & Data Class.", hash: "#/dlp" },
+  { id: "upload-discovery", label: "Upload Discovery", hash: "#/upload-discovery" },
   { id: "reports", label: "Reports", hash: "#/reports" },
   { id: "agents", label: "Agent Directory", hash: "#/agents" },
   { id: "providers", label: "AI Providers", hash: "#/providers" },
@@ -2782,6 +2783,193 @@ async function viewDlp() {
     }
   }
 
+  render();
+}
+
+async function viewUploadDiscovery() {
+  $("#pageTitle").textContent = "Upload Discovery";
+  $("#pageSubtitle").textContent = "Browser-extension–observed upload endpoints that aren't yet in the catalog — promote to extend block_upload coverage";
+  const isAdmin = session.role === "tenant_admin";
+
+  let candidates = [];
+  let promoted = [];
+  let total = 0;
+  let windowDays = 30;
+  let loadError = null;
+  let actionMessage = null; // {kind: "ok"|"err", text}
+
+  async function load() {
+    try {
+      const resp = await api(`/api/customer/upload-discovery/candidates?days=${windowDays}&limit=200`);
+      candidates = Array.isArray(resp && resp.candidates) ? resp.candidates : [];
+      promoted = Array.isArray(resp && resp.promoted_patterns) ? resp.promoted_patterns : [];
+      total = resp && resp.total || 0;
+      loadError = null;
+    } catch (err) {
+      candidates = [];
+      promoted = [];
+      total = 0;
+      loadError = err.message || "candidate fetch failed";
+    }
+  }
+
+  function fmtBytes(n) {
+    if (!n || n <= 0) return "—";
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  }
+
+  function candidateRow(c) {
+    const types = (c.file_types || []).slice(0, 3).join(", ");
+    const ts = c.last_seen ? new Date(c.last_seen).toLocaleString() : "—";
+    return `<tr class="border-t border-slate-800">
+      <td class="px-3 py-2 font-mono text-xs text-slate-200 break-all">${esc(c.suggested_pattern || "")}</td>
+      <td class="px-3 py-2 text-xs text-slate-400">${esc(c.hostname || "—")}</td>
+      <td class="px-3 py-2 text-xs tabular-nums">${esc(String(c.count || 0))}</td>
+      <td class="px-3 py-2 text-xs tabular-nums">${esc(fmtBytes(c.total_bytes || 0))}</td>
+      <td class="px-3 py-2 text-xs text-slate-300">${esc(types || "—")}</td>
+      <td class="px-3 py-2 text-xs text-slate-400">${esc(ts)}</td>
+      <td class="px-3 py-2 text-right">
+        ${isAdmin
+          ? `<button class="promotePatternBtn rounded-lg bg-cyan-500 px-2 py-1 text-[11px] font-semibold text-slate-950 hover:bg-cyan-400" data-pattern="${esc(c.suggested_pattern || "")}" type="button">Promote</button>`
+          : `<span class="text-[10px] text-slate-500">admin only</span>`}
+      </td>
+    </tr>`;
+  }
+
+  function promotedRow(p) {
+    return `<tr class="border-t border-slate-800">
+      <td class="px-3 py-2 font-mono text-xs text-slate-200 break-all">${esc(p)}</td>
+      <td class="px-3 py-2 text-right">
+        ${isAdmin
+          ? `<button class="removePatternBtn rounded-lg border border-rose-700 bg-rose-500/10 px-2 py-1 text-[11px] text-rose-200 hover:bg-rose-500/20" data-pattern="${esc(p)}" type="button">Remove</button>`
+          : ""}
+      </td>
+    </tr>`;
+  }
+
+  function render() {
+    const totalUploads = candidates.reduce((s, c) => s + (c.count || 0), 0);
+    const distinctHosts = new Set(candidates.map((c) => c.hostname)).size;
+
+    $("#app").innerHTML = `
+      <div class="space-y-4">
+        ${loadError ? `<div class="rounded-2xl border border-rose-900 bg-rose-950/30 p-3 text-sm text-rose-200">Could not load candidates: ${esc(loadError)}.</div>` : ""}
+        ${actionMessage ? `<div class="rounded-2xl border ${actionMessage.kind === "ok" ? "border-emerald-900 bg-emerald-950/20 text-emerald-200" : "border-rose-900 bg-rose-950/30 text-rose-200"} p-3 text-sm">${esc(actionMessage.text)}</div>` : ""}
+        ${card(`
+          <div class="flex flex-wrap items-center gap-4">
+            ${riskMetricCard("Candidates", candidates.length, candidates.length > 0 ? "amber" : "slate")}
+            ${riskMetricCard("Distinct hosts", distinctHosts, "slate")}
+            ${riskMetricCard("Observed uploads", totalUploads, "slate")}
+            ${riskMetricCard("Promoted patterns", promoted.length, "emerald")}
+            <div class="ml-auto flex flex-col leading-tight">
+              <span class="text-[10px] uppercase tracking-wider text-slate-500">Window</span>
+              <div class="mt-1 flex flex-wrap gap-1" id="udWindowPicker">
+                ${[1, 7, 30, 90].map((d) => `
+                  <button type="button" data-days="${d}" class="rounded-full px-2 py-1 text-[11px] ${windowDays === d ? "bg-cyan-500 text-slate-950 font-semibold" : "bg-slate-900 border border-slate-700 text-slate-300 hover:bg-slate-800"}">${d}d</button>
+                `).join("")}
+              </div>
+            </div>
+          </div>
+        `)}
+        ${card(`
+          <div class="font-semibold">Promotion candidates</div>
+          <p class="mt-1 text-xs text-slate-500">Upload URLs the browser extension observed but that aren't covered by the built-in or promoted catalog. UUIDs and long hex/digit segments are collapsed to <span class="font-mono">*</span>. Promote a pattern to enforce <span class="font-mono">block_upload</span> policies on it.</p>
+          <div class="mt-3 overflow-x-auto">
+            <table class="w-full text-left text-sm">
+              <thead class="text-[10px] uppercase tracking-wider text-slate-500">
+                <tr>
+                  <th class="px-3 py-2">Suggested pattern</th>
+                  <th class="px-3 py-2">Host</th>
+                  <th class="px-3 py-2">Count</th>
+                  <th class="px-3 py-2">Bytes</th>
+                  <th class="px-3 py-2">File types</th>
+                  <th class="px-3 py-2">Last seen</th>
+                  <th class="px-3 py-2"></th>
+                </tr>
+              </thead>
+              <tbody>
+                ${candidates.length === 0
+                  ? `<tr><td colspan="7" class="px-3 py-8 text-center text-sm text-slate-500">No unmatched uploads observed in the last ${windowDays} day${windowDays === 1 ? "" : "s"}. Trigger a file upload from any AI tool while the extension is running, or widen the window.</td></tr>`
+                  : candidates.map(candidateRow).join("")}
+              </tbody>
+            </table>
+          </div>
+        `)}
+        ${card(`
+          <div class="font-semibold">Promoted patterns</div>
+          <p class="mt-1 text-xs text-slate-500">Tenant-promoted upload patterns. Extensions pull these every minute and union them into the runtime catalog used by DNR and the fetch wrapper.</p>
+          <div class="mt-3 overflow-x-auto">
+            <table class="w-full text-left text-sm">
+              <thead class="text-[10px] uppercase tracking-wider text-slate-500"><tr>
+                <th class="px-3 py-2">Pattern</th><th class="px-3 py-2"></th>
+              </tr></thead>
+              <tbody>
+                ${promoted.length === 0
+                  ? `<tr><td colspan="2" class="px-3 py-6 text-center text-xs text-slate-500">No patterns promoted yet.</td></tr>`
+                  : promoted.map(promotedRow).join("")}
+              </tbody>
+            </table>
+          </div>
+        `)}
+      </div>
+    `;
+
+    document.querySelectorAll("#udWindowPicker button").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const d = Number(btn.dataset.days);
+        if (!d || d === windowDays) return;
+        windowDays = d;
+        await load();
+        render();
+      });
+    });
+    document.querySelectorAll(".promotePatternBtn").forEach((btn) => {
+      btn.addEventListener("click", () => promote(btn.dataset.pattern));
+    });
+    document.querySelectorAll(".removePatternBtn").forEach((btn) => {
+      btn.addEventListener("click", () => removePattern(btn.dataset.pattern));
+    });
+  }
+
+  async function promote(pattern) {
+    if (!pattern) return;
+    try {
+      const resp = await api("/api/customer/upload-discovery/promote", {
+        method: "POST",
+        body: JSON.stringify({ pattern }),
+      });
+      promoted = Array.isArray(resp && resp.patterns) ? resp.patterns : promoted;
+      actionMessage = { kind: "ok", text: `Promoted ${pattern}. Extensions pick this up on next policy sync (~60s).` };
+      await load();
+      render();
+    } catch (err) {
+      actionMessage = { kind: "err", text: err.message || "Promote failed." };
+      render();
+    }
+  }
+
+  async function removePattern(pattern) {
+    if (!pattern) return;
+    if (!confirm(`Remove pattern "${pattern}"?\nExtensions stop matching it on the next sync.`)) return;
+    try {
+      const resp = await api("/api/customer/upload-discovery/remove", {
+        method: "POST",
+        body: JSON.stringify({ pattern }),
+      });
+      promoted = Array.isArray(resp && resp.patterns) ? resp.patterns : promoted;
+      actionMessage = { kind: "ok", text: `Removed ${pattern}.` };
+      await load();
+      render();
+    } catch (err) {
+      actionMessage = { kind: "err", text: err.message || "Remove failed." };
+      render();
+    }
+  }
+
+  await load();
   render();
 }
 
@@ -5965,6 +6153,7 @@ async function route() {
     if (routeName === "siem") return await viewSiem();
     if (routeName === "identity") return await viewIdentity();
     if (routeName === "dlp") return await viewDlp();
+    if (routeName === "upload-discovery") return await viewUploadDiscovery();
     if (routeName === "reports") return await viewReports();
     if (routeName === "agents") return await viewAgents();
     if (routeName === "telemetry") return await viewTelemetry();

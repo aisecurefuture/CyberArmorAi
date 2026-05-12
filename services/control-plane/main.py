@@ -5,6 +5,7 @@ import html as htmlmod
 import hashlib
 import hmac
 import io
+import re
 import secrets
 import smtplib
 import time
@@ -3338,6 +3339,281 @@ def _build_policy_effectiveness_report(
          "columns": ["Policy", "Action"],
          "rows": unused},
     ]
+
+
+# ── Upload endpoint discovery ─────────────────────────────────────────
+#
+# Browser extensions emit "upload_endpoint_discovered" telemetry when a
+# multipart upload passes through to an AI-service host that isn't in the
+# built-in pattern catalog. This endpoint aggregates those events into
+# promotion candidates: same path-pattern grouped together, ranked by
+# observation count. Promoted patterns land in the tenant's
+# upload-discovery portal config and are returned by /customer/upload-
+# patterns/extras so extensions can merge them into their runtime
+# catalog at policy sync time.
+
+# Built-in catalog. Mirrors AI_UPLOAD_PATTERNS in
+# extensions/chromium-shared/background.js — the server uses this to
+# de-dup candidates the extensions already know about, so a tenant only
+# sees genuinely-new endpoints.
+_BUILTIN_UPLOAD_PATTERNS = [
+    "chatgpt.com/backend-api/files",
+    "chat.openai.com/backend-api/files",
+    "claude.ai/api/*/upload_file",
+    "claude.ai/api/organizations/",
+    "claude.ai/api/convert_document",
+    "gemini.google.com/_/upload",
+    "gemini.google.com/_/uploads",
+    "copilot.microsoft.com/c/api/files",
+    "perplexity.ai/rest/uploads",
+    "/upload/files",
+    "/api/files/upload",
+]
+
+_UUID_RE = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.IGNORECASE)
+_HEX24_RE = re.compile(r"\b[0-9a-f]{24,}\b", re.IGNORECASE)
+_LONG_DIGITS_RE = re.compile(r"\b\d{6,}\b")
+
+
+def _collapse_path_pattern(path: str) -> str:
+    """Collapse high-entropy segments to ``*`` so distinct upload URLs
+    aggregate into a single promotion candidate.
+
+    Examples:
+      /api/conversations/01934abc-…-cdef/files  -> /api/conversations/*/files
+      /uploads/4f9c4e44af86bfa0/contents        -> /uploads/*/contents
+      /api/files/123456789                      -> /api/files/*
+    """
+    if not path:
+        return path
+    out = _UUID_RE.sub("*", path)
+    out = _HEX24_RE.sub("*", out)
+    out = _LONG_DIGITS_RE.sub("*", out)
+    return out
+
+
+def _matches_pattern(hostpath: str, pattern: str) -> bool:
+    """Ordered-segment match — same algorithm the extension uses for its
+    AI_UPLOAD_PATTERNS catalog. ``*`` is a wildcard between segments."""
+    if not pattern:
+        return False
+    segments = pattern.split("*")
+    cursor = 0
+    for seg in segments:
+        if not seg:
+            continue
+        idx = hostpath.find(seg, cursor)
+        if idx < 0:
+            return False
+        cursor = idx + len(seg)
+    return True
+
+
+def _is_in_any_catalog(hostpath: str, extras: List[str]) -> bool:
+    for p in _BUILTIN_UPLOAD_PATTERNS:
+        if _matches_pattern(hostpath, p):
+            return True
+    for p in extras:
+        if _matches_pattern(hostpath, p):
+            return True
+    return False
+
+
+def _load_tenant_extra_patterns(db: Session, tenant_id: str) -> List[str]:
+    """Read promoted upload patterns from the tenant's portal config.
+    Returns a list; tolerant of legacy shapes that may have stored the
+    patterns as a dict.
+    """
+    record = (
+        db.query(TenantPortalConfig)
+        .filter(
+            TenantPortalConfig.tenant_id == tenant_id,
+            TenantPortalConfig.section == "upload-discovery",
+        )
+        .first()
+    )
+    if not record:
+        return []
+    cfg = _coerce_meta(record.config) if hasattr(record, "config") else None
+    if not isinstance(cfg, dict):
+        return []
+    raw = cfg.get("patterns")
+    if not isinstance(raw, list):
+        return []
+    out: List[str] = []
+    for entry in raw:
+        if isinstance(entry, str) and entry.strip():
+            out.append(entry.strip())
+    return out
+
+
+def _save_tenant_extra_patterns(db: Session, tenant_id: str, patterns: List[str], updated_by: str) -> None:
+    record = (
+        db.query(TenantPortalConfig)
+        .filter(
+            TenantPortalConfig.tenant_id == tenant_id,
+            TenantPortalConfig.section == "upload-discovery",
+        )
+        .first()
+    )
+    config = {"patterns": patterns}
+    if record:
+        record.config = _encode_meta_for_db(config)
+        record.updated_by = updated_by
+        record.updated_at = datetime.now(timezone.utc)
+    else:
+        record = TenantPortalConfig(
+            tenant_id=tenant_id,
+            section="upload-discovery",
+            config=_encode_meta_for_db(config),
+            updated_by=updated_by,
+            updated_at=datetime.now(timezone.utc),
+        )
+        db.add(record)
+    db.commit()
+
+
+@app.get("/customer/upload-discovery/candidates")
+def customer_upload_discovery_candidates(
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    db: Annotated[Session, Depends(get_db)],
+    days: int = 30,
+    limit: int = 100,
+) -> Dict[str, Any]:
+    """Return aggregated upload-endpoint candidates the extensions have
+    observed but that aren't yet covered by the catalog (built-in +
+    tenant extras).
+
+    Grouping key: (hostname, collapsed_path). The collapsed path replaces
+    UUIDs / long hex / long digit runs with ``*`` so per-conversation
+    paths roll up into a single pattern an admin can promote in one
+    click.
+    """
+    days = max(1, min(days, 90))
+    limit = max(1, min(limit, 500))
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+
+    rows = (
+        db.query(TelemetryRecord)
+        .filter(TelemetryRecord.tenant_id == ctx.tenant_id)
+        .filter(TelemetryRecord.event_type == "upload_endpoint_discovered")
+        .filter(TelemetryRecord.occurred_at >= since)
+        .order_by(desc(TelemetryRecord.occurred_at))
+        .limit(2000)  # cap raw set; we aggregate down anyway
+        .all()
+    )
+
+    extras = _load_tenant_extra_patterns(db, ctx.tenant_id)
+
+    groups: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for r in rows:
+        payload = _coerce_meta(r.payload) or {}
+        host = str(payload.get("hostname") or "")
+        path = str(payload.get("path") or "")
+        if not host or not path:
+            continue
+        collapsed = _collapse_path_pattern(path)
+        suggested = f"{host}{collapsed}"
+        # Already covered by catalog (built-in or tenant extra)? Skip — the
+        # discovery surface should only show NEW endpoints.
+        if _is_in_any_catalog(host + path, extras):
+            continue
+        key = (host, collapsed)
+        g = groups.get(key)
+        if not g:
+            g = {
+                "hostname": host,
+                "path_pattern": collapsed,
+                "suggested_pattern": suggested,
+                "count": 0,
+                "total_bytes": 0,
+                "first_seen": r.occurred_at.isoformat() if r.occurred_at else None,
+                "last_seen": r.occurred_at.isoformat() if r.occurred_at else None,
+                "file_types": set(),
+                "sample_urls": [],
+            }
+            groups[key] = g
+        g["count"] += 1
+        g["total_bytes"] += int(payload.get("total_bytes") or 0)
+        for ft in (payload.get("file_types") or []):
+            g["file_types"].add(str(ft))
+        if len(g["sample_urls"]) < 3:
+            sample = str(payload.get("url") or "")
+            if sample and sample not in g["sample_urls"]:
+                g["sample_urls"].append(sample)
+        ts = r.occurred_at.isoformat() if r.occurred_at else None
+        if ts:
+            if not g["last_seen"] or ts > g["last_seen"]:
+                g["last_seen"] = ts
+            if not g["first_seen"] or ts < g["first_seen"]:
+                g["first_seen"] = ts
+
+    candidates = []
+    for g in groups.values():
+        g["file_types"] = sorted(g["file_types"])
+        candidates.append(g)
+    candidates.sort(key=lambda c: (c["count"], c["last_seen"] or ""), reverse=True)
+    return {
+        "candidates": candidates[:limit],
+        "total": len(candidates),
+        "window_days": days,
+        "promoted_patterns": extras,
+    }
+
+
+class UploadPatternRequest(BaseModel):
+    pattern: str
+
+
+@app.post("/customer/upload-discovery/promote")
+def customer_upload_discovery_promote(
+    payload: UploadPatternRequest,
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> Dict[str, Any]:
+    """Add a pattern to the tenant's promoted upload-discovery list.
+    Extensions pull these via /customer/upload-patterns/extras and merge
+    them into their runtime catalog at policy-sync time.
+    """
+    pat = payload.pattern.strip()
+    if not pat:
+        raise HTTPException(status_code=400, detail="empty pattern")
+    if len(pat) > 200:
+        raise HTTPException(status_code=400, detail="pattern too long")
+    extras = _load_tenant_extra_patterns(db, ctx.tenant_id)
+    if pat in extras:
+        return {"patterns": extras, "added": False}
+    extras.append(pat)
+    _save_tenant_extra_patterns(db, ctx.tenant_id, extras, updated_by=ctx.email)
+    return {"patterns": extras, "added": True}
+
+
+@app.post("/customer/upload-discovery/remove")
+def customer_upload_discovery_remove(
+    payload: UploadPatternRequest,
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> Dict[str, Any]:
+    pat = payload.pattern.strip()
+    extras = _load_tenant_extra_patterns(db, ctx.tenant_id)
+    if pat not in extras:
+        return {"patterns": extras, "removed": False}
+    extras = [p for p in extras if p != pat]
+    _save_tenant_extra_patterns(db, ctx.tenant_id, extras, updated_by=ctx.email)
+    return {"patterns": extras, "removed": True}
+
+
+@app.get("/customer/upload-patterns/extras")
+def customer_upload_patterns_extras(
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    db: Annotated[Session, Depends(get_db)],
+) -> Dict[str, Any]:
+    """Tenant-promoted upload patterns. Extension pulls this at policy
+    sync time and unions with its built-in AI_UPLOAD_PATTERNS for the
+    runtime catalog used by both DNR rule synthesis and the MAIN-world
+    fetch wrapper's catalog check.
+    """
+    return {"patterns": _load_tenant_extra_patterns(db, ctx.tenant_id)}
 
 
 @app.get("/customer/reports/catalog")

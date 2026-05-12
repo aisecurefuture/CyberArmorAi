@@ -515,6 +515,8 @@
       // Default = allow if no policy matched or evaluator unavailable.
       const action = (result && result.matched && result.action) || "allow";
       const policy = (result && result.policy) || "";
+      const inCatalog = !!(resp && resp.inCatalog);
+      const isAIService = !!(resp && resp.isAIService);
       window.postMessage({
         type: "cyberarmor:upload_decision",
         id: msg.id,
@@ -532,6 +534,31 @@
         const namesPreview = files.slice(0, 3).map((f) => f.name).join(", ");
         const extra = files.length > 3 ? ` and ${files.length - 3} more` : "";
         showWarningBanner(`Upload blocked by policy "${policy}". Files: ${namesPreview}${extra}.`);
+      } else if (!inCatalog && isAIService) {
+        // Catalog auto-discovery: an upload passed through to an AI-service
+        // host we didn't have a pattern for. Emit telemetry so the portal
+        // can surface it as a promotion candidate. Throttle per (host,path)
+        // for 1h so a heavy session doesn't flood the server.
+        const pathKey = (() => { try { return new URL(url).hostname + new URL(url).pathname; } catch { return url; } })();
+        const now = Date.now();
+        window.__cyberarmor_disc_seen = window.__cyberarmor_disc_seen || new Map();
+        const prev = window.__cyberarmor_disc_seen.get(pathKey);
+        if (!prev || now - prev > 60 * 60 * 1000) {
+          window.__cyberarmor_disc_seen.set(pathKey, now);
+          const totalBytes = files.reduce((acc, f) => acc + (Number(f.size) || 0), 0);
+          sendTelemetry("upload_endpoint_discovered", {
+            url,
+            hostname: (() => { try { return new URL(url).hostname; } catch { return ""; } })(),
+            path: (() => { try { return new URL(url).pathname; } catch { return ""; } })(),
+            file_count: files.length,
+            file_types: [...new Set(files.map((f) => String(f.type || "")).filter(Boolean))],
+            total_bytes: totalBytes,
+            // Hint for the admin: pattern this would compile to if promoted.
+            // Server may apply additional path collapse (e.g. UUID → *), so
+            // treat this as a suggestion only.
+            suggested_pattern: (() => { try { const u = new URL(url); return u.hostname + u.pathname; } catch { return ""; } })(),
+          });
+        }
       }
     });
   });

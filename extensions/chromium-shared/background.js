@@ -181,10 +181,11 @@ const configReady = (async () => {
   await loadConfig();
   await _ensureExtIdentity();
   const stored = await new Promise((resolve) =>
-    chrome.storage.local.get(["cachedPolicies", "cyberarmorLastAuthStatus"], resolve)
+    chrome.storage.local.get(["cachedPolicies", "cyberarmorLastAuthStatus", "tenantUploadPatterns"], resolve)
   );
   if (stored.cachedPolicies) cachedPolicies = stored.cachedPolicies;
   if (stored.cyberarmorLastAuthStatus) lastAuthStatus = stored.cyberarmorLastAuthStatus;
+  if (Array.isArray(stored.tenantUploadPatterns)) tenantUploadPatterns = stored.tenantUploadPatterns;
   // Re-emit DNR rules from cached policies so a fresh worker boot (or one with
   // no network) still enforces blocks at the network layer.
   if (cachedPolicies && cachedPolicies.length) {
@@ -404,6 +405,59 @@ const AI_UPLOAD_PATTERNS = [
   { urlFilter: "/api/files/upload",                   label: "generic_api_files_upload" },
 ];
 
+// Tenant-promoted upload patterns from the discovery flow. Synced via
+// /customer/upload-patterns/extras at the same cadence as policy sync.
+// Persisted across worker respawns in chrome.storage.local so we don't
+// drop the runtime catalog the moment the SW idles. Stored as plain
+// strings (no DNR ||/* syntax assumed) — converted to DNR urlFilter on
+// the fly inside updateUploadDNR.
+let tenantUploadPatterns = [];
+
+async function syncTenantUploadPatterns() {
+  if (!cachedConfig.controlPlaneUrl || !cachedConfig.apiKey) return [];
+  const url = `${cachedConfig.controlPlaneUrl.replace(/\/$/, "")}/upload-patterns/extras`.replace("/upload-patterns/extras", "/customer/upload-patterns/extras");
+  try {
+    const auth = await CyberArmorPQCAuth.buildHeaders({
+      baseUrl: cachedConfig.controlPlaneUrl,
+      apiKey: cachedConfig.apiKey,
+      pqcEnabled: cachedConfig.pqcAuthEnabled !== false,
+      strict: cachedConfig.pqcAuthStrict === true,
+      headers: { "Content-Type": "application/json", "x-tenant-id": cachedConfig.tenantId || "" },
+    });
+    const resp = await fetch(`${cachedConfig.controlPlaneUrl.replace(/\/$/, "")}/customer/upload-patterns/extras`, { headers: auth.headers });
+    if (!resp.ok) return tenantUploadPatterns;
+    const data = await resp.json().catch(() => ({}));
+    const next = Array.isArray(data.patterns) ? data.patterns.filter((p) => typeof p === "string" && p.length > 0) : [];
+    tenantUploadPatterns = next;
+    await chrome.storage.local.set({ tenantUploadPatterns: next });
+    return next;
+  } catch {
+    return tenantUploadPatterns;
+  }
+}
+
+// Combine built-in patterns + tenant extras into the lookup list used
+// by urlMatchesUploadPattern and updateUploadDNR. Extras are stored as
+// plain "host/path" strings — wrap with the DNR ||host anchor so they
+// behave like curated entries when compiled to rules.
+function effectiveUploadPatterns() {
+  const extras = (tenantUploadPatterns || []).map((p) => {
+    const trimmed = String(p || "").trim();
+    if (!trimmed) return null;
+    // Already in DNR syntax? leave it alone.
+    if (trimmed.startsWith("||") || trimmed.startsWith("|")) {
+      return { urlFilter: trimmed, label: "tenant_extra" };
+    }
+    // Path-only (no host) → keep as bare substring so it matches anywhere.
+    if (trimmed.startsWith("/")) {
+      return { urlFilter: trimmed, label: "tenant_extra_path" };
+    }
+    // Host-prefixed plain string → anchor with || so it matches the host.
+    return { urlFilter: "||" + trimmed, label: "tenant_extra_host" };
+  }).filter(Boolean);
+  return AI_UPLOAD_PATTERNS.concat(extras);
+}
+
 // Translate a block_upload policy's URL conditions into DNR initiator
 // scope. We support a single rule (or AND of one rule) on request.url /
 // request.hostname / request.host — the operators "contains" /
@@ -470,7 +524,7 @@ async function updateUploadDNR(policies) {
 
   for (const policy of blockUploadPolicies) {
     const { include, exclude } = extractUploadInitiatorScope(policy.conditions);
-    for (const pat of AI_UPLOAD_PATTERNS) {
+    for (const pat of effectiveUploadPatterns()) {
       if (nextId > UPLOAD_DNR_ID_MAX) break;
       const cond = {
         urlFilter: pat.urlFilter,
@@ -511,7 +565,7 @@ function urlMatchesUploadPattern(url) {
   let parsed;
   try { parsed = new URL(url); } catch { return false; }
   const hostPath = parsed.hostname + parsed.pathname;
-  for (const pat of AI_UPLOAD_PATTERNS) {
+  for (const pat of effectiveUploadPatterns()) {
     const raw = String(pat.urlFilter || "");
     // DNR ||host anchors: collapse to a hostPath substring check. Wildcards
     // map to "any chars" — we don't have a regex engine here, so split on *
@@ -608,6 +662,9 @@ async function syncPolicies() {
       cachedPolicies = await resp.json();
       await chrome.storage.local.set({ cachedPolicies, lastPolicySync: Date.now() });
       console.log(`[CyberArmor] Synced ${cachedPolicies.length} policies`);
+      // Pull tenant-promoted upload patterns BEFORE compiling DNR so the
+      // freshly-promoted rules land in the same rules-update call.
+      try { await syncTenantUploadPatterns(); } catch {}
       await updatePolicyDNR(cachedPolicies);
       await updateUploadDNR(cachedPolicies);
       return { ok: true, count: cachedPolicies.length };
@@ -949,7 +1006,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.type === "evaluate_policy") {
     const result = evaluatePolicy(msg.context);
-    sendResponse({ result });
+    // Annotate upload-type evaluations with catalog + AI-service hints so
+    // the bridge can decide whether to emit a discovery candidate. Doesn't
+    // change the policy decision itself, just enriches the response.
+    let url = "";
+    try {
+      url = (msg.context && msg.context.request && msg.context.request.url) || "";
+    } catch { /* ignore */ }
+    const inCatalog = url ? urlMatchesUploadPattern(url) : false;
+    const isAIService = url ? isAIServiceUrl(url) : false;
+    sendResponse({ result, inCatalog, isAIService });
     return false;
   }
 
