@@ -2730,6 +2730,72 @@ def _telemetry_to_risk_event(r: "TelemetryRecord") -> Dict[str, Any]:
     }
 
 
+def _call_compliance(
+    method: str,
+    path: str,
+    tenant_id: str,
+    json_body: Optional[Dict[str, Any]] = None,
+    params: Optional[Dict[str, Any]] = None,
+) -> Any:
+    """Proxy to the compliance service for tenant-scoped operations."""
+    url = os.getenv("COMPLIANCE_URL", "http://compliance:8004")
+    key = os.getenv("COMPLIANCE_API_SECRET", DEFAULT_API_KEY)
+    try:
+        resp = httpx.request(
+            method.upper(),
+            f"{url.rstrip('/')}{path}",
+            headers={**build_auth_headers(url, key), "x-tenant-id": tenant_id},
+            json=json_body,
+            params=params,
+            timeout=30.0,
+        )
+    except Exception as exc:
+        logger.warning("customer_compliance_proxy_error tenant=%s path=%s err=%s", tenant_id, path, exc)
+        raise HTTPException(status_code=502, detail="compliance service unavailable")
+    if resp.status_code >= 300:
+        logger.warning(
+            "customer_compliance_proxy_upstream_error tenant=%s path=%s status=%s body=%s",
+            tenant_id, path, resp.status_code, resp.text[:200],
+        )
+        raise HTTPException(status_code=502, detail=f"compliance service returned {resp.status_code}")
+    try:
+        return resp.json()
+    except Exception as exc:
+        logger.warning("customer_compliance_proxy_decode_error tenant=%s err=%s", tenant_id, exc)
+        raise HTTPException(status_code=502, detail="compliance service returned invalid JSON")
+
+
+@app.get("/customer/compliance/frameworks")
+def customer_compliance_frameworks(
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+) -> Any:
+    """List supported compliance frameworks. Same shape as the compliance
+    service's /frameworks but proxied so the customer portal can call it
+    without a separate API key."""
+    return _call_compliance("GET", "/frameworks", ctx.tenant_id)
+
+
+@app.post("/customer/compliance/assess")
+def customer_compliance_assess(
+    payload: Dict[str, Any],
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+) -> Any:
+    """Tenant admins only — run a compliance assessment scoped to the
+    session tenant. Body forwarded unchanged to the compliance service;
+    the framework id is read from ``payload["framework"]`` and an
+    optional ``evidence`` dict can be passed for evidence merge."""
+    body = dict(payload or {})
+    return _call_compliance("POST", f"/assess/{ctx.tenant_id}", ctx.tenant_id, json_body=body)
+
+
+@app.get("/customer/compliance/report")
+def customer_compliance_report(
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+) -> Any:
+    """Fetch the most recent assessment report for the session tenant."""
+    return _call_compliance("GET", f"/assess/{ctx.tenant_id}/report", ctx.tenant_id)
+
+
 @app.get("/customer/risk/events")
 def customer_risk_events(
     ctx: Annotated[CustomerContext, Depends(get_customer_context)],

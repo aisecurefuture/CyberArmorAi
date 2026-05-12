@@ -2087,12 +2087,232 @@ async function viewShadowAi() {
   ], { approved_tools: [], alert_on_unapproved: true, remediation: "create_incident" });
 }
 
+// --- Compliance helpers ---
+
+// Categorisation matches the admin dashboard so visual parity holds. Falls
+// back to "Framework" when the upstream framework id isn't recognised.
+const COMPLIANCE_CATEGORY = {
+  "nist-csf":      "Federal",
+  "nist-800-53":   "Federal",
+  "nist-ai-rmf":   "AI",
+  "cmmc-l3":       "Defense",
+  "pci-dss":       "Financial",
+  "soc2":          "Trust",
+  "gdpr":          "Privacy",
+  "ccpa":          "Privacy",
+  "iso27001":      "International",
+  "cis-controls":  "Best Practice",
+  "csa-ccm":       "Cloud",
+  "owasp":         "AppSec",
+  "sans-top25":    "Vulnerability",
+  "nydfs":         "Financial",
+};
+
+function compliancePctBar(pct, tone) {
+  const t = tone || (pct >= 80 ? "emerald" : pct >= 50 ? "amber" : "rose");
+  const fill = t === "emerald" ? "bg-emerald-500" : t === "amber" ? "bg-amber-400" : t === "rose" ? "bg-rose-500" : "bg-indigo-500";
+  return `<div class="flex items-center gap-2">
+    <div class="flex-1 h-2 rounded-full bg-slate-800"><div class="${fill} h-2 rounded-full" style="width:${pct}%"></div></div>
+    <span class="text-xs font-mono w-10 text-right tabular-nums text-slate-300">${pct.toFixed(0)}%</span>
+  </div>`;
+}
+
 async function viewCompliance() {
-  await tenantScopedConfigPage("compliance", "Compliance", "Tenant framework assessments and controls", [
-    { title: "SOC 2", body: "Map tenant controls, evidence, and audit events to trust-service criteria.", badge: "mapped", tone: "green" },
-    { title: "NIST CSF", body: "Track identify, protect, detect, respond, and recover posture for this tenant.", badge: "framework ready", tone: "cyan" },
-    { title: "GDPR", body: "Review tenant data handling, DLP activity, and AI usage auditability.", badge: "evidence backed", tone: "slate" },
-  ], { frameworks: ["SOC 2", "NIST CSF", "GDPR"], evidence_retention_days: 365 });
+  $("#pageTitle").textContent = "Compliance";
+  $("#pageSubtitle").textContent = "Tenant-scoped framework assessments — run on demand, evidence merged from telemetry and audit";
+  const isAdmin = session.role === "tenant_admin";
+
+  // Tracks the latest assessment per framework id in this view's lifecycle.
+  // Each entry is the result dict returned by the compliance service:
+  // { framework_id, framework_name, controls_assessed, controls_passed,
+  //   pass_rate, results: [...controls...], ... }.
+  const lastAssessment = {};
+  let frameworks = [];
+  let loadError = null;
+
+  try {
+    const resp = await api("/api/customer/compliance/frameworks");
+    frameworks = Array.isArray(resp) ? resp : (resp && resp.frameworks) || [];
+  } catch (err) {
+    loadError = err.message || "compliance fetch failed";
+  }
+
+  // Backfill catalog from COMPLIANCE_CATEGORY if the upstream returned an
+  // empty list (e.g. service degraded) so the demo still renders the grid.
+  if (frameworks.length === 0 && !loadError) {
+    frameworks = Object.keys(COMPLIANCE_CATEGORY).map((id) => ({
+      id, name: id.toUpperCase(), category: COMPLIANCE_CATEGORY[id],
+    }));
+  }
+
+  function frameworkCard(f) {
+    const id = f.id;
+    const name = f.name || id;
+    const category = f.category || COMPLIANCE_CATEGORY[id] || "Framework";
+    const result = lastAssessment[id];
+    const pct = result ? (result.pass_rate != null ? result.pass_rate * 100 : (result.controls_passed / Math.max(result.controls_assessed, 1)) * 100) : null;
+    const summary = result
+      ? `${result.controls_passed || 0}/${result.controls_assessed || 0} controls passed`
+      : "Not assessed yet";
+    return `
+      <div class="rounded-2xl border border-slate-800 bg-slate-950 p-4">
+        <div class="flex items-baseline justify-between gap-2">
+          <div class="font-semibold text-sm">${esc(name)}</div>
+          ${badge(category, "cyan")}
+        </div>
+        <div class="mt-3">${pct == null
+          ? `<div class="flex items-center gap-2"><div class="flex-1 h-2 rounded-full bg-slate-800"></div><span class="text-xs font-mono w-10 text-right text-slate-500">—%</span></div>`
+          : compliancePctBar(pct)}</div>
+        <div class="mt-2 text-[11px] text-slate-500">${esc(summary)}</div>
+        <div class="mt-3 flex flex-wrap gap-2">
+          ${isAdmin
+            ? `<button class="runAssessmentBtn rounded-xl bg-cyan-500 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-cyan-400" data-fw-id="${esc(id)}" data-fw-name="${esc(name)}" type="button">Run assessment</button>`
+            : ""}
+          ${result
+            ? `<button class="viewAssessmentBtn rounded-xl border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-800" data-fw-id="${esc(id)}" data-fw-name="${esc(name)}" type="button">View details</button>`
+            : ""}
+        </div>
+      </div>`;
+  }
+
+  function render() {
+    const totalAssessed = Object.keys(lastAssessment).length;
+    const avgPct = totalAssessed
+      ? Object.values(lastAssessment).reduce((s, r) => s + (r.pass_rate != null ? r.pass_rate * 100 : (r.controls_passed / Math.max(r.controls_assessed, 1)) * 100), 0) / totalAssessed
+      : 0;
+
+    $("#app").innerHTML = `
+      <div class="space-y-4">
+        ${loadError ? `<div class="rounded-2xl border border-rose-900 bg-rose-950/30 p-3 text-sm text-rose-200">Could not load frameworks: ${esc(loadError)}.</div>` : ""}
+        ${card(`
+          <div class="flex flex-wrap items-center gap-4">
+            <div class="flex flex-col leading-tight">
+              <span class="text-[10px] uppercase tracking-wider text-slate-500">Frameworks</span>
+              <span class="text-2xl font-semibold tabular-nums">${frameworks.length}</span>
+            </div>
+            <div class="mx-2 h-10 w-px bg-slate-800"></div>
+            <div class="flex flex-col leading-tight">
+              <span class="text-[10px] uppercase tracking-wider text-slate-500">Assessed this session</span>
+              <span class="text-2xl font-semibold tabular-nums">${totalAssessed}</span>
+            </div>
+            <div class="mx-2 h-10 w-px bg-slate-800"></div>
+            <div class="min-w-48 flex-1">
+              <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-1">Average pass rate</div>
+              ${totalAssessed > 0 ? compliancePctBar(avgPct) : `<div class="text-xs text-slate-500">No assessments yet</div>`}
+            </div>
+            ${isAdmin ? `<button id="assessAllBtn" type="button" class="rounded-2xl bg-cyan-500 px-3 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400">Run all</button>` : `<span class="text-xs text-slate-500">View only — admins can run assessments.</span>`}
+          </div>
+        `)}
+        <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">${frameworks.map(frameworkCard).join("")}</div>
+        <div id="compliancePanel"></div>
+      </div>
+    `;
+
+    document.querySelectorAll(".runAssessmentBtn").forEach((btn) => {
+      btn.addEventListener("click", () => runAssessment(btn.dataset.fwId, btn.dataset.fwName));
+    });
+    document.querySelectorAll(".viewAssessmentBtn").forEach((btn) => {
+      btn.addEventListener("click", () => showAssessmentDetails(btn.dataset.fwId, btn.dataset.fwName));
+    });
+    const allBtn = $("#assessAllBtn");
+    if (allBtn) allBtn.addEventListener("click", runAll);
+  }
+
+  async function runAssessment(fwId, fwName) {
+    const panel = $("#compliancePanel");
+    panel.innerHTML = card(`<div class="text-sm text-slate-400">Running ${esc(fwName)} assessment…</div>`);
+    try {
+      const result = await api("/api/customer/compliance/assess", {
+        method: "POST",
+        body: JSON.stringify({ framework: fwId }),
+      });
+      lastAssessment[fwId] = result;
+      panel.innerHTML = "";
+      render();
+      showAssessmentDetails(fwId, fwName);
+    } catch (err) {
+      panel.innerHTML = card(`<div class="text-sm text-rose-300">${esc(err.message)}</div>`);
+    }
+  }
+
+  async function runAll() {
+    const panel = $("#compliancePanel");
+    panel.innerHTML = card(`<div class="text-sm text-slate-400">Running all assessments…</div>`);
+    let succeeded = 0, failed = 0;
+    for (const f of frameworks) {
+      try {
+        const result = await api("/api/customer/compliance/assess", {
+          method: "POST",
+          body: JSON.stringify({ framework: f.id }),
+        });
+        lastAssessment[f.id] = result;
+        succeeded++;
+      } catch {
+        failed++;
+      }
+    }
+    panel.innerHTML = card(`
+      <div class="text-sm">Assessed ${succeeded}/${frameworks.length} frameworks.
+        ${failed > 0 ? `<span class="text-rose-300">${failed} failed.</span>` : ""}</div>
+    `);
+    render();
+  }
+
+  function showAssessmentDetails(fwId, fwName) {
+    const result = lastAssessment[fwId];
+    if (!result) return;
+    const controls = Array.isArray(result.results) ? result.results : [];
+    const passed = controls.filter((c) => c.passed === true);
+    const failed = controls.filter((c) => c.passed === false);
+    const pct = result.pass_rate != null ? result.pass_rate * 100 : (result.controls_passed / Math.max(result.controls_assessed, 1)) * 100;
+
+    const controlRow = (c) => {
+      const sev = String(c.severity || "").toLowerCase();
+      const sevBadge = sev ? severityBadgeHtml(sev) : "";
+      const status = c.passed === true
+        ? `<span class="rounded-full bg-emerald-500/20 px-2 py-0.5 text-[10px] font-semibold uppercase text-emerald-200">pass</span>`
+        : c.passed === false
+        ? `<span class="rounded-full bg-rose-500/20 px-2 py-0.5 text-[10px] font-semibold uppercase text-rose-200">fail</span>`
+        : `<span class="rounded-full bg-slate-700/40 px-2 py-0.5 text-[10px] uppercase text-slate-300">n/a</span>`;
+      const reason = c.reason || c.detail || "";
+      return `<tr class="border-t border-slate-800">
+        <td class="px-3 py-2 font-mono text-xs">${esc(c.id || c.control_id || "")}</td>
+        <td class="px-3 py-2">${esc(c.name || c.title || "")}</td>
+        <td class="px-3 py-2">${status}</td>
+        <td class="px-3 py-2">${sevBadge}</td>
+        <td class="px-3 py-2 text-xs text-slate-400">${esc(reason)}</td>
+      </tr>`;
+    };
+
+    const panel = $("#compliancePanel");
+    panel.innerHTML = card(`
+      <div class="flex items-baseline justify-between gap-2">
+        <div>
+          <div class="text-lg font-semibold">${esc(fwName)} — Assessment results</div>
+          <div class="mt-1 text-xs text-slate-500">${esc(result.timestamp || "")}</div>
+        </div>
+        <button id="closeAssessment" type="button" class="text-xs text-slate-400 hover:text-slate-200">Close</button>
+      </div>
+      <div class="mt-3 grid grid-cols-2 gap-2 md:grid-cols-4">
+        ${riskMetricCard("Pass rate", `${pct.toFixed(0)}%`, pct >= 80 ? "emerald" : pct >= 50 ? "amber" : "rose")}
+        ${riskMetricCard("Total controls", controls.length, "slate")}
+        ${riskMetricCard("Passing", passed.length, "emerald")}
+        ${riskMetricCard("Failing", failed.length, failed.length > 0 ? "rose" : "emerald")}
+      </div>
+      <div class="mt-4 overflow-x-auto">
+        <table class="w-full text-left text-sm">
+          <thead class="text-[10px] uppercase tracking-wider text-slate-500">
+            <tr><th class="px-3 py-2">Control</th><th class="px-3 py-2">Name</th><th class="px-3 py-2">Status</th><th class="px-3 py-2">Severity</th><th class="px-3 py-2">Reason</th></tr>
+          </thead>
+          <tbody>${controls.length === 0 ? `<tr><td colspan="5" class="px-3 py-6 text-center text-sm text-slate-500">No control results returned</td></tr>` : controls.map(controlRow).join("")}</tbody>
+        </table>
+      </div>
+    `);
+    $("#closeAssessment").addEventListener("click", () => { panel.innerHTML = ""; });
+    panel.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  render();
 }
 
 async function viewSiem() {
