@@ -2241,15 +2241,21 @@ def customer_telemetry(
     ctx: Annotated[CustomerContext, Depends(get_customer_context)],
     db: Annotated[Session, Depends(get_db)],
     limit: int = 200,
+    before: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
+    """List telemetry rows newest-first. ``before`` (ISO-8601 timestamp)
+    is a cursor against ``occurred_at`` — pass the oldest occurred_at you
+    have seen to get the next page strictly older than it.
+    """
     limit = max(1, min(limit, 1000))
-    rows = (
-        db.query(TelemetryRecord)
-        .filter(TelemetryRecord.tenant_id == ctx.tenant_id)
-        .order_by(desc(TelemetryRecord.occurred_at), desc(TelemetryRecord.created_at))
-        .limit(limit)
-        .all()
-    )
+    q = db.query(TelemetryRecord).filter(TelemetryRecord.tenant_id == ctx.tenant_id)
+    if before:
+        try:
+            before_dt = datetime.fromisoformat(before.replace("Z", "+00:00"))
+            q = q.filter(TelemetryRecord.occurred_at < before_dt)
+        except ValueError:
+            pass
+    rows = q.order_by(desc(TelemetryRecord.occurred_at), desc(TelemetryRecord.created_at)).limit(limit).all()
     return [
         {
             "id": r.id,
@@ -2272,15 +2278,23 @@ def customer_audit(
     ctx: Annotated[CustomerContext, Depends(get_customer_context)],
     db: Annotated[Session, Depends(get_db)],
     limit: int = 100,
+    before: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
+    """List audit rows newest-first. ``before`` (ISO-8601 timestamp) is a
+    cursor for "Load more" pagination — pass the oldest ``created_at``
+    you've already seen and you get the next page strictly older than it.
+    Cursor-based rather than offset-based so a fresh write between pages
+    can't cause duplicates or skipped rows.
+    """
     limit = max(1, min(limit, 500))
-    rows = (
-        db.query(AuditLog)
-        .filter(AuditLog.tenant_id == ctx.tenant_id)
-        .order_by(AuditLog.created_at.desc())
-        .limit(limit)
-        .all()
-    )
+    q = db.query(AuditLog).filter(AuditLog.tenant_id == ctx.tenant_id)
+    if before:
+        try:
+            before_dt = datetime.fromisoformat(before.replace("Z", "+00:00"))
+            q = q.filter(AuditLog.created_at < before_dt)
+        except ValueError:
+            pass  # bad cursor → ignore and return the first page
+    rows = q.order_by(AuditLog.created_at.desc()).limit(limit).all()
     out: List[Dict[str, Any]] = []
     for r in rows:
         meta = _coerce_meta(r.meta) or {}

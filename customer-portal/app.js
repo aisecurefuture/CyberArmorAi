@@ -1886,44 +1886,88 @@ async function viewReports() {
 
 async function viewTelemetry() {
   $("#pageTitle").textContent = "Telemetry";
-  $("#pageSubtitle").textContent = "Recent tenant-scoped events";
-  const events = await api("/api/customer/telemetry?limit=250");
-  $("#app").innerHTML = `<div id="telemetryList"></div>`;
-  mountListView({
-    container: $("#telemetryList"),
-    rows: Array.isArray(events) ? events : [],
-    filename: `telemetry_${session.tenant_id || "tenant"}`,
-    columns: [
-      { key: "occurred_at", label: "Time",  type: "date",
-        value: (r) => r.occurred_at || r.created_at || "",
-        render: (r) => `<span class="text-xs text-slate-400">${esc(fmt(r.occurred_at || r.created_at))}</span>` },
-      { key: "source",      label: "Source", type: "enum",
-        value: (r) => r.source || "unknown",
-        render: (r) => badge(r.source || "unknown", "slate") },
-      { key: "event_type",  label: "Event", type: "text",
-        value: (r) => r.event_type || "" },
-      { key: "asset",       label: "Asset", type: "text",
-        value: (r) => r.hostname || r.agent_id || "" },
-      { key: "payload",     label: "Payload", type: "number", sortable: false,
-        value: (r) => r.payload ? Object.keys(r.payload).length : 0,
-        render: (r) => r.payload && Object.keys(r.payload).length ? `<span class="text-xs text-slate-400">${Object.keys(r.payload).length} field${Object.keys(r.payload).length === 1 ? "" : "s"}</span>` : `<span class="text-slate-700">—</span>`,
-        csv: (r) => JSON.stringify(r.payload || {}) },
-    ],
-    onRowClick: (event) => openReadOnlyModal({
-      title: `Telemetry Event — ${event.event_type || ""}`,
-      record: event,
-      fields: [
-        { key: "occurred_at", label: "Time",   render: (r) => esc(fmt(r.occurred_at || r.created_at)) },
-        { key: "source",      label: "Source" },
-        { key: "event_type",  label: "Event Type" },
-        { key: "hostname",    label: "Hostname" },
-        { key: "agent_id",    label: "Agent" },
-        { key: "user_id",     label: "User" },
-        { key: "tenant_id",   label: "Tenant" },
+  $("#pageSubtitle").textContent = "Tenant-scoped events — newest first";
+  const PAGE_SIZE = 250;
+  const initial = await api(`/api/customer/telemetry?limit=${PAGE_SIZE}`);
+  const rows = Array.isArray(initial) ? [...initial] : [];
+  const state = {
+    loadingMore: false,
+    exhausted: rows.length < PAGE_SIZE,
+  };
+
+  async function loadMore() {
+    if (state.loadingMore || state.exhausted) return;
+    const oldest = rows[rows.length - 1];
+    const cursor = oldest && (oldest.occurred_at || oldest.created_at);
+    if (!cursor) { state.exhausted = true; render(); return; }
+    state.loadingMore = true;
+    render();
+    try {
+      const next = await api(`/api/customer/telemetry?limit=${PAGE_SIZE}&before=${encodeURIComponent(cursor)}`);
+      const batch = Array.isArray(next) ? next : [];
+      if (batch.length === 0) {
+        state.exhausted = true;
+      } else {
+        rows.push(...batch);
+        if (batch.length < PAGE_SIZE) state.exhausted = true;
+      }
+    } finally {
+      state.loadingMore = false;
+      render();
+    }
+  }
+
+  function render() {
+    $("#app").innerHTML = `
+      <div class="space-y-3">
+        <div id="telemetryList"></div>
+        <div id="telemetryPager" class="flex items-center justify-center gap-3 pt-2 pb-1 text-sm">
+          ${state.exhausted
+            ? `<span class="text-xs text-slate-500">All ${rows.length} telemetry events loaded.</span>`
+            : `<button id="telemetryLoadMore" type="button" ${state.loadingMore ? "disabled" : ""} class="rounded-2xl border border-slate-700 bg-slate-900 px-5 py-2 text-sm text-slate-200 hover:bg-slate-800 disabled:opacity-50">${state.loadingMore ? "Loading…" : `Load more (currently ${rows.length})`}</button>`}
+        </div>
+      </div>
+    `;
+    mountListView({
+      container: $("#telemetryList"),
+      rows,
+      filename: `telemetry_${session.tenant_id || "tenant"}`,
+      columns: [
+        { key: "occurred_at", label: "Time",  type: "date",
+          value: (r) => r.occurred_at || r.created_at || "",
+          render: (r) => `<span class="text-xs text-slate-400">${esc(fmt(r.occurred_at || r.created_at))}</span>` },
+        { key: "source",      label: "Source", type: "enum",
+          value: (r) => r.source || "unknown",
+          render: (r) => badge(r.source || "unknown", "slate") },
+        { key: "event_type",  label: "Event", type: "text",
+          value: (r) => r.event_type || "" },
+        { key: "asset",       label: "Asset", type: "text",
+          value: (r) => r.hostname || r.agent_id || "" },
+        { key: "payload",     label: "Payload", type: "number", sortable: false,
+          value: (r) => r.payload ? Object.keys(r.payload).length : 0,
+          render: (r) => r.payload && Object.keys(r.payload).length ? `<span class="text-xs text-slate-400">${Object.keys(r.payload).length} field${Object.keys(r.payload).length === 1 ? "" : "s"}</span>` : `<span class="text-slate-700">—</span>`,
+          csv: (r) => JSON.stringify(r.payload || {}) },
       ],
-    }),
-    emptyMessage: "No telemetry found for this tenant.",
-  });
+      onRowClick: (event) => openReadOnlyModal({
+        title: `Telemetry Event — ${event.event_type || ""}`,
+        record: event,
+        fields: [
+          { key: "occurred_at", label: "Time",   render: (r) => esc(fmt(r.occurred_at || r.created_at)) },
+          { key: "source",      label: "Source" },
+          { key: "event_type",  label: "Event Type" },
+          { key: "hostname",    label: "Hostname" },
+          { key: "agent_id",    label: "Agent" },
+          { key: "user_id",     label: "User" },
+          { key: "tenant_id",   label: "Tenant" },
+        ],
+      }),
+      emptyMessage: "No telemetry found for this tenant.",
+    });
+    const btn = $("#telemetryLoadMore");
+    if (btn) btn.addEventListener("click", loadMore);
+  }
+
+  render();
 }
 
 // --- Audit Log helpers ---
@@ -1993,35 +2037,61 @@ function isNoisePath(path) {
 async function viewAudit() {
   $("#pageTitle").textContent = "Audit Logs";
   $("#pageSubtitle").textContent = "Every API call against this tenant's control plane";
-  const events = await api("/api/customer/audit?limit=500");
-  const rows = Array.isArray(events) ? events : [];
+  const PAGE_SIZE = 250;
+  const initial = await api(`/api/customer/audit?limit=${PAGE_SIZE}`);
+  const rows = Array.isArray(initial) ? [...initial] : [];
 
   // UI state local to this view.
   const state = {
     statusClass: "all",   // "all" | "2xx" | "3xx" | "4xx" | "5xx"
     methodFilter: "all",  // "all" | "writes" | <single method>
     hideNoise: true,
+    loadingMore: false,
+    exhausted: rows.length < PAGE_SIZE,
   };
 
-  // Pre-compute counts for the summary strip. We always count against the
-  // un-filtered set so the operator can see what's there before narrowing.
-  const totals = { all: rows.length, "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0 };
-  const methodTotals = {};
-  let p95Ms = 0;
-  const durations = [];
-  for (const r of rows) {
-    const c = String(r.status || "").charAt(0);
-    if (c === "2") totals["2xx"]++;
-    else if (c === "3") totals["3xx"]++;
-    else if (c === "4") totals["4xx"]++;
-    else if (c === "5") totals["5xx"]++;
-    const m = String(r.method || "").toUpperCase();
-    methodTotals[m] = (methodTotals[m] || 0) + 1;
-    if (typeof r.duration_ms === "number") durations.push(r.duration_ms);
+  // Recompute summary stats whenever `rows` changes (Load more appends).
+  function computeStats() {
+    const totals = { all: rows.length, "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0 };
+    const methodTotals = {};
+    const durations = [];
+    for (const r of rows) {
+      const c = String(r.status || "").charAt(0);
+      if (c === "2") totals["2xx"]++;
+      else if (c === "3") totals["3xx"]++;
+      else if (c === "4") totals["4xx"]++;
+      else if (c === "5") totals["5xx"]++;
+      const m = String(r.method || "").toUpperCase();
+      methodTotals[m] = (methodTotals[m] || 0) + 1;
+      if (typeof r.duration_ms === "number") durations.push(r.duration_ms);
+    }
+    let p95Ms = 0;
+    if (durations.length) {
+      durations.sort((a, b) => a - b);
+      p95Ms = durations[Math.floor(durations.length * 0.95)] || durations.at(-1);
+    }
+    return { totals, methodTotals, p95Ms };
   }
-  if (durations.length) {
-    durations.sort((a, b) => a - b);
-    p95Ms = durations[Math.floor(durations.length * 0.95)] || durations.at(-1);
+
+  async function loadMore() {
+    if (state.loadingMore || state.exhausted) return;
+    const oldest = rows[rows.length - 1];
+    if (!oldest || !oldest.created_at) { state.exhausted = true; render(); return; }
+    state.loadingMore = true;
+    render();
+    try {
+      const next = await api(`/api/customer/audit?limit=${PAGE_SIZE}&before=${encodeURIComponent(oldest.created_at)}`);
+      const batch = Array.isArray(next) ? next : [];
+      if (batch.length === 0) {
+        state.exhausted = true;
+      } else {
+        rows.push(...batch);
+        if (batch.length < PAGE_SIZE) state.exhausted = true;
+      }
+    } finally {
+      state.loadingMore = false;
+      render();
+    }
   }
 
   function visibleRows() {
@@ -2050,6 +2120,7 @@ async function viewAudit() {
 
   function render() {
     const filtered = visibleRows();
+    const { totals, methodTotals, p95Ms } = computeStats();
     $("#app").innerHTML = `
       <div class="space-y-4">
         ${card(`
@@ -2074,6 +2145,11 @@ async function viewAudit() {
           </div>
         `)}
         <div id="auditList"></div>
+        <div id="auditPager" class="flex items-center justify-center gap-3 pt-2 pb-1 text-sm">
+          ${state.exhausted
+            ? `<span class="text-xs text-slate-500">All ${rows.length} audit events loaded.</span>`
+            : `<button id="auditLoadMore" type="button" ${state.loadingMore ? "disabled" : ""} class="rounded-2xl border border-slate-700 bg-slate-900 px-5 py-2 text-sm text-slate-200 hover:bg-slate-800 disabled:opacity-50">${state.loadingMore ? "Loading…" : `Load more (currently ${rows.length})`}</button>`}
+        </div>
       </div>
     `;
 
@@ -2132,6 +2208,8 @@ async function viewAudit() {
     });
     const noiseToggle = $("#auditHideNoise");
     if (noiseToggle) noiseToggle.addEventListener("change", () => { state.hideNoise = noiseToggle.checked; render(); });
+    const loadMoreBtn = $("#auditLoadMore");
+    if (loadMoreBtn) loadMoreBtn.addEventListener("click", loadMore);
   }
 
   render();
