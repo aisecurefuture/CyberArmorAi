@@ -1999,13 +1999,17 @@ def _tenant_agent_rows(db: Session, tenant_id: str, limit: int = 200) -> List[Di
         for a in _AGENTS.values()
         if a.get("agent_id") and a.get("tenant_id") == tenant_id
     }
+    # Telemetry-derived agents: include all sources, not just "endpoint".
+    # Browser extensions, proxy agents, SDK runtimes, and the clipboard
+    # helper all generate distinct agent_ids that the Delegation Manager
+    # needs to see. The Agent Directory's Kind column already disambiguates
+    # which flavor each row is.
     telemetry_rows = (
         db.query(
             TelemetryRecord.agent_id,
             func.max(TelemetryRecord.occurred_at).label("last_seen"),
         )
         .filter(TelemetryRecord.tenant_id == tenant_id)
-        .filter(TelemetryRecord.source == "endpoint")
         .filter(TelemetryRecord.agent_id.isnot(None))
         .group_by(TelemetryRecord.agent_id)
         .all()
@@ -2027,6 +2031,7 @@ def _tenant_agent_rows(db: Session, tenant_id: str, limit: int = 200) -> List[Di
             "username": latest.user_id if latest and latest.user_id else payload.get("username", ""),
             "last_seen": row.last_seen.isoformat() if row.last_seen else None,
             "status": "telemetry_only",
+            "source": latest.source if latest else None,
             "os": payload.get("os", ""),
             "version": payload.get("version") or payload.get("agent_version", ""),
         }

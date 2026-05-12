@@ -5280,7 +5280,20 @@ async function viewDelegations() {
             <label class="text-xs text-slate-400">Agent
               <select id="delAgent" required class="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm">
                 <option value="">— select tenant agent —</option>
-                ${agentChoices.map((a) => `<option value="${esc(a.agent_id || "")}">${esc(a.agent_id || "")}${a.hostname ? ` · ${esc(a.hostname)}` : ""}</option>`).join("")}
+                ${agentChoices.map((a) => {
+                  // Show the agent's kind so the operator can tell at a
+                  // glance whether they're delegating to an endpoint, a
+                  // browser extension, an SDK-registered AI agent, etc.
+                  const src = String(a.source || "").toLowerCase();
+                  const kind = src.includes("extension") ? "Extension"
+                             : src.includes("proxy") || src.includes("rasp") ? "Proxy"
+                             : src.includes("sdk") || src.includes("runtime") ? "SDK"
+                             : src.includes("clipboard") ? "Clipboard"
+                             : src.includes("endpoint") ? "Endpoint"
+                             : (a.status === "registered" ? "Endpoint" : "Agent");
+                  const label = `[${kind}] ${a.agent_id || ""}${a.hostname ? ` · ${a.hostname}` : ""}`;
+                  return `<option value="${esc(a.agent_id || "")}">${esc(label)}</option>`;
+                }).join("")}
               </select>
             </label>
             <label class="text-xs text-slate-400 md:col-span-2">Scope (comma-separated; use <span class="font-mono">*</span> for all)
