@@ -12,6 +12,7 @@
     "declarativeNetRequestFeedback",
     "alarms",
     "webNavigation",
+    "webRequest",
     "clipboardRead",
     "notifications"
   ],

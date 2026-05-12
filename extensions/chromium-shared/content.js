@@ -107,6 +107,23 @@
       if (msg.type === "show_warning" && msg.message) {
         showWarningBanner(msg.message);
       }
+      // Fired by background.js when a DNR rule kills an AI-upload request.
+      // Without this the page just shows ChatGPT's generic "couldn't upload"
+      // toast and the user has no idea our policy ran. Coalesce per URL so
+      // ChatGPT's retry loop doesn't stack 5 banners on one upload attempt.
+      if (msg.type === "cyberarmor:upload_blocked_dnr") {
+        const url = msg.url || "";
+        const policy = msg.policy || "policy";
+        const now = Date.now();
+        const recent = window.__cyberarmor_recent_dnr_banner;
+        if (recent && recent.url === url && now - recent.ts < 4000) return;
+        window.__cyberarmor_recent_dnr_banner = { url, ts: now };
+        let host = "";
+        try { host = new URL(url).hostname; } catch { /* ignore */ }
+        showWarningBanner(
+          `File upload to ${host || "this service"} blocked by policy "${policy}".`
+        );
+      }
     });
   }
 

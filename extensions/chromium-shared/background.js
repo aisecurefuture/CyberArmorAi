@@ -502,6 +502,88 @@ async function updateUploadDNR(policies) {
   }
 }
 
+// Lightweight catalog check: does ``url`` look like an AI-upload endpoint
+// we're targeting with DNR rules? Used by the webRequest.onErrorOccurred
+// listener so we only fire our "blocked by policy" UX for our own rules,
+// not random ad-blocker / other-extension network drops.
+function urlMatchesUploadPattern(url) {
+  if (!url) return false;
+  let parsed;
+  try { parsed = new URL(url); } catch { return false; }
+  const hostPath = parsed.hostname + parsed.pathname;
+  for (const pat of AI_UPLOAD_PATTERNS) {
+    const raw = String(pat.urlFilter || "");
+    // DNR ||host anchors: collapse to a hostPath substring check. Wildcards
+    // map to "any chars" — we don't have a regex engine here, so split on *
+    // and require each segment to appear in order.
+    const stripped = raw.replace(/^\|\|/, "");
+    const segments = stripped.split("*");
+    let cursor = 0;
+    let ok = true;
+    for (const seg of segments) {
+      if (!seg) continue;
+      const idx = hostPath.indexOf(seg, cursor);
+      if (idx < 0) { ok = false; break; }
+      cursor = idx + seg.length;
+    }
+    if (ok) return true;
+  }
+  return false;
+}
+
+// Surface DNR upload-blocks as a visible banner + telemetry so operators
+// see *why* the upload failed, not just ChatGPT's "couldn't upload" toast.
+//
+// onErrorOccurred is observer-only (no webRequestBlocking), so this can't
+// reverse the block — it can only react. ERR_BLOCKED_BY_CLIENT is the
+// chromium net error code Chrome stamps on requests killed by DNR rules
+// (and a few other extension-driven blocks). We filter by upload-pattern
+// match so unrelated extension blocks don't trigger our banner.
+if (chrome.webRequest && chrome.webRequest.onErrorOccurred) {
+  chrome.webRequest.onErrorOccurred.addListener(
+    (details) => {
+      if (!details || details.error !== "net::ERR_BLOCKED_BY_CLIENT") return;
+      if (!urlMatchesUploadPattern(details.url)) return;
+      const blockUploadPolicies = (cachedPolicies || []).filter(
+        (p) => p && p.enabled && p.action === "block_upload"
+      );
+      const policyName = blockUploadPolicies.length === 1
+        ? (blockUploadPolicies[0].name || "")
+        : (blockUploadPolicies.length > 1 ? `${blockUploadPolicies.length} block_upload policies` : "");
+
+      // Emit telemetry so the Incidents view sees the DNR-layer block.
+      // Don't await — it's a side-effect path and we don't want to block
+      // tab-message dispatch on a network round-trip.
+      try {
+        sendTelemetry({
+          type: "policy_block_upload_dnr",
+          payload: {
+            url: details.url,
+            policy: policyName,
+            method: details.method,
+            initiator: details.initiator,
+            type: details.type,
+          },
+        });
+      } catch { /* sendTelemetry failures already log internally */ }
+
+      // Notify the content script in the originating tab so it can render
+      // a banner. tabId is -1 for requests not tied to a tab — skip those.
+      if (typeof details.tabId === "number" && details.tabId >= 0) {
+        try {
+          chrome.tabs.sendMessage(details.tabId, {
+            type: "cyberarmor:upload_blocked_dnr",
+            url: details.url,
+            policy: policyName,
+            initiator: details.initiator,
+          });
+        } catch { /* tab may have closed */ }
+      }
+    },
+    { urls: ["<all_urls>"], types: ["xmlhttprequest", "sub_frame", "other"] }
+  );
+}
+
 // --- Policy Sync ---
 
 async function syncPolicies() {
