@@ -21,7 +21,7 @@ from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Query, Requ
 from fastapi.responses import JSONResponse, HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from sqlalchemy import desc, func
+from sqlalchemy import desc, func, or_
 from sqlalchemy.orm import Session
 
 from db import Base, SessionLocal, engine
@@ -2546,6 +2546,7 @@ def customer_scan_all(
 def _telemetry_to_incident(
     r: "TelemetryRecord",
     agent_directory: Optional[Dict[str, Dict[str, Any]]] = None,
+    host_to_agent: Optional[Dict[str, str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Project a TelemetryRecord row into the incident shape, but only for
     events that represent an actual enforcement decision (block/redact/warn).
@@ -2592,9 +2593,18 @@ def _telemetry_to_incident(
     if severity:
         metadata["severity"] = severity
 
+    # Endpoint helpers (clipboard, etc.) sometimes write telemetry without
+    # stamping agent_id — they only know their hostname. Recover the agent
+    # binding via hostname → agent_id when the row's agent_id is null.
+    resolved_agent_id = r.agent_id
+    if not resolved_agent_id:
+        host_candidate = r.hostname or (payload.get("hostname") if isinstance(payload, dict) else None)
+        if host_candidate and host_to_agent:
+            resolved_agent_id = host_to_agent.get(host_candidate)
+
     # Prefer the live agent registry over what was stamped on the row, so
     # re-associating an agent → user shows up on past events too.
-    dir_entry = (agent_directory or {}).get(r.agent_id) if r.agent_id else None
+    dir_entry = (agent_directory or {}).get(resolved_agent_id) if resolved_agent_id else None
     resolved_user = (
         (dir_entry.get("username") if dir_entry else None)
         or r.user_id
@@ -2615,7 +2625,7 @@ def _telemetry_to_incident(
         "findings":     findings,
         "metadata":     metadata,
         "received_at":  r.occurred_at.isoformat() if r.occurred_at else None,
-        "agent_id":     r.agent_id,
+        "agent_id":     resolved_agent_id,
         "user_id":      resolved_user,
         "hostname":     resolved_host,
         "source":       r.source,
@@ -2715,18 +2725,39 @@ def customer_backfill_agent_users(
                 "telemetry_updated": 0, "incidents_updated": 0,
                 "note": "agent registry is empty — nothing to backfill from"}
 
+    # hostname → agent_id index, same as the read-time enrichment, so rows
+    # without agent_id (endpoint helper writes) can still be backfilled.
+    host_to_agent: Dict[str, str] = {}
+    for aid, row in directory.items():
+        h = row.get("hostname")
+        if h and h not in host_to_agent:
+            host_to_agent[h] = aid
+
+    # Pull rows with agent_id in the registry OR with hostname in the
+    # registry. Build conditions dynamically so an empty host_to_agent
+    # doesn't produce a broken filter expression.
+    conds = [TelemetryRecord.agent_id.in_(list(directory.keys()))]
+    if host_to_agent:
+        conds.append(TelemetryRecord.hostname.in_(list(host_to_agent.keys())))
     telemetry_rows = (
         db.query(TelemetryRecord)
         .filter(TelemetryRecord.tenant_id == ctx.tenant_id)
-        .filter(TelemetryRecord.agent_id.in_(list(directory.keys())))
+        .filter(or_(*conds))
         .all()
     )
     tel_updated = 0
     for r in telemetry_rows:
-        dir_entry = directory.get(r.agent_id) or {}
-        new_user = user_map.get(r.agent_id) or dir_entry.get("username") or None
+        # Resolve agent first: registry hit by agent_id, then by hostname.
+        resolved_aid = r.agent_id if r.agent_id in directory else (host_to_agent.get(r.hostname) if r.hostname else None)
+        if not resolved_aid:
+            continue
+        dir_entry = directory.get(resolved_aid) or {}
+        new_user = user_map.get(resolved_aid) or dir_entry.get("username") or None
         new_host = dir_entry.get("hostname") or None
         changed = False
+        if not r.agent_id and resolved_aid:
+            r.agent_id = resolved_aid
+            changed = True
         if new_user and (overwrite or not r.user_id):
             if r.user_id != new_user:
                 r.user_id = new_user
@@ -2812,12 +2843,26 @@ def customer_incidents(
             # surface its username so the projection picks it up.
             agent_directory[aid] = {"agent_id": aid, "username": uname}
 
+    # hostname → agent_id index for endpoint helpers that write telemetry
+    # without stamping agent_id (e.g. endpoint_clipboard_helper).
+    host_to_agent: Dict[str, str] = {}
+    for aid, row in agent_directory.items():
+        h = row.get("hostname")
+        if h and h not in host_to_agent:
+            host_to_agent[h] = aid
+
     def _enrich(inc: Dict[str, Any]) -> Dict[str, Any]:
         aid = inc.get("agent_id")
+        if not aid:
+            host = inc.get("hostname") or (inc.get("metadata") or {}).get("hostname")
+            if host:
+                aid = host_to_agent.get(host)
         if not aid or aid not in agent_directory:
             return inc
         dir_entry = agent_directory[aid]
         out = dict(inc)
+        if not out.get("agent_id"):
+            out["agent_id"] = aid
         if not out.get("user_id") and dir_entry.get("username"):
             out["user_id"] = dir_entry["username"]
         if not out.get("hostname") and dir_entry.get("hostname"):
@@ -2833,7 +2878,7 @@ def customer_incidents(
         .limit(limit * 2)  # over-fetch since we filter to block/redact/warn
         .all()
     )
-    projected = [p for p in (_telemetry_to_incident(r, agent_directory) for r in telemetry_rows) if p]
+    projected = [p for p in (_telemetry_to_incident(r, agent_directory, host_to_agent) for r in telemetry_rows) if p]
 
     def ts_key(inc: Dict[str, Any]) -> float:
         ts = inc.get("received_at")
