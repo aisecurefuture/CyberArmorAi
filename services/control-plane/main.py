@@ -2543,7 +2543,10 @@ def customer_scan_all(
     return _call_detection_service("POST", "/scan/all", ctx.tenant_id, json_body=payload.model_dump())
 
 
-def _telemetry_to_incident(r: "TelemetryRecord") -> Optional[Dict[str, Any]]:
+def _telemetry_to_incident(
+    r: "TelemetryRecord",
+    agent_directory: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Optional[Dict[str, Any]]:
     """Project a TelemetryRecord row into the incident shape, but only for
     events that represent an actual enforcement decision (block/redact/warn).
 
@@ -2551,6 +2554,11 @@ def _telemetry_to_incident(r: "TelemetryRecord") -> Optional[Dict[str, Any]]:
     telemetry — they never call /incidents/ingest. The Incidents view
     needs to surface them anyway, so we merge a projection in at read time
     just like /customer/risk/events does.
+
+    ``agent_directory`` is an optional ``agent_id -> agent row`` map from
+    ``_tenant_agent_rows``. When provided, we resolve the user/hostname
+    from the live registry rather than from the row, so re-associating an
+    agent to a user retroactively reflects in the Incidents view.
     """
     bucket = _classify_action(r.event_type)
     if bucket not in ("block", "redact", "warn"):
@@ -2584,6 +2592,20 @@ def _telemetry_to_incident(r: "TelemetryRecord") -> Optional[Dict[str, Any]]:
     if severity:
         metadata["severity"] = severity
 
+    # Prefer the live agent registry over what was stamped on the row, so
+    # re-associating an agent → user shows up on past events too.
+    dir_entry = (agent_directory or {}).get(r.agent_id) if r.agent_id else None
+    resolved_user = (
+        (dir_entry.get("username") if dir_entry else None)
+        or r.user_id
+        or (payload.get("username") if isinstance(payload, dict) else None)
+    )
+    resolved_host = (
+        (dir_entry.get("hostname") if dir_entry else None)
+        or r.hostname
+        or (payload.get("hostname") if isinstance(payload, dict) else None)
+    )
+
     return {
         "tenant_id":    r.tenant_id,
         "request_id":   r.id,
@@ -2594,7 +2616,8 @@ def _telemetry_to_incident(r: "TelemetryRecord") -> Optional[Dict[str, Any]]:
         "metadata":     metadata,
         "received_at":  r.occurred_at.isoformat() if r.occurred_at else None,
         "agent_id":     r.agent_id,
-        "user_id":      r.user_id,
+        "user_id":      resolved_user,
+        "hostname":     resolved_host,
         "source":       r.source,
     }
 
@@ -2617,7 +2640,27 @@ def customer_incidents(
     """
     limit = max(1, min(limit, 500))
 
-    ingested = list(_INCIDENTS.get(ctx.tenant_id, {}).values())
+    # Build agent_id → agent row map once so projections (and re-decoration
+    # of already-ingested incidents) reflect the *current* agent→user
+    # association rather than what was stamped at event time.
+    agent_directory: Dict[str, Dict[str, Any]] = {
+        a["agent_id"]: a for a in _tenant_agent_rows(db, ctx.tenant_id, limit=1000)
+        if a.get("agent_id")
+    }
+
+    def _enrich(inc: Dict[str, Any]) -> Dict[str, Any]:
+        aid = inc.get("agent_id")
+        if not aid or aid not in agent_directory:
+            return inc
+        dir_entry = agent_directory[aid]
+        out = dict(inc)
+        if not out.get("user_id") and dir_entry.get("username"):
+            out["user_id"] = dir_entry["username"]
+        if not out.get("hostname") and dir_entry.get("hostname"):
+            out["hostname"] = dir_entry["hostname"]
+        return out
+
+    ingested = [_enrich(i) for i in _INCIDENTS.get(ctx.tenant_id, {}).values()]
 
     telemetry_rows = (
         db.query(TelemetryRecord)
@@ -2626,7 +2669,7 @@ def customer_incidents(
         .limit(limit * 2)  # over-fetch since we filter to block/redact/warn
         .all()
     )
-    projected = [p for p in (_telemetry_to_incident(r) for r in telemetry_rows) if p]
+    projected = [p for p in (_telemetry_to_incident(r, agent_directory) for r in telemetry_rows) if p]
 
     def ts_key(inc: Dict[str, Any]) -> float:
         ts = inc.get("received_at")
