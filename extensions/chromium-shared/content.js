@@ -338,13 +338,25 @@
 
     const fields = form.querySelectorAll("input, textarea, select");
     const detected = [];
+    // Track file inputs separately — files don't have a string .value the
+    // PII scanner can read, but their presence is what block_upload acts on.
+    const fileSummary = [];
     for (const field of fields) {
+      if (field.tagName === "INPUT" && field.type === "file") {
+        const files = field.files;
+        if (files && files.length) {
+          for (const f of files) {
+            fileSummary.push({ name: f.name || "", type: f.type || "", size: f.size || 0 });
+          }
+        }
+        continue;
+      }
       const v = field.value;
       if (!v || typeof v !== "string") continue;
       const findings = detectPII(v);
       if (findings.length) detected.push({ field, findings });
     }
-    if (detected.length === 0) return; // no PII, no work
+    if (detected.length === 0 && fileSummary.length === 0) return; // nothing interesting
 
     event.preventDefault();
     event.stopPropagation();
@@ -357,7 +369,15 @@
       type: "evaluate_policy",
       context: {
         request: { url: actionUrl, type: "form_submit", method: (form.method || "get").toLowerCase() },
-        content: { pii_classes: piiClasses, has_pii: true },
+        content: {
+          pii_classes: piiClasses,
+          has_pii: piiClasses.length > 0,
+          // Surface upload context so block_upload policies can target it.
+          has_file_upload: fileSummary.length > 0,
+          file_count: fileSummary.length,
+          file_names: fileSummary.map((f) => f.name),
+          file_types: [...new Set(fileSummary.map((f) => f.type).filter(Boolean))],
+        },
       },
     }, (resp) => {
       const result = resp && resp.result;
@@ -365,9 +385,40 @@
 
       if (!result || !result.matched) { resubmit(); return; }
 
+      if (result.action === "block_upload") {
+        // block_upload only stops the submit when files were attached.
+        // If a matching policy fires without files, fall through to the
+        // form's normal handling — the policy author meant uploads.
+        if (fileSummary.length === 0) {
+          sendTelemetry("policy_block_upload_skipped_no_files", {
+            url: actionUrl, policy: result.policy, pii_classes: piiClasses,
+          });
+          resubmit();
+          return;
+        }
+        sendTelemetry("policy_block_upload_form_submit", {
+          url: actionUrl, policy: result.policy, pii_classes: piiClasses,
+          file_count: fileSummary.length,
+          file_names: fileSummary.map((f) => f.name),
+          file_types: [...new Set(fileSummary.map((f) => f.type).filter(Boolean))],
+        });
+        const namesPreview = fileSummary.slice(0, 3).map((f) => f.name).join(", ");
+        const extra = fileSummary.length > 3 ? ` and ${fileSummary.length - 3} more` : "";
+        showWarningBanner(`File upload blocked by policy "${result.policy}". Files: ${namesPreview}${extra}.`);
+        // Clear the file inputs so the user can't simply re-submit without
+        // re-attaching — makes the block visible at the field level too.
+        for (const field of fields) {
+          if (field.tagName === "INPUT" && field.type === "file") {
+            try { field.value = ""; } catch {}
+          }
+        }
+        return; // do not resubmit
+      }
+
       if (result.action === "block") {
         sendTelemetry("policy_block_form_submit", {
           url: actionUrl, policy: result.policy, pii_classes: piiClasses,
+          file_count: fileSummary.length,
         });
         showWarningBanner(`Form submission blocked by policy "${result.policy}". Sensitive data detected: ${piiClasses.join(", ")}.`);
         return; // do not resubmit

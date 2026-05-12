@@ -422,11 +422,14 @@ function severityClasses(s) {
 
 function actionPillClasses(action) {
   const a = String(action || "").toLowerCase();
-  if (a === "block")  return "bg-rose-500/20 text-rose-200";
-  if (a === "redact") return "bg-amber-500/20 text-amber-200";
-  if (a === "warn")   return "bg-amber-500/15 text-amber-200";
-  if (a === "detect") return "bg-blue-500/20 text-blue-200";
-  if (a === "allow")  return "bg-emerald-500/20 text-emerald-200";
+  if (a === "block")        return "bg-rose-500/20 text-rose-200";
+  // block_upload renders in the same rose family as block, with slightly
+  // less saturation so the two read as related but distinct at a glance.
+  if (a === "block_upload") return "bg-rose-500/15 text-rose-100";
+  if (a === "redact")       return "bg-amber-500/20 text-amber-200";
+  if (a === "warn")         return "bg-amber-500/15 text-amber-200";
+  if (a === "detect")       return "bg-blue-500/20 text-blue-200";
+  if (a === "allow")        return "bg-emerald-500/20 text-emerald-200";
   return "bg-slate-700/40 text-slate-200";
 }
 
@@ -1869,7 +1872,7 @@ async function viewPolicies() {
     const a = String(p.action || "monitor").toLowerCase();
     actionCounts[a] = (actionCounts[a] || 0) + 1;
   }
-  const actionOrder = ["block", "redact", "warn", "monitor", "allow", "sandbox", "isolate", "audit-only", "route"]
+  const actionOrder = ["block", "block_upload", "redact", "warn", "monitor", "allow", "sandbox", "isolate", "audit-only", "route"]
     .filter((a) => actionCounts[a]);
 
   $("#app").innerHTML = `

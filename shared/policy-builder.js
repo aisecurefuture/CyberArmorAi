@@ -50,10 +50,10 @@ const ACTIONS_BY_SCOPE = {
   // the endpoint agent (agents/endpoint-agent/policy_enforcer.py).
   // sandbox/isolate remain url-trust-gate-only — those have no enforcement
   // outside the gate's pipeline.
-  general:          ["allow", "monitor", "warn", "redact", "block"],
-  proxy:            ["allow", "monitor", "warn", "redact", "block"],
-  endpoint:         ["allow", "monitor", "warn", "redact", "block"],
-  identity:         ["allow", "monitor", "warn", "redact", "block"],
+  general:          ["allow", "monitor", "warn", "redact", "block_upload", "block"],
+  proxy:            ["allow", "monitor", "warn", "redact", "block_upload", "block"],
+  endpoint:         ["allow", "monitor", "warn", "redact", "block_upload", "block"],
+  identity:         ["allow", "monitor", "warn", "redact", "block_upload", "block"],
   // URL Trust Gate has its own enforcement pipeline that natively supports
   // these six actions (regex pattern in services/url-trust-gate/main.py).
   "url-trust-gate": ["allow", "warn", "redact", "sandbox", "block", "isolate"],
@@ -67,7 +67,7 @@ function _scopeHint(scope) {
   if (scope === "url-trust-gate") {
     return "URL Trust Gate enforces six actions: allow, warn, redact, sandbox, block, isolate.";
   }
-  return "Enforced actions: allow, monitor, warn, redact, block. Sandbox/isolate are URL-Trust-Gate scope only.";
+  return "Enforced actions: allow, monitor, warn, redact, block_upload, block. block_upload prevents file submissions specifically. Sandbox/isolate are URL-Trust-Gate scope only.";
 }
 
 // Fields that the proxy/ext-authz integrations actually emit, grouped

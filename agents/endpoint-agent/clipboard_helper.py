@@ -322,7 +322,10 @@ def _eval_conditions(conds: dict, context: dict) -> bool:
 
 # Precedence — when multiple policies match, the strongest action wins so
 # a single "monitor everything" catch-all can't drown out a targeted block.
-_ACTION_RANK = {"block": 4, "redact": 3, "warn": 2, "monitor": 1, "allow": 0}
+# block_upload sits between redact and block: more decisive than redact
+# (it stops the action entirely) but narrower than block (only fires when
+# files are attached, so a parallel block policy should still win).
+_ACTION_RANK = {"block": 5, "block_upload": 4, "redact": 3, "warn": 2, "monitor": 1, "allow": 0}
 
 
 def evaluate_policy(policies: list[dict], context: dict) -> dict | None:

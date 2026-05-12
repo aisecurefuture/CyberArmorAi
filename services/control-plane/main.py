@@ -2110,6 +2110,11 @@ def _classify_action(event_type: str) -> str:
     so a substring match is reliable.
     """
     et = (event_type or "").lower()
+    # block_upload events surface as block-tier so risk metrics and the
+    # Incidents view treat them the same as a hard block. Check the more
+    # specific token first because "block" is a substring of "block_upload".
+    if "block_upload" in et or "upload_block" in et:
+        return "block"
     if "block" in et:
         return "block"
     if "redact" in et:
