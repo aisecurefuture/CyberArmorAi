@@ -2816,12 +2816,186 @@ async function viewIncidents() {
   render();
 }
 
+// --- AI Providers helpers ---
+
+// Hard-coded display catalog so the grid always shows the same 8 cards,
+// even before any are configured. Matches the admin dashboard. Models lists
+// are short illustrative examples — the real per-provider model list comes
+// from the AI router when status reports back.
+const AI_PROVIDER_CATALOG = [
+  { id: "openai",     name: "OpenAI",          icon: "🤖", models: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "o1", "o3-mini"] },
+  { id: "anthropic",  name: "Anthropic",       icon: "🧠", models: ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-3-5"] },
+  { id: "google",     name: "Google AI",       icon: "🔵", models: ["gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"] },
+  { id: "amazon",     name: "Amazon Bedrock",  icon: "☁️",  models: ["amazon.titan-text-express-v1", "meta.llama3-70b"] },
+  { id: "microsoft",  name: "Microsoft Azure", icon: "🪟", models: ["gpt-4o-azure", "gpt-35-turbo"] },
+  { id: "xai",        name: "xAI Grok",        icon: "✖️",  models: ["grok-3", "grok-3-mini"] },
+  { id: "meta",       name: "Meta LLaMA",      icon: "🦙", models: ["llama-3.3-70b-instruct", "llama-3.1-405b"] },
+  { id: "perplexity", name: "Perplexity",      icon: "🔍", models: ["sonar-pro", "sonar", "sonar-reasoning"] },
+];
+
 async function viewProviders() {
-  await tenantScopedConfigPage("providers", "AI Providers", "Tenant-scoped provider visibility", [
-    { title: "Provider Inventory", body: "Monitor the providers visible to this tenant through the AI router.", badge: "live router data", tone: "green" },
-    { title: "Approved Providers", body: "Persist tenant-specific provider approvals and routing preferences.", badge: "tenant config", tone: "cyan" },
-    { title: "Credential Handling", body: "Keep provider credentials server-side and use this page for routing metadata only.", badge: "no browser secrets", tone: "amber" },
-  ], { approved_providers: [], provider_routing: {}, credential_mode: "server_side" }, true);
+  $("#pageTitle").textContent = "AI Providers";
+  $("#pageSubtitle").textContent = "Configure tenant-scoped credentials for the AI providers your applications use";
+  const isAdmin = session.role === "tenant_admin";
+
+  // /api/customer/providers comes back as either an array of provider rows
+  // or a {providers:[...]} object depending on the AI router version. Be
+  // tolerant of both. Each row has provider_id + configured boolean.
+  let configuredMap = {};
+  try {
+    const resp = await api("/api/customer/providers");
+    const rows = Array.isArray(resp) ? resp : (resp && resp.providers) || [];
+    rows.forEach((p) => {
+      const id = p.provider_id || p.id || p.provider;
+      if (id) configuredMap[id] = p;
+    });
+  } catch {
+    // Non-fatal — render the grid in "Unknown" state and let the user
+    // configure providers anyway.
+  }
+
+  const adminBanner = isAdmin
+    ? ""
+    : `<div class="rounded-2xl border border-amber-900/60 bg-amber-950/30 p-3 text-xs text-amber-200">View only — tenant admins can configure provider credentials.</div>`;
+
+  function providerCard(p) {
+    const status = configuredMap[p.id];
+    const isCfg = status && status.configured;
+    const statusBadge = isCfg
+      ? `<span class="inline-flex items-center rounded-full bg-emerald-500/20 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-emerald-200">Configured</span>`
+      : `<span class="inline-flex items-center rounded-full bg-slate-700/40 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-slate-300">Not configured</span>`;
+    const modelsHtml = p.models.slice(0, 3).map((m) =>
+      `<code class="rounded bg-slate-950 px-1.5 py-0.5 text-[10px] font-mono text-cyan-200">${esc(m)}</code>`
+    ).join(" ");
+    const buttons = isAdmin
+      ? `<button class="cfgProviderBtn flex-1 rounded-xl bg-cyan-500 px-3 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400" data-provider="${esc(p.id)}" data-provider-name="${esc(p.name)}" type="button">${isCfg ? "Reconfigure" : "Configure"}</button>${
+          isCfg ? `<button class="testProviderBtn rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200 hover:bg-slate-800" data-provider="${esc(p.id)}" data-provider-name="${esc(p.name)}" type="button">Test</button>` : ""
+        }`
+      : `<div class="flex-1 rounded-xl border border-slate-800 bg-slate-900/40 px-3 py-2 text-center text-xs text-slate-500">${isCfg ? "Configured · admin to change" : "Awaiting admin setup"}</div>`;
+    return `
+      <div class="rounded-2xl border border-slate-800 bg-slate-950 p-5">
+        <div class="flex items-start justify-between gap-2">
+          <div class="flex items-center gap-2">
+            <span class="text-2xl">${p.icon}</span>
+            <div>
+              <div class="font-semibold">${esc(p.name)}</div>
+              <div class="text-xs text-slate-400">${p.models.length} models</div>
+            </div>
+          </div>
+          ${statusBadge}
+        </div>
+        <div class="mt-3 flex flex-wrap gap-1.5">${modelsHtml}</div>
+        <div class="mt-4 flex gap-2">${buttons}</div>
+      </div>`;
+  }
+
+  $("#app").innerHTML = `
+    <div class="space-y-4">
+      ${adminBanner}
+      <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">${AI_PROVIDER_CATALOG.map(providerCard).join("")}</div>
+      <div id="providerPanel"></div>
+    </div>
+  `;
+
+  function openConfigurePanel(pid, pname) {
+    const panel = $("#providerPanel");
+    if (!panel) return;
+    panel.innerHTML = card(`
+      <div class="flex items-baseline justify-between">
+        <div class="text-lg font-semibold">Configure ${esc(pname)}</div>
+        <button id="cfgProviderClose" type="button" class="text-xs text-slate-400 hover:text-slate-200">Cancel</button>
+      </div>
+      <p class="mt-1 text-xs text-slate-500">Credentials are stored server-side via the secrets service. They never echo back into the browser; the API key field is write-only.</p>
+      <div class="mt-4 grid gap-4 md:grid-cols-2">
+        <div class="space-y-1 md:col-span-2">
+          <label class="text-xs text-slate-300">Provider API key <span class="text-rose-300">*</span></label>
+          <input id="prov_key" type="password" autocomplete="off" class="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 font-mono text-sm" placeholder="${esc(pname === "OpenAI" ? "sk-…" : pname === "Anthropic" ? "sk-ant-…" : "<provider api key>")}" />
+        </div>
+        <div class="space-y-1">
+          <label class="text-xs text-slate-300">Base URL (optional)</label>
+          <input id="prov_url" class="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm" placeholder="https://api.example.com/v1" />
+        </div>
+        <div class="space-y-1">
+          <label class="text-xs text-slate-300">Default model (optional)</label>
+          <input id="prov_model" class="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm" placeholder="e.g. gpt-4o" />
+        </div>
+        <div class="space-y-1">
+          <label class="text-xs text-slate-300">Rate limit (req/min)</label>
+          <input id="prov_rate" type="number" min="1" class="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm" value="60" />
+        </div>
+        <div class="space-y-1">
+          <label class="text-xs text-slate-300">Monthly budget (USD)</label>
+          <input id="prov_budget" type="number" min="0" step="10" class="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm" value="500" />
+        </div>
+      </div>
+      <div class="mt-4 flex flex-wrap items-center gap-2">
+        <button id="cfgProviderSave" type="button" class="rounded-xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400">Save credentials</button>
+        <span id="cfgProviderMsg" class="text-xs text-slate-400"></span>
+      </div>
+    `);
+    panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    $("#cfgProviderClose").addEventListener("click", () => { panel.innerHTML = ""; });
+    $("#cfgProviderSave").addEventListener("click", async () => {
+      const apiKey = $("#prov_key").value.trim();
+      const msg = $("#cfgProviderMsg");
+      if (!apiKey) { msg.textContent = "API key is required."; msg.className = "text-xs text-rose-300"; return; }
+      msg.textContent = "Saving…";
+      msg.className = "text-xs text-slate-400";
+      try {
+        await api(`/api/customer/providers/${encodeURIComponent(pid)}/configure`, {
+          method: "POST",
+          body: JSON.stringify({
+            api_key: apiKey,
+            base_url: $("#prov_url").value.trim() || null,
+            default_model: $("#prov_model").value.trim() || null,
+            rate_limit_per_minute: parseInt($("#prov_rate").value || "60", 10),
+            monthly_budget_usd: parseFloat($("#prov_budget").value || "500"),
+          }),
+        });
+        msg.textContent = `${pname} configured.`;
+        msg.className = "text-xs text-emerald-300";
+        // Refresh the grid so the badge flips to "Configured".
+        setTimeout(() => viewProviders(), 600);
+      } catch (err) {
+        msg.textContent = err.message || "Save failed";
+        msg.className = "text-xs text-rose-300";
+      }
+    });
+  }
+
+  async function runProviderTest(pid, pname) {
+    const panel = $("#providerPanel");
+    panel.innerHTML = card(`<div class="text-sm text-slate-400">Testing ${esc(pname)}…</div>`);
+    try {
+      const status = await api(`/api/customer/providers/${encodeURIComponent(pid)}/status`);
+      const ok = status && (status.configured === true || status.status === "configured");
+      panel.innerHTML = card(`
+        <div class="flex items-baseline justify-between">
+          <div class="font-semibold">${esc(pname)} test</div>
+          <button id="testProviderClose" type="button" class="text-xs text-slate-400 hover:text-slate-200">Close</button>
+        </div>
+        <div class="mt-3">
+          ${ok
+            ? `<div class="rounded-xl border border-emerald-900 bg-emerald-950/30 p-3 text-sm text-emerald-200">Credentials present. The AI router can resolve ${esc(pname)} for this tenant.</div>`
+            : `<div class="rounded-xl border border-rose-900 bg-rose-950/30 p-3 text-sm text-rose-200">No credentials resolved for ${esc(pname)} on this tenant.</div>`}
+        </div>
+        <details class="mt-3 rounded-xl border border-slate-800 bg-slate-900/40 p-3">
+          <summary class="cursor-pointer text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Raw status</summary>
+          <pre class="mt-2 overflow-auto text-xs text-slate-300">${esc(JSON.stringify(status, null, 2))}</pre>
+        </details>
+      `);
+      $("#testProviderClose").addEventListener("click", () => { panel.innerHTML = ""; });
+    } catch (err) {
+      panel.innerHTML = card(`<div class="text-sm text-rose-300">${esc(err.message)}</div>`);
+    }
+  }
+
+  document.querySelectorAll(".cfgProviderBtn").forEach((btn) => {
+    btn.addEventListener("click", () => openConfigurePanel(btn.dataset.provider, btn.dataset.providerName));
+  });
+  document.querySelectorAll(".testProviderBtn").forEach((btn) => {
+    btn.addEventListener("click", () => runProviderTest(btn.dataset.provider, btn.dataset.providerName));
+  });
 }
 
 async function viewAgents() {

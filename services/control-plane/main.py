@@ -2654,6 +2654,81 @@ def customer_providers(ctx: Annotated[CustomerContext, Depends(get_customer_cont
     return _fetch_ai_router("/ai/providers", ctx.tenant_id)
 
 
+def _call_ai_router(
+    method: str,
+    path: str,
+    tenant_id: str,
+    json_body: Optional[Dict[str, Any]] = None,
+    params: Optional[Dict[str, Any]] = None,
+) -> Any:
+    """Proxy call to the AI router for customer-scope operations. Like the
+    detection / policy helpers — raises HTTPException on non-2xx so the
+    frontend sees the upstream error instead of a silent empty response."""
+    router_url = os.getenv("AI_ROUTER_URL", "http://ai-router:8009")
+    router_key = os.getenv("AI_ROUTER_API_SECRET", DEFAULT_API_KEY)
+    merged_params = {"tenant_id": tenant_id, **(params or {})}
+    try:
+        resp = httpx.request(
+            method.upper(),
+            f"{router_url.rstrip('/')}{path}",
+            headers={**build_auth_headers(router_url, router_key), "x-tenant-id": tenant_id},
+            json=json_body,
+            params=merged_params,
+            timeout=12.0,
+        )
+    except Exception as exc:
+        logger.warning("customer_ai_router_proxy_error tenant=%s path=%s err=%s", tenant_id, path, exc)
+        raise HTTPException(status_code=502, detail="AI router unavailable")
+    if resp.status_code >= 300:
+        logger.warning(
+            "customer_ai_router_proxy_upstream_error tenant=%s path=%s status=%s body=%s",
+            tenant_id, path, resp.status_code, resp.text[:200],
+        )
+        raise HTTPException(status_code=502, detail=f"AI router returned {resp.status_code}: {resp.text[:200]}")
+    try:
+        return resp.json()
+    except Exception as exc:
+        logger.warning("customer_ai_router_proxy_decode_error tenant=%s err=%s", tenant_id, exc)
+        raise HTTPException(status_code=502, detail="AI router returned invalid JSON")
+
+
+class _ProviderConfigureRequest(BaseModel):
+    api_key: str
+    base_url: Optional[str] = None
+    region: Optional[str] = None
+    org_id: Optional[str] = None
+    deployment_name: Optional[str] = None
+    default_model: Optional[str] = None
+    rate_limit_per_minute: Optional[int] = None
+    monthly_budget_usd: Optional[float] = None
+
+
+@app.post("/customer/providers/{provider_id}/configure")
+def customer_configure_provider(
+    provider_id: str,
+    payload: _ProviderConfigureRequest,
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+) -> Any:
+    """Tenant admins only — writes provider credentials scoped to this
+    tenant. The api_key here is the *provider's* key (OpenAI, Anthropic, …)
+    not a CyberArmor key; it goes into the secrets service via the AI
+    router and never echoes back."""
+    body = payload.model_dump(exclude_none=False)
+    return _call_ai_router("POST", f"/credentials/providers/{provider_id}/configure", ctx.tenant_id, json_body=body)
+
+
+@app.get("/customer/providers/{provider_id}/status")
+def customer_provider_status(
+    provider_id: str,
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+) -> Any:
+    """Lightweight "is this provider wired up?" check — surfaces whether
+    credentials are present + the resolved base URL. No traffic to the
+    provider; that costs money and rate-limit budget. The frontend uses
+    this as the Test-button outcome."""
+    return _call_ai_router("GET", f"/credentials/providers/{provider_id}/status", ctx.tenant_id)
+
+
 @app.get("/customer/config/{section}", response_model=TenantPortalConfigOut)
 def customer_get_portal_config(
     section: str,
