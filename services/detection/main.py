@@ -361,6 +361,10 @@ def _scan_semantic_dlp(text: str) -> List[Dict[str, Any]]:
 # or for patterns it doesn't reliably detect (e.g. exact AWS key format).
 _SENSITIVE_REGEX_PATTERNS = [
     ("ssn", re.compile(r"\b\d{3}-\d{2}-\d{4}\b")),
+    # EIN (Employer Identification Number, also called FEIN). Distinct
+    # NN-NNNNNNN format — no overlap with SSN's NNN-NN-NNNN — so the
+    # structured form is a reliable signal on its own.
+    ("ein", re.compile(r"\b\d{2}-\d{7}\b")),
     (
         "credit_card",
         re.compile(
@@ -408,6 +412,24 @@ _CONTEXTUAL_SSN_PATTERNS = [
     re.compile(
         r"\b(\d{9})\b[^\d]{0,15}"
         r"(?:ssn|social\s+security(?:\s+number)?|taxpayer\s+id)\b",
+        re.IGNORECASE,
+    ),
+]
+
+_CONTEXTUAL_EIN_PATTERNS = [
+    # Same shape as SSN but matches "EIN", "FEIN", or the long form.
+    # Captures both the structured "NN-NNNNNNN" and bare 9-digit forms
+    # so "EIN is 12-3456789" and "EIN is 123456789" both surface.
+    re.compile(
+        r"\b(?:f?ein|employer\s+id(?:entification)?(?:\s+number)?|"
+        r"federal\s+(?:tax\s+)?id(?:entification)?(?:\s+number)?)\b"
+        r"[^\d]{0,15}(\d{2}-?\d{7})\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(\d{2}-?\d{7})\b[^\d]{0,15}"
+        r"(?:f?ein|employer\s+id(?:entification)?(?:\s+number)?|"
+        r"federal\s+(?:tax\s+)?id(?:entification)?(?:\s+number)?)\b",
         re.IGNORECASE,
     ),
 ]
@@ -728,6 +750,23 @@ def _scan_sensitive_data(text: str) -> List[Dict[str, Any]]:
                 }
             )
 
+    # 2c. Context-aware EIN detection. Covers both the structured
+    # "NN-NNNNNNN" form and bare 9 digits when nearby context names
+    # the value as an EIN/FEIN/Federal Tax ID.
+    for pattern in _CONTEXTUAL_EIN_PATTERNS:
+        for match in pattern.finditer(expanded):
+            compact_value = next((g for g in match.groups() if g), match.group(0))
+            findings.append(
+                {
+                    "type": "sensitive_data",
+                    "subtype": "ein",
+                    "match": compact_value[:120],
+                    "severity": "medium",
+                    "detector": "regex_contextual",
+                    "context": match.group(0)[:120],
+                }
+            )
+
     # 3. Semantic DLP
     findings.extend(_scan_semantic_dlp(expanded))
 
@@ -760,30 +799,41 @@ def _scan_sensitive_data(text: str) -> List[Dict[str, Any]]:
 
 # class_name -> list of (internal_name, compiled_pattern, capture_group_or_None)
 # capture_group is the regex group whose span we redact (None = whole match)
+# Reference the sensitive-regex entries by name rather than position so the
+# map doesn't silently break when the patterns list reorders. Built once at
+# module-load.
+_SENSITIVE_REGEX_BY_NAME: Dict[str, "re.Pattern[str]"] = {n: p for n, p in _SENSITIVE_REGEX_PATTERNS}
+_ENTITY_REGEX_BY_NAME:    Dict[str, "re.Pattern[str]"] = {n: p for n, p in _ENTITY_REGEX_PATTERNS}
+
 _REDACT_CLASS_MAP: Dict[str, List[tuple]] = {
-    "pii.email":            [("email",          _ENTITY_REGEX_PATTERNS[0][1], None)],
-    "pii.phone":            [("phone",          _ENTITY_REGEX_PATTERNS[1][1], None)],
-    "pii.iban":             [("iban",           _ENTITY_REGEX_PATTERNS[2][1], None)],
+    "pii.email":            [("email",          _ENTITY_REGEX_BY_NAME["email"],             None)],
+    "pii.phone":            [("phone",          _ENTITY_REGEX_BY_NAME["phone"],             None)],
+    "pii.iban":             [("iban",           _ENTITY_REGEX_BY_NAME["iban"],              None)],
     "pii.ssn":              [
-        ("ssn",             _SENSITIVE_REGEX_PATTERNS[0][1], None),
-        ("ssn",             _CONTEXTUAL_SSN_PATTERNS[0],     1),
-        ("ssn",             _CONTEXTUAL_SSN_PATTERNS[1],     1),
+        ("ssn",             _SENSITIVE_REGEX_BY_NAME["ssn"],          None),
+        ("ssn",             _CONTEXTUAL_SSN_PATTERNS[0],              1),
+        ("ssn",             _CONTEXTUAL_SSN_PATTERNS[1],              1),
     ],
-    "pii.credit_card":      [("credit_card",    _SENSITIVE_REGEX_PATTERNS[1][1], None)],
-    "secret.aws_access_key":[("aws_key",        _SENSITIVE_REGEX_PATTERNS[2][1], None)],
-    "secret.gcp_api_key":   [("gcp_api_key",    _SENSITIVE_REGEX_PATTERNS[3][1], None)],
-    "secret.github_token":  [("github_token",   _SENSITIVE_REGEX_PATTERNS[4][1], None)],
-    "secret.openai_key":    [("openai_api_key", _SENSITIVE_REGEX_PATTERNS[5][1], None)],
-    "secret.anthropic_key": [("anthropic_key",  _SENSITIVE_REGEX_PATTERNS[6][1], None)],
-    "secret.slack_token":   [("slack_token",    _SENSITIVE_REGEX_PATTERNS[7][1], None)],
-    "secret.stripe_key":    [("stripe_key",     _SENSITIVE_REGEX_PATTERNS[8][1], None)],
+    "pii.ein":              [
+        ("ein",             _SENSITIVE_REGEX_BY_NAME["ein"],          None),
+        ("ein",             _CONTEXTUAL_EIN_PATTERNS[0],              1),
+        ("ein",             _CONTEXTUAL_EIN_PATTERNS[1],              1),
+    ],
+    "pii.credit_card":      [("credit_card",    _SENSITIVE_REGEX_BY_NAME["credit_card"],    None)],
+    "secret.aws_access_key":[("aws_key",        _SENSITIVE_REGEX_BY_NAME["aws_key"],        None)],
+    "secret.gcp_api_key":   [("gcp_api_key",    _SENSITIVE_REGEX_BY_NAME["gcp_api_key"],    None)],
+    "secret.github_token":  [("github_token",   _SENSITIVE_REGEX_BY_NAME["github_token"],   None)],
+    "secret.openai_key":    [("openai_api_key", _SENSITIVE_REGEX_BY_NAME["openai_api_key"], None)],
+    "secret.anthropic_key": [("anthropic_key",  _SENSITIVE_REGEX_BY_NAME["anthropic_api_key"], None)],
+    "secret.slack_token":   [("slack_token",    _SENSITIVE_REGEX_BY_NAME["slack_token"],    None)],
+    "secret.stripe_key":    [("stripe_key",     _SENSITIVE_REGEX_BY_NAME["stripe_key"],     None)],
     "secret.api_key":       [
-        ("generic_api_key", _SENSITIVE_REGEX_PATTERNS[9][1], 1),
-        ("entity_api_key",  _ENTITY_REGEX_PATTERNS[4][1],    None),
+        ("generic_api_key", _SENSITIVE_REGEX_BY_NAME["generic_api_key"], 1),
+        ("entity_api_key",  _ENTITY_REGEX_BY_NAME.get("api_key") or _ENTITY_REGEX_PATTERNS[4][1], None),
     ],
-    "secret.password":      [("password",       _SENSITIVE_REGEX_PATTERNS[10][1], 1)],
-    "secret.private_key":   [("private_key",    _SENSITIVE_REGEX_PATTERNS[11][1], None)],
-    "secret.jwt":           [("jwt",            _ENTITY_REGEX_PATTERNS[3][1],    None)],
+    "secret.password":      [("password",       _SENSITIVE_REGEX_BY_NAME["password_field"], 1)],
+    "secret.private_key":   [("private_key",    _SENSITIVE_REGEX_BY_NAME["private_key"],    None)],
+    "secret.jwt":           [("jwt",            _ENTITY_REGEX_BY_NAME.get("jwt") or _ENTITY_REGEX_PATTERNS[3][1], None)],
 }
 
 # Path B follow-up: NER-only classes (no regex patterns; spans come from

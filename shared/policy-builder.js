@@ -618,7 +618,7 @@ export function mountPolicyBuilder(options) {
   // detection service today).
   const _BUILTIN_REDACT_CATALOG = [
     // Regex-backed (precise structured patterns)
-    "pii.email", "pii.phone", "pii.iban", "pii.ssn", "pii.credit_card",
+    "pii.email", "pii.phone", "pii.iban", "pii.ssn", "pii.ein", "pii.credit_card",
     "secret.aws_access_key", "secret.gcp_api_key", "secret.github_token",
     "secret.openai_key", "secret.anthropic_key", "secret.slack_token",
     "secret.stripe_key", "secret.api_key", "secret.password",
