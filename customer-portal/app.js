@@ -282,6 +282,129 @@ function progressBar(score, tone = "cyan") {
   return `<div class="h-2 w-full rounded-full bg-slate-800"><div class="${colors[tone] || colors.cyan} h-2 rounded-full" style="width:${Math.max(0, Math.min(100, score))}%"></div></div>`;
 }
 
+// --- Mission Control activity widgets ---
+
+// Inline SVG sparkline for the 24h telemetry series. No external chart lib,
+// no extra dependency — just a 24-bar histogram with a subtle scale.
+function sparklineSvg(series, { width = 280, height = 60, color = "#22d3ee" } = {}) {
+  const data = Array.isArray(series) ? series : [];
+  const len = data.length || 1;
+  const max = Math.max(1, ...data);
+  const gap = 2;
+  const barW = Math.max(2, (width - gap * (len - 1)) / len);
+  const bars = data.map((v, i) => {
+    const h = max === 0 ? 0 : Math.max(1, (v / max) * (height - 4));
+    const x = i * (barW + gap);
+    const y = height - h;
+    return `<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${barW.toFixed(2)}" height="${h.toFixed(2)}" fill="${color}" opacity="${v ? 0.85 : 0.18}" rx="1"></rect>`;
+  }).join("");
+  return `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" class="w-full" style="height:${height}px">${bars}</svg>`;
+}
+
+const ACTION_BUCKETS = [
+  { key: "block",   label: "Block",   color: "#f87171" },
+  { key: "redact",  label: "Redact",  color: "#fbbf24" },
+  { key: "warn",    label: "Warn",    color: "#fcd34d" },
+  { key: "detect",  label: "Detect",  color: "#60a5fa" },
+  { key: "monitor", label: "Monitor", color: "#94a3b8" },
+  { key: "allow",   label: "Allow",   color: "#34d399" },
+];
+
+function actionBreakdownHtml(breakdown) {
+  const counts = breakdown || {};
+  const total = Object.values(counts).reduce((a, b) => a + (Number(b) || 0), 0);
+  if (total === 0) {
+    return `<div class="rounded-2xl border border-dashed border-slate-800 p-6 text-center text-sm text-slate-500">
+      No enforcement activity in the last 24h. Trigger an event from an enrolled endpoint to populate this panel.
+    </div>`;
+  }
+  return `
+    <div class="space-y-3">
+      ${ACTION_BUCKETS.map((b) => {
+        const v = Number(counts[b.key] || 0);
+        const pct = total ? (v / total) * 100 : 0;
+        return `
+          <div>
+            <div class="flex items-baseline justify-between text-xs">
+              <span class="text-slate-300">${b.label}</span>
+              <span class="font-mono text-slate-400">${v} · ${pct.toFixed(pct < 10 ? 1 : 0)}%</span>
+            </div>
+            <div class="mt-1 h-2 rounded-full bg-slate-900">
+              <div class="h-2 rounded-full" style="width:${pct.toFixed(2)}%;background:${b.color}"></div>
+            </div>
+          </div>`;
+      }).join("")}
+    </div>`;
+}
+
+function severityClasses(s) {
+  const sev = String(s || "").toLowerCase();
+  if (sev === "critical" || sev === "high") return "bg-rose-500/15 text-rose-200 border border-rose-900/60";
+  if (sev === "medium" || sev === "warn") return "bg-amber-500/15 text-amber-200 border border-amber-900/60";
+  if (sev === "low" || sev === "info") return "bg-slate-700/40 text-slate-200 border border-slate-700";
+  return "bg-cyan-500/15 text-cyan-200 border border-cyan-900/60";
+}
+
+function actionPillClasses(action) {
+  const a = String(action || "").toLowerCase();
+  if (a === "block")  return "bg-rose-500/20 text-rose-200";
+  if (a === "redact") return "bg-amber-500/20 text-amber-200";
+  if (a === "warn")   return "bg-amber-500/15 text-amber-200";
+  if (a === "detect") return "bg-blue-500/20 text-blue-200";
+  if (a === "allow")  return "bg-emerald-500/20 text-emerald-200";
+  return "bg-slate-700/40 text-slate-200";
+}
+
+function recentActivityHtml(events) {
+  const rows = Array.isArray(events) ? events : [];
+  if (rows.length === 0) {
+    return `<div class="rounded-2xl border border-dashed border-slate-800 p-6 text-center text-sm text-slate-500">
+      No telemetry yet for this tenant. Install an endpoint agent or browser extension and trigger any monitored event.
+    </div>`;
+  }
+  return `
+    <ul class="divide-y divide-slate-800">
+      ${rows.map((e) => {
+        const time = fmt(e.occurred_at);
+        const host = e.hostname || e.agent_id || "—";
+        const eventType = e.event_type || "event";
+        const source = e.source || "";
+        return `
+          <li class="flex items-center gap-3 py-2.5 cursor-pointer hover:bg-slate-900/40 px-2 -mx-2 rounded-lg" data-recent-event='${esc(JSON.stringify(e))}'>
+            <span class="inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${actionPillClasses(e.action_class)}">${esc(e.action_class || "event")}</span>
+            <span class="min-w-0 flex-1">
+              <span class="block truncate text-sm font-medium text-slate-100">${esc(eventType)}</span>
+              <span class="block truncate text-xs text-slate-500">${esc(host)}${source ? ` · ${esc(source)}` : ""}</span>
+            </span>
+            ${e.severity ? `<span class="shrink-0 rounded-md px-2 py-0.5 text-[10px] uppercase tracking-wider ${severityClasses(e.severity)}">${esc(e.severity)}</span>` : ""}
+            <span class="shrink-0 text-xs text-slate-500 tabular-nums">${esc(time)}</span>
+          </li>`;
+      }).join("")}
+    </ul>`;
+}
+
+function topEventTypesHtml(rows) {
+  const items = Array.isArray(rows) ? rows : [];
+  if (items.length === 0) return "";
+  const max = Math.max(1, ...items.map((r) => r.count || 0));
+  return `
+    <div class="space-y-2">
+      ${items.map((r) => {
+        const pct = (r.count / max) * 100;
+        return `
+          <div>
+            <div class="flex items-baseline justify-between text-xs">
+              <span class="truncate font-mono text-slate-300">${esc(r.event_type)}</span>
+              <span class="ml-2 font-mono tabular-nums text-slate-400">${r.count}</span>
+            </div>
+            <div class="mt-1 h-1.5 rounded-full bg-slate-900">
+              <div class="h-1.5 rounded-full bg-cyan-500/60" style="width:${pct.toFixed(2)}%"></div>
+            </div>
+          </div>`;
+      }).join("")}
+    </div>`;
+}
+
 function missionControlHtml(settings, overview) {
   const readiness = readinessFromOverview(overview);
   const tone = readinessTone(readiness.score);
@@ -295,6 +418,8 @@ function missionControlHtml(settings, overview) {
       </span>
     </a>
   `).join("");
+  const series = overview.telemetry_series_24h || [];
+  const series24hTotal = series.reduce((a, b) => a + b, 0);
 
   return `
     <div class="grid gap-3 md:grid-cols-3 lg:grid-cols-6">
@@ -333,6 +458,35 @@ function missionControlHtml(settings, overview) {
           <a class="rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 hover:bg-slate-800" href="#/onboarding">Guided Onboarding</a>
           <a class="rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 hover:bg-slate-800" href="#/reports">Export Evidence</a>
         </div>
+      `)}
+    </div>
+
+    <div class="mt-5 grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
+      ${card(`
+        <div class="flex items-baseline justify-between">
+          <div class="text-xs uppercase tracking-[0.18em] text-slate-500">Telemetry — last 24h</div>
+          <div class="text-sm font-mono tabular-nums text-slate-300">${series24hTotal} events</div>
+        </div>
+        <div class="mt-3">${sparklineSvg(series, { height: 56 })}</div>
+        <div class="mt-2 flex justify-between text-[10px] text-slate-500"><span>24h ago</span><span>now</span></div>
+        <div class="mt-5 text-xs uppercase tracking-[0.18em] text-slate-500">Top event types (24h)</div>
+        <div class="mt-3">${topEventTypesHtml(overview.top_event_types_24h)}</div>
+      `)}
+      ${card(`
+        <div class="font-semibold">Threat posture <span class="text-xs font-normal text-slate-500">— last 24h</span></div>
+        <p class="mt-1 text-xs text-slate-500">How the policy engine responded to events seen in the last 24 hours.</p>
+        <div class="mt-4">${actionBreakdownHtml(overview.action_breakdown_24h)}</div>
+      `)}
+    </div>
+
+    <div class="mt-5">
+      ${card(`
+        <div class="flex items-baseline justify-between">
+          <div class="font-semibold">Recent activity</div>
+          <a class="text-xs text-cyan-200 hover:text-cyan-100" href="#/telemetry">View all telemetry →</a>
+        </div>
+        <p class="mt-1 text-xs text-slate-500">The 10 most recent events from this tenant. Click any row to inspect the full payload.</p>
+        <div class="mt-3" id="missionRecentActivity">${recentActivityHtml(overview.recent_events)}</div>
       `)}
     </div>
 
@@ -834,12 +988,35 @@ async function tenantScopedConfigPage(section, title, subtitle, items, defaults 
 
 async function viewOverview() {
   $("#pageTitle").textContent = "Mission Control";
-  $("#pageSubtitle").textContent = "Tenant readiness, next actions, and evidence posture";
+  $("#pageSubtitle").textContent = "Tenant readiness, next actions, and live activity";
   const [settings, overview] = await Promise.all([
     api("/api/customer/settings"),
     api("/api/customer/overview"),
   ]);
   $("#app").innerHTML = missionControlHtml(settings, overview);
+  // Wire Recent Activity row clicks → quick read-only modal. We don't have
+  // the full payload on the overview endpoint by design (kept it lean), so
+  // the modal just shows headers + a deep link into Telemetry.
+  document.querySelectorAll("#missionRecentActivity [data-recent-event]").forEach((el) => {
+    el.addEventListener("click", () => {
+      let event = {};
+      try { event = JSON.parse(el.dataset.recentEvent || "{}"); } catch { /* noop */ }
+      openReadOnlyModal({
+        title: `Event — ${event.event_type || ""}`,
+        record: event,
+        fields: [
+          { key: "occurred_at",  label: "Time",       render: (r) => esc(fmt(r.occurred_at)) },
+          { key: "event_type",   label: "Event Type" },
+          { key: "action_class", label: "Action class", render: (r) => `<span class="inline-flex rounded-full px-2 py-0.5 text-[10px] uppercase ${actionPillClasses(r.action_class)}">${esc(r.action_class || "event")}</span>` },
+          { key: "source",       label: "Source" },
+          { key: "severity",     label: "Severity" },
+          { key: "hostname",     label: "Hostname" },
+          { key: "agent_id",     label: "Agent" },
+          { key: "user_id",      label: "User" },
+        ],
+      });
+    });
+  });
 }
 
 async function viewPolicyBuilder() {

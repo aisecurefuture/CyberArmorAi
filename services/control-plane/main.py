@@ -1943,6 +1943,29 @@ def _readiness_summary(overview: Dict[str, Any]) -> Dict[str, Any]:
     return {"score": round((complete / len(checks)) * 100), "complete": complete, "total": len(checks), "checks": checks}
 
 
+def _classify_action(event_type: str) -> str:
+    """Bucket a telemetry event_type into a coarse action class.
+
+    The Mission Control "Threat Posture" panel groups events by what the
+    policy engine effectively did. We don't carry an explicit action field
+    on every telemetry row, but most event types name the action in their
+    prefix/suffix (policy_block, clipboard_sensitive_data_redacted, etc.),
+    so a substring match is reliable.
+    """
+    et = (event_type or "").lower()
+    if "block" in et:
+        return "block"
+    if "redact" in et:
+        return "redact"
+    if "warn" in et:
+        return "warn"
+    if "allow" in et:
+        return "allow"
+    if "detect" in et or "sensitive" in et or "injection" in et:
+        return "detect"
+    return "monitor"
+
+
 @app.get("/customer/overview")
 def customer_overview(
     ctx: Annotated[CustomerContext, Depends(get_customer_context)],
@@ -1954,6 +1977,58 @@ def customer_overview(
     telemetry_count = db.query(TelemetryRecord).filter(TelemetryRecord.tenant_id == ctx.tenant_id).count()
     incidents = list(_INCIDENTS.get(ctx.tenant_id, {}).values())
     providers = _fetch_ai_router("/ai/providers", ctx.tenant_id)
+
+    now = datetime.now(timezone.utc)
+    since = now - timedelta(hours=24)
+
+    recent_rows = (
+        db.query(TelemetryRecord)
+        .filter(TelemetryRecord.tenant_id == ctx.tenant_id)
+        .order_by(desc(TelemetryRecord.occurred_at), desc(TelemetryRecord.created_at))
+        .limit(10)
+        .all()
+    )
+    recent_events: List[Dict[str, Any]] = []
+    for r in recent_rows:
+        payload = _coerce_meta(r.payload) or {}
+        recent_events.append({
+            "occurred_at": r.occurred_at.isoformat() if r.occurred_at else None,
+            "event_type": r.event_type or "",
+            "source": r.source or "",
+            "hostname": r.hostname or "",
+            "agent_id": r.agent_id or "",
+            "user_id": r.user_id or "",
+            "severity": payload.get("severity") if isinstance(payload, dict) else None,
+            "action_class": _classify_action(r.event_type),
+        })
+
+    # 24h hourly series + action / type counts in a single pass over the
+    # last day's telemetry. Bounded by the existing tenant_id index.
+    day_rows = (
+        db.query(TelemetryRecord.event_type, TelemetryRecord.occurred_at)
+        .filter(TelemetryRecord.tenant_id == ctx.tenant_id)
+        .filter(TelemetryRecord.occurred_at >= since)
+        .all()
+    )
+    series_24h = [0] * 24
+    action_24h = {"allow": 0, "monitor": 0, "warn": 0, "detect": 0, "redact": 0, "block": 0}
+    type_counts: Dict[str, int] = {}
+    for event_type, occurred_at in day_rows:
+        if occurred_at is not None:
+            # Cast naive timestamps (SQLite) to UTC so the math is consistent.
+            if occurred_at.tzinfo is None:
+                occurred_at = occurred_at.replace(tzinfo=timezone.utc)
+            hours_ago = int((now - occurred_at).total_seconds() // 3600)
+            if 0 <= hours_ago < 24:
+                series_24h[23 - hours_ago] += 1
+        bucket = _classify_action(event_type)
+        action_24h[bucket] = action_24h.get(bucket, 0) + 1
+        type_counts[event_type or "unknown"] = type_counts.get(event_type or "unknown", 0) + 1
+    top_event_types_24h = [
+        {"event_type": et, "count": ct}
+        for et, ct in sorted(type_counts.items(), key=lambda kv: -kv[1])[:5]
+    ]
+
     return {
         "tenant_id": ctx.tenant_id,
         "policy_count": len(policies) if isinstance(policies, list) else 0,
@@ -1962,6 +2037,11 @@ def customer_overview(
         "telemetry_count": telemetry_count,
         "incident_count": len(incidents),
         "provider_count": len((providers or {}).get("providers", [])) if isinstance(providers, dict) else 0,
+        # New mission-control payload
+        "recent_events": recent_events,
+        "telemetry_series_24h": series_24h,
+        "action_breakdown_24h": action_24h,
+        "top_event_types_24h": top_event_types_24h,
     }
 
 
