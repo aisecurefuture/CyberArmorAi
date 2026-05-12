@@ -189,6 +189,7 @@ const configReady = (async () => {
   // no network) still enforces blocks at the network layer.
   if (cachedPolicies && cachedPolicies.length) {
     try { await updatePolicyDNR(cachedPolicies); } catch {}
+    try { await updateUploadDNR(cachedPolicies); } catch {}
   }
 })();
 
@@ -358,6 +359,149 @@ async function updatePolicyDNR(policies) {
   }
 }
 
+// --- block_upload → declarativeNetRequest synthesis ---
+//
+// Modern AI tools (ChatGPT, Claude, Gemini, Copilot) push uploads through a
+// service worker, so the MAIN-world fetch wrapper in upload_interceptor.js
+// never sees those requests — they're issued by self.fetch inside the SW,
+// not window.fetch. DNR rules run at the chromium network layer ahead of
+// any JS, including service workers, so a DNR-based block is unbypassable.
+//
+// We can't introspect the request body from DNR (no way to detect "this is
+// a multipart upload" purely from headers/URL), so this layer targets a
+// curated catalog of known AI upload endpoints by URL filter. Policies
+// with URL-based conditions translate to initiator-domain inclusions /
+// exclusions so "block_upload not_contains claude.ai" still works as
+// authored. Anything outside the catalog falls back to the fetch wrapper.
+//
+// Rule-ID range: 200000–299999.
+
+const UPLOAD_DNR_ID_MIN = 200000;
+const UPLOAD_DNR_ID_MAX = 299999;
+
+// Known AI / collaboration upload endpoints. Add patterns as more services
+// appear — the urlFilter syntax is the DNR pattern language (substring
+// match, with optional ||domain anchors and *).
+const AI_UPLOAD_PATTERNS = [
+  // OpenAI / ChatGPT
+  { urlFilter: "||chatgpt.com/backend-api/files",     label: "openai_chatgpt_files" },
+  { urlFilter: "||chat.openai.com/backend-api/files", label: "openai_chat_files" },
+  // Anthropic / Claude
+  { urlFilter: "||claude.ai/api/*/upload_file",       label: "anthropic_upload_file", regex: true },
+  { urlFilter: "||claude.ai/api/organizations/",      label: "anthropic_organizations_upload" },
+  { urlFilter: "||claude.ai/api/convert_document",    label: "anthropic_convert_document" },
+  // Google Gemini
+  { urlFilter: "||gemini.google.com/_/upload",        label: "google_gemini_upload" },
+  { urlFilter: "||gemini.google.com/_/uploads",       label: "google_gemini_uploads" },
+  // Microsoft Copilot
+  { urlFilter: "||copilot.microsoft.com/c/api/files", label: "ms_copilot_files" },
+  // Perplexity
+  { urlFilter: "||perplexity.ai/rest/uploads",        label: "perplexity_uploads" },
+  // Generic high-signal upload paths so the catalog catches new tools
+  // before we curate. Tighter false-positive risk; keep last so curated
+  // patterns above win precedence.
+  { urlFilter: "/upload/files",                       label: "generic_upload_files" },
+  { urlFilter: "/api/files/upload",                   label: "generic_api_files_upload" },
+];
+
+// Translate a block_upload policy's URL conditions into DNR initiator
+// scope. We support a single rule (or AND of one rule) on request.url /
+// request.hostname / request.host — the operators "contains" /
+// "equals" / "starts_with" become initiatorDomains; "not_contains" /
+// "not_equals" become excludedInitiatorDomains. Anything more elaborate
+// returns null and the caller emits the rules unconstrained (block on
+// every catalog endpoint), which is the safer default for block_upload —
+// a missed policy condition shouldn't silently let uploads through.
+function _hostFromRule(rule) {
+  const v = String(rule && rule.value || "");
+  // urls and hostnames both produce a bare host for DNR initiatorDomains.
+  try {
+    if (v.includes("://")) return new URL(v).hostname;
+  } catch { /* fall through */ }
+  return v.replace(/^\/+|\/+$/g, "");
+}
+
+function extractUploadInitiatorScope(conditions) {
+  if (!conditions || !Array.isArray(conditions.rules) || conditions.rules.length === 0) {
+    return { include: null, exclude: null };
+  }
+  const op = (conditions.operator || "AND").toUpperCase();
+  const include = [];
+  const exclude = [];
+  for (const r of conditions.rules) {
+    if (r.rules) return { include: null, exclude: null }; // nested → unconstrained
+    const field = String(r.field || "");
+    if (field !== "request.url" && field !== "request.hostname" && field !== "request.host") continue;
+    const host = _hostFromRule(r);
+    if (!host) continue;
+    switch (String(r.operator || "").toLowerCase()) {
+      case "contains":
+      case "equals":
+      case "starts_with":
+      case "ends_with":
+        include.push(host); break;
+      case "not_contains":
+      case "not_equals":
+        exclude.push(host); break;
+      default: /* unsupported operator — ignore this rule */
+    }
+  }
+  // AND with multiple includes means "all of these must match" — DNR can't
+  // express that on a single rule. Drop the includes; keep excludes which
+  // AND naturally (multiple excludedInitiatorDomains is a union).
+  if (op === "AND" && include.length > 1) {
+    return { include: null, exclude: exclude.length ? exclude : null };
+  }
+  return {
+    include: include.length ? include : null,
+    exclude: exclude.length ? exclude : null,
+  };
+}
+
+async function updateUploadDNR(policies) {
+  if (!chrome.declarativeNetRequest || !chrome.declarativeNetRequest.updateDynamicRules) return;
+
+  const rules = [];
+  let nextId = UPLOAD_DNR_ID_MIN;
+
+  const blockUploadPolicies = (policies || []).filter(
+    (p) => p && p.enabled && p.action === "block_upload"
+  );
+
+  for (const policy of blockUploadPolicies) {
+    const { include, exclude } = extractUploadInitiatorScope(policy.conditions);
+    for (const pat of AI_UPLOAD_PATTERNS) {
+      if (nextId > UPLOAD_DNR_ID_MAX) break;
+      const cond = {
+        urlFilter: pat.urlFilter,
+        resourceTypes: ["xmlhttprequest", "other", "sub_frame"],
+        requestMethods: ["post", "put", "patch"],
+      };
+      if (include) cond.initiatorDomains = include;
+      if (exclude) cond.excludedInitiatorDomains = exclude;
+      rules.push({
+        id: nextId++,
+        priority: 2,
+        action: { type: "block" },
+        condition: cond,
+      });
+    }
+  }
+
+  try {
+    const existing = await chrome.declarativeNetRequest.getDynamicRules();
+    const removeRuleIds = existing
+      .map((r) => r.id)
+      .filter((id) => id >= UPLOAD_DNR_ID_MIN && id <= UPLOAD_DNR_ID_MAX);
+    await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds, addRules: rules });
+    console.log(
+      `[CyberArmor] block_upload DNR rules synced: ${rules.length} active across ${blockUploadPolicies.length} policy(ies)`
+    );
+  } catch (err) {
+    console.warn("[CyberArmor] block_upload DNR update failed:", err.message);
+  }
+}
+
 // --- Policy Sync ---
 
 async function syncPolicies() {
@@ -383,6 +527,7 @@ async function syncPolicies() {
       await chrome.storage.local.set({ cachedPolicies, lastPolicySync: Date.now() });
       console.log(`[CyberArmor] Synced ${cachedPolicies.length} policies`);
       await updatePolicyDNR(cachedPolicies);
+      await updateUploadDNR(cachedPolicies);
       return { ok: true, count: cachedPolicies.length };
     }
     const body = await resp.text().catch(() => "");
