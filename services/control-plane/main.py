@@ -1885,6 +1885,44 @@ def _fetch_ai_router(path: str, tenant_id: str) -> Any:
         return {}
 
 
+def _call_detection_service(
+    method: str,
+    path: str,
+    tenant_id: str,
+    json_body: Optional[Dict[str, Any]] = None,
+    timeout_s: float = 20.0,
+) -> Any:
+    """General-purpose proxy call to the detection service for tenant-scoped
+    operations (scan endpoints, redact targets, etc.). Raises HTTPException
+    on non-2xx so customer-portal clients see accurate upstream errors
+    instead of a silent empty response.
+    """
+    det_url = os.getenv("DETECTION_SERVICE_URL", "http://detection:8002")
+    det_key = os.getenv("DETECTION_API_SECRET", DEFAULT_API_KEY)
+    try:
+        resp = httpx.request(
+            method.upper(),
+            f"{det_url.rstrip('/')}{path}",
+            headers={**build_auth_headers(det_url, det_key), "x-tenant-id": tenant_id},
+            json=json_body,
+            timeout=timeout_s,
+        )
+    except Exception as exc:
+        logger.warning("customer_detection_proxy_error tenant=%s path=%s err=%s", tenant_id, path, exc)
+        raise HTTPException(status_code=502, detail="detection service unavailable")
+    if resp.status_code >= 300:
+        logger.warning(
+            "customer_detection_proxy_upstream_error tenant=%s path=%s status=%s body=%s",
+            tenant_id, path, resp.status_code, resp.text[:200],
+        )
+        raise HTTPException(status_code=502, detail=f"detection service returned {resp.status_code}")
+    try:
+        return resp.json()
+    except Exception as exc:
+        logger.warning("customer_detection_proxy_decode_error tenant=%s err=%s", tenant_id, exc)
+        raise HTTPException(status_code=502, detail="detection service returned invalid JSON")
+
+
 def _call_policy_service(
     method: str,
     path: str,
@@ -2461,6 +2499,48 @@ def customer_audit(
             "created_at": r.created_at,
         })
     return out
+
+
+# ---- Customer-scope detection / scan proxies ---------------------------
+# Customer portal's Scan Tools view (and any future SDK helper) calls these
+# instead of hitting the detection service directly. Tenant is taken from
+# the session, body is forwarded unchanged.
+
+class _ScanRequest(BaseModel):
+    text: str = ""
+    context: Optional[Dict[str, Any]] = None
+
+
+@app.post("/customer/scan/prompt-injection")
+def customer_scan_prompt_injection(
+    payload: _ScanRequest,
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+) -> Any:
+    return _call_detection_service("POST", "/scan/prompt-injection", ctx.tenant_id, json_body=payload.model_dump())
+
+
+@app.post("/customer/scan/sensitive-data")
+def customer_scan_sensitive_data(
+    payload: _ScanRequest,
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+) -> Any:
+    return _call_detection_service("POST", "/scan/sensitive-data", ctx.tenant_id, json_body=payload.model_dump())
+
+
+@app.post("/customer/scan/output-safety")
+def customer_scan_output_safety(
+    payload: _ScanRequest,
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+) -> Any:
+    return _call_detection_service("POST", "/scan/output-safety", ctx.tenant_id, json_body=payload.model_dump())
+
+
+@app.post("/customer/scan/all")
+def customer_scan_all(
+    payload: _ScanRequest,
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+) -> Any:
+    return _call_detection_service("POST", "/scan/all", ctx.tenant_id, json_body=payload.model_dump())
 
 
 @app.get("/customer/incidents")

@@ -1671,11 +1671,104 @@ async function viewProxy() {
 }
 
 async function viewScan() {
-  await tenantScopedConfigPage("scan", "Scan Tools", "Tenant scanning utilities", [
-    { title: "Prompt Injection Checks", body: "Run or review prompt-injection validation workflows against this tenant's integrations.", badge: "customer workspace", tone: "cyan" },
-    { title: "Policy Drift", body: "Compare configured tenant policies against expected controls and onboarding baselines.", badge: "coming online", tone: "amber" },
-    { title: "Provider Hygiene", body: "Validate tenant AI provider configuration and safe routing expectations.", badge: "tenant scoped", tone: "green" },
-  ], { enabled_checks: ["prompt_injection", "policy_drift", "provider_hygiene"], schedule: "manual" });
+  $("#pageTitle").textContent = "Scan Tools";
+  $("#pageSubtitle").textContent = "Run on-demand detection against arbitrary text for this tenant";
+
+  function resultPanel(result, error) {
+    if (error) {
+      return `<div class="mt-3 rounded-xl border border-rose-900 bg-rose-950/30 px-3 py-2 text-sm text-rose-200">${esc(error)}</div>`;
+    }
+    if (!result) return "";
+    // Pull out a short summary from common detection-service response shapes
+    // so the operator doesn't have to read raw JSON for the obvious answer.
+    const flags = [];
+    if (result.injection_detected || result.is_injection)             flags.push(`<span class="rounded-full bg-rose-500/20 px-2 py-0.5 text-[10px] uppercase tracking-wider text-rose-200">prompt injection</span>`);
+    if (Array.isArray(result.findings) && result.findings.length)     flags.push(`<span class="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] uppercase tracking-wider text-amber-200">${result.findings.length} finding${result.findings.length === 1 ? "" : "s"}</span>`);
+    if (Array.isArray(result.pii_classes) && result.pii_classes.length) flags.push(...result.pii_classes.map((c) => `<span class="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] uppercase tracking-wider text-amber-200">${esc(c)}</span>`));
+    if (result.toxicity_score != null && result.toxicity_score > 0.5) flags.push(`<span class="rounded-full bg-rose-500/20 px-2 py-0.5 text-[10px] uppercase tracking-wider text-rose-200">toxic ${(result.toxicity_score * 100).toFixed(0)}%</span>`);
+    if (result.safe === true || (!flags.length && result.detected === false)) {
+      flags.push(`<span class="rounded-full bg-emerald-500/20 px-2 py-0.5 text-[10px] uppercase tracking-wider text-emerald-200">clean</span>`);
+    }
+    const flagsHtml = flags.length ? `<div class="mt-3 flex flex-wrap gap-2">${flags.join("")}</div>` : "";
+    return `
+      ${flagsHtml}
+      <details class="mt-3 rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+        <summary class="cursor-pointer text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Raw JSON</summary>
+        <pre class="mt-2 max-h-64 overflow-auto text-xs text-slate-300">${esc(JSON.stringify(result, null, 2))}</pre>
+      </details>`;
+  }
+
+  $("#app").innerHTML = `
+    <div class="grid gap-4 lg:grid-cols-2">
+      ${card(`
+        <div class="font-semibold">Prompt Injection Scan</div>
+        <p class="mt-1 text-xs text-slate-500">Test if a prompt contains jailbreak / ignore-instructions / system-prompt-leak patterns.</p>
+        <textarea id="scanPrompt" rows="4" class="mt-3 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm" placeholder="Paste a prompt to inspect…"></textarea>
+        <div class="mt-3 flex items-center gap-2">
+          <button id="runPromptScan" class="rounded-xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400">Scan</button>
+          <span id="runPromptStatus" class="text-xs text-slate-500"></span>
+        </div>
+        <div id="promptResult"></div>
+      `)}
+      ${card(`
+        <div class="font-semibold">Sensitive Data Scan</div>
+        <p class="mt-1 text-xs text-slate-500">Detect PII and secrets (SSN, credit card, email, IBAN, API keys, etc.). Formatted SSNs like <span class="font-mono">123-45-6789</span> are detected directly; bare 9-digit values are only flagged when context suggests it.</p>
+        <textarea id="scanData" rows="4" class="mt-3 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm" placeholder="Paste content to classify…"></textarea>
+        <div class="mt-3 flex items-center gap-2">
+          <button id="runDataScan" class="rounded-xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400">Scan</button>
+          <span id="runDataStatus" class="text-xs text-slate-500"></span>
+        </div>
+        <div id="dataResult"></div>
+      `)}
+      ${card(`
+        <div class="font-semibold">Output Safety Scan</div>
+        <p class="mt-1 text-xs text-slate-500">Check AI output for toxicity, unsafe content, or policy violations.</p>
+        <textarea id="scanOutput" rows="4" class="mt-3 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm" placeholder="Paste AI response text…"></textarea>
+        <div class="mt-3 flex items-center gap-2">
+          <button id="runOutputScan" class="rounded-xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400">Scan</button>
+          <span id="runOutputStatus" class="text-xs text-slate-500"></span>
+        </div>
+        <div id="outputResult"></div>
+      `)}
+      ${card(`
+        <div class="font-semibold">Full Pipeline Scan</div>
+        <p class="mt-1 text-xs text-slate-500">Run all detectors at once — prompt injection, sensitive data, and output safety.</p>
+        <textarea id="scanFull" rows="4" class="mt-3 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm" placeholder="Paste text for the full detection pipeline…"></textarea>
+        <div class="mt-3 flex items-center gap-2">
+          <button id="runFullScan" class="rounded-xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400">Scan All</button>
+          <span id="runFullStatus" class="text-xs text-slate-500"></span>
+        </div>
+        <div id="fullResult"></div>
+      `)}
+    </div>
+  `;
+
+  async function runScan(buttonId, statusId, inputId, resultId, endpoint) {
+    const text = $(inputId).value.trim();
+    if (!text) { $(statusId).textContent = "Enter text to scan."; return; }
+    const btn = $(buttonId);
+    btn.disabled = true;
+    $(statusId).textContent = "Scanning…";
+    $(resultId).innerHTML = "";
+    try {
+      const r = await api(`/api/customer${endpoint}`, {
+        method: "POST",
+        body: JSON.stringify({ text }),
+      });
+      $(statusId).textContent = "";
+      $(resultId).innerHTML = resultPanel(r, null);
+    } catch (err) {
+      $(statusId).textContent = "";
+      $(resultId).innerHTML = resultPanel(null, err.message);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  $("#runPromptScan").addEventListener("click", () => runScan("#runPromptScan", "#runPromptStatus", "#scanPrompt", "#promptResult", "/scan/prompt-injection"));
+  $("#runDataScan").addEventListener("click",   () => runScan("#runDataScan",   "#runDataStatus",   "#scanData",   "#dataResult",   "/scan/sensitive-data"));
+  $("#runOutputScan").addEventListener("click", () => runScan("#runOutputScan", "#runOutputStatus", "#scanOutput", "#outputResult", "/scan/output-safety"));
+  $("#runFullScan").addEventListener("click",   () => runScan("#runFullScan",   "#runFullStatus",   "#scanFull",   "#fullResult",   "/scan/all"));
 }
 
 // --- Policy helpers ---
