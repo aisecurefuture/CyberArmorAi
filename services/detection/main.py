@@ -365,6 +365,16 @@ _SENSITIVE_REGEX_PATTERNS = [
     # NN-NNNNNNN format — no overlap with SSN's NNN-NN-NNNN — so the
     # structured form is a reliable signal on its own.
     ("ein", re.compile(r"\b\d{2}-\d{7}\b")),
+    # Driver's license — Maryland / Florida / similar 1-letter + 12-digit
+    # formats written with dashes or spaces (K400-6737-9051, A123 4567 8901).
+    # Distinctive shape: alphanumeric tokens that don't match (8 digits, 9
+    # digits without a letter prefix, etc.) won't trip it. Other state
+    # formats (CA's L+7 digits, TX's 8 digits, NY's 9 digits) are too short
+    # to disambiguate from random IDs and remain contextual-only.
+    (
+        "drivers_license",
+        re.compile(r"\b[A-Z]\d{3}[\s-]\d{4}[\s-]\d{4}\b", re.IGNORECASE),
+    ),
     (
         "credit_card",
         re.compile(
@@ -921,6 +931,7 @@ _REDACT_CLASS_MAP: Dict[str, List[tuple]] = {
         ("ein",             _CONTEXTUAL_EIN_PATTERNS[1],              1),
     ],
     "pii.drivers_license":  [
+        ("drivers_license", _SENSITIVE_REGEX_BY_NAME["drivers_license"], None),
         ("drivers_license", _CONTEXTUAL_DRIVERS_LICENSE_PATTERNS[0],  1),
         ("drivers_license", _CONTEXTUAL_DRIVERS_LICENSE_PATTERNS[1],  1),
     ],
