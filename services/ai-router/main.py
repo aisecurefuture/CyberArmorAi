@@ -923,11 +923,35 @@ def list_models(_: None = Depends(verify_api_key)):
 
 
 @app.get("/ai/providers", response_model=List[ProviderHealth])
-def list_providers(db: Session = Depends(get_db), _: None = Depends(verify_api_key)):
-    """List configured providers with health status."""
+def list_providers(
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_api_key),
+    tenant_id: str = "default",
+    x_tenant_id: Optional[str] = Header(default=None, alias="x-tenant-id"),
+):
+    """List provider health for the *caller's* tenant.
+
+    Previously this endpoint returned the union of provider_ids configured
+    across every tenant — so Tenant A's portal showed "OpenAI: Configured"
+    when only Tenant B had set it up. That's a privacy bug (leaks the
+    existence of other tenants' integrations) and a UX bug (badges lie).
+
+    Tenant identity is taken from the x-tenant-id header (the standard
+    cross-service convention; what the control-plane's _call_ai_router
+    helper sends) and falls back to the legacy ?tenant_id= query param
+    that the configure / status / rotate endpoints already accept. If
+    neither is present we keep the existing "default" behavior so direct
+    CLI usage during local dev still works.
+    """
+    effective_tenant = x_tenant_id or tenant_id or "default"
     configured_provider_ids = {
         row[0]
-        for row in db.query(ProviderCredentialModel.provider_id).distinct().all()
+        for row in (
+            db.query(ProviderCredentialModel.provider_id)
+            .filter(ProviderCredentialModel.tenant_id == effective_tenant)
+            .distinct()
+            .all()
+        )
     }
     providers = []
     for pid, name in PROVIDER_DISPLAY_NAMES.items():
