@@ -3077,6 +3077,146 @@ def customer_providers(ctx: Annotated[CustomerContext, Depends(get_customer_cont
     return _fetch_ai_router("/ai/providers", ctx.tenant_id)
 
 
+def _call_agent_identity(
+    method: str,
+    path: str,
+    tenant_id: str,
+    json_body: Optional[Dict[str, Any]] = None,
+    params: Optional[Dict[str, Any]] = None,
+) -> Any:
+    """Proxy to the agent-identity service.
+
+    Used by Agent Directory and Delegation Manager. The service is
+    multi-tenant via the ``tenant_id`` column on AgentModel; delegations
+    themselves don't carry tenant_id, so callers must filter delegations
+    against the tenant's agent_id set before returning them to the portal.
+    """
+    base_url = os.getenv("AGENT_IDENTITY_URL", "http://agent-identity:8008")
+    key = os.getenv("AGENT_IDENTITY_API_SECRET", DEFAULT_API_KEY)
+    try:
+        resp = httpx.request(
+            method.upper(),
+            f"{base_url.rstrip('/')}{path}",
+            headers={**build_auth_headers(base_url, key), "x-tenant-id": tenant_id},
+            json=json_body,
+            params=params,
+            timeout=8.0,
+        )
+    except Exception as exc:
+        logger.warning("customer_agent_identity_proxy_error tenant=%s path=%s err=%s", tenant_id, path, exc)
+        raise HTTPException(status_code=502, detail="agent-identity service unavailable")
+    if resp.status_code >= 300:
+        logger.warning(
+            "customer_agent_identity_proxy_upstream_error tenant=%s path=%s status=%s body=%s",
+            tenant_id, path, resp.status_code, resp.text[:200],
+        )
+        raise HTTPException(status_code=resp.status_code, detail=f"agent-identity returned {resp.status_code}")
+    try:
+        return resp.json()
+    except Exception as exc:
+        logger.warning("customer_agent_identity_proxy_decode_error tenant=%s err=%s", tenant_id, exc)
+        raise HTTPException(status_code=502, detail="agent-identity returned invalid JSON")
+
+
+def _tenant_agent_id_set(tenant_id: str) -> set[str]:
+    """Return the set of agent_ids known to belong to ``tenant_id`` per the
+    agent-identity service. Tolerant: returns an empty set if the service
+    is unavailable, so list-delegations degrades gracefully rather than
+    leaking other tenants' chains.
+    """
+    try:
+        rows = _call_agent_identity("GET", "/agents", tenant_id, params={"tenant_id": tenant_id, "limit": 1000})
+    except HTTPException:
+        return set()
+    if isinstance(rows, dict):
+        rows = rows.get("agents") or []
+    if not isinstance(rows, list):
+        return set()
+    out: set[str] = set()
+    for r in rows:
+        if isinstance(r, dict) and r.get("agent_id"):
+            out.add(str(r["agent_id"]))
+    return out
+
+
+class CustomerDelegationCreate(BaseModel):
+    parent_human_id: str
+    agent_id: str
+    scope: List[str] = Field(default_factory=lambda: ["*"])
+    expires_at: Optional[str] = None
+
+
+@app.get("/customer/delegations")
+def customer_list_delegations(
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    status: Optional[str] = None,
+    limit: int = 200,
+) -> Dict[str, Any]:
+    """List delegations for agents owned by this tenant.
+
+    The upstream ``/delegations`` listing isn't natively tenant-scoped,
+    so we fetch the tenant's agent_id set and filter. Returns the
+    filtered list plus the total upstream count so the operator can
+    see whether anything was hidden.
+    """
+    tenant_agents = _tenant_agent_id_set(ctx.tenant_id)
+    params: Dict[str, Any] = {"limit": max(1, min(limit, 1000))}
+    if status:
+        params["status"] = status
+    try:
+        resp = _call_agent_identity("GET", "/delegations", ctx.tenant_id, params=params)
+    except HTTPException as exc:
+        # 502 → degraded: return empty list rather than crashing the view.
+        logger.info("customer_delegations_upstream_unavailable tenant=%s detail=%s", ctx.tenant_id, exc.detail)
+        return {"delegations": [], "total": 0, "scoped_to_agents": len(tenant_agents), "upstream_unavailable": True}
+    all_rows = resp.get("delegations", []) if isinstance(resp, dict) else (resp or [])
+    filtered = [d for d in all_rows if isinstance(d, dict) and str(d.get("agent_id") or "") in tenant_agents]
+    return {
+        "delegations": filtered,
+        "total": len(filtered),
+        "upstream_total": resp.get("total") if isinstance(resp, dict) else len(all_rows),
+        "scoped_to_agents": len(tenant_agents),
+    }
+
+
+@app.post("/customer/delegations", status_code=201)
+def customer_create_delegation(
+    payload: CustomerDelegationCreate,
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+) -> Dict[str, Any]:
+    """Create a delegation. The agent must belong to this tenant."""
+    tenant_agents = _tenant_agent_id_set(ctx.tenant_id)
+    if payload.agent_id not in tenant_agents:
+        raise HTTPException(status_code=403, detail="agent_id is not owned by this tenant")
+    body: Dict[str, Any] = {
+        "parent_human_id": payload.parent_human_id,
+        "agent_id": payload.agent_id,
+        "scope": payload.scope,
+    }
+    if payload.expires_at:
+        body["expires_at"] = payload.expires_at
+    return _call_agent_identity("POST", "/delegations", ctx.tenant_id, json_body=body)
+
+
+@app.delete("/customer/delegations/{chain_id}")
+def customer_revoke_delegation(
+    chain_id: str,
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+) -> Dict[str, Any]:
+    """Revoke a delegation. The delegation must reference an agent owned by this tenant."""
+    tenant_agents = _tenant_agent_id_set(ctx.tenant_id)
+    try:
+        existing = _call_agent_identity("GET", f"/delegations/{chain_id}", ctx.tenant_id)
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            raise HTTPException(status_code=404, detail="delegation not found")
+        raise
+    if not isinstance(existing, dict) or str(existing.get("agent_id") or "") not in tenant_agents:
+        # Don't leak existence of cross-tenant chains. Both states return 404.
+        raise HTTPException(status_code=404, detail="delegation not found")
+    return _call_agent_identity("DELETE", f"/delegations/{chain_id}", ctx.tenant_id)
+
+
 def _call_audit_graph(
     method: str,
     path: str,

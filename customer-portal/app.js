@@ -3493,17 +3493,85 @@ function relativeFromIso(iso) {
   return relativeSince(Math.max(0, (Date.now() - t) / 60000));
 }
 
+const INCIDENT_WINDOWS = [
+  { id: "24h", label: "Last 24h", ms: 24 * 60 * 60 * 1000 },
+  { id: "7d",  label: "Last 7d",  ms: 7  * 24 * 60 * 60 * 1000 },
+  { id: "30d", label: "Last 30d", ms: 30 * 24 * 60 * 60 * 1000 },
+  { id: "all", label: "All time", ms: null },
+];
+
+const INCIDENT_SEVERITY_RANK = { critical: 4, high: 3, medium: 2, low: 1, info: 0, informational: 0 };
+
+// Derive a coarse severity for an incident from the worst severity across
+// its findings (preferred) or its metadata.severity, falling back to a
+// decision-based guess so the chip mix isn't dominated by "—".
+function incidentSeverity(r) {
+  const meta = r && r.metadata && typeof r.metadata === "object" ? r.metadata : {};
+  const fromMeta = String(meta.severity || "").toLowerCase();
+  if (fromMeta in INCIDENT_SEVERITY_RANK) return fromMeta === "informational" ? "info" : fromMeta;
+  const findings = Array.isArray(r && r.findings) ? r.findings : [];
+  let best = -1;
+  let bestName = "";
+  for (const f of findings) {
+    const s = String((f && f.severity) || "").toLowerCase();
+    const rank = INCIDENT_SEVERITY_RANK[s];
+    if (rank != null && rank > best) { best = rank; bestName = s === "informational" ? "info" : s; }
+  }
+  if (bestName) return bestName;
+  const d = String((r && r.decision) || "").toLowerCase();
+  if (d === "block") return "high";
+  if (d === "redact" || d === "warn") return "medium";
+  return "info";
+}
+
 async function viewIncidents() {
   $("#pageTitle").textContent = "Incidents";
   $("#pageSubtitle").textContent = "Runtime decisions, findings, and evidence — investigate what enforcement actually did";
   const incidents = await api("/api/customer/incidents?limit=500");
-  const rows = Array.isArray(incidents) ? incidents : [];
+  const allRows = Array.isArray(incidents) ? incidents : [];
 
-  const state = { decisionFilter: "all" };
+  // Pre-decorate so we don't recompute severity / parsed timestamps on
+  // every keystroke or filter toggle.
+  for (const r of allRows) {
+    r._sev = incidentSeverity(r);
+    r._ts = r.received_at ? Date.parse(r.received_at) : 0;
+  }
 
+  const state = {
+    windowId: "7d",
+    decisionFilter: "all",
+    severityFilter: "all",
+    search: "",
+  };
+
+  function inWindow(r) {
+    const w = INCIDENT_WINDOWS.find((x) => x.id === state.windowId);
+    if (!w || w.ms == null) return true;
+    return Number.isFinite(r._ts) && r._ts >= (Date.now() - w.ms);
+  }
+  function matchesSearch(r) {
+    if (!state.search) return true;
+    const q = state.search.toLowerCase();
+    if (String(r.event_type || "").toLowerCase().includes(q)) return true;
+    if (String(r.request_id || "").toLowerCase().includes(q)) return true;
+    if (String(r.agent_id || "").toLowerCase().includes(q)) return true;
+    if (String(r.user_id || "").toLowerCase().includes(q)) return true;
+    for (const reason of (r.reasons || [])) if (String(reason).toLowerCase().includes(q)) return true;
+    for (const f of (r.findings || [])) {
+      for (const v of Object.values(f || {})) if (typeof v === "string" && v.toLowerCase().includes(q)) return true;
+    }
+    return false;
+  }
+  // Rows visible after window filtering — chip counts reflect this set so
+  // numbers track the selected time range.
+  function windowedRows() { return allRows.filter(inWindow); }
   function visibleRows() {
-    if (state.decisionFilter === "all") return rows;
-    return rows.filter((r) => String(r.decision || "").toLowerCase() === state.decisionFilter);
+    return windowedRows().filter((r) => {
+      if (state.decisionFilter !== "all" && String(r.decision || "").toLowerCase() !== state.decisionFilter) return false;
+      if (state.severityFilter !== "all" && r._sev !== state.severityFilter) return false;
+      if (!matchesSearch(r)) return false;
+      return true;
+    });
   }
   function chipCls(active) {
     return active
@@ -3511,26 +3579,66 @@ async function viewIncidents() {
       : "rounded-full bg-slate-900 text-slate-300 border border-slate-800 hover:border-slate-700 px-3 py-1 text-xs";
   }
 
-  // Aggregate decision counts for chips.
-  const counts = { block: 0, redact: 0, warn: 0, allow: 0, sandbox: 0, isolate: 0, other: 0 };
-  for (const r of rows) {
-    const d = String(r.decision || "").toLowerCase();
-    if (counts[d] != null) counts[d]++; else counts.other++;
-  }
-  const decisionOrder = ["block", "redact", "warn", "allow", "sandbox", "isolate", "other"].filter((k) => counts[k] > 0);
-
   function render() {
+    const windowed = windowedRows();
     const filtered = visibleRows();
+
+    // Counts are computed off the windowed (not fully filtered) set so chips
+    // show "how many of this decision/severity exist in this window".
+    const decisionCounts = { block: 0, redact: 0, warn: 0, allow: 0, sandbox: 0, isolate: 0, other: 0 };
+    const severityCounts = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+    const uniqueAgents = new Set();
+    const uniqueEventTypes = new Set();
+    for (const r of windowed) {
+      const d = String(r.decision || "").toLowerCase();
+      if (decisionCounts[d] != null) decisionCounts[d]++; else decisionCounts.other++;
+      if (severityCounts[r._sev] != null) severityCounts[r._sev]++;
+      if (r.agent_id) uniqueAgents.add(r.agent_id);
+      if (r.event_type) uniqueEventTypes.add(r.event_type);
+    }
+    const decisionOrder = ["block", "redact", "warn", "allow", "sandbox", "isolate", "other"].filter((k) => decisionCounts[k] > 0);
+    const severityOrder = ["critical", "high", "medium", "low", "info"].filter((k) => severityCounts[k] > 0);
+
     $("#app").innerHTML = `
       <div class="space-y-4">
         ${card(`
-          <div class="flex flex-wrap items-center gap-2">
-            <span class="text-[10px] uppercase tracking-wider text-slate-500">Decision</span>
-            <button data-decision-chip="all" class="${chipCls(state.decisionFilter === "all")}">All <span class="text-slate-500">·${rows.length}</span></button>
-            ${decisionOrder.map((d) =>
-              `<button data-decision-chip="${esc(d)}" class="${chipCls(state.decisionFilter === d)}">${esc(d)} <span class="text-slate-500">·${counts[d]}</span></button>`
-            ).join("")}
-            <div class="ml-auto text-xs text-slate-400">${filtered.length} of ${rows.length} shown</div>
+          <div class="flex flex-wrap items-center gap-4">
+            ${riskMetricCard("Total", windowed.length, "slate")}
+            ${riskMetricCard("Blocked", decisionCounts.block, decisionCounts.block ? "rose" : "emerald")}
+            ${riskMetricCard("Redacted", decisionCounts.redact, decisionCounts.redact ? "amber" : "emerald")}
+            ${riskMetricCard("Critical / High", severityCounts.critical + severityCounts.high, (severityCounts.critical + severityCounts.high) > 0 ? "rose" : "emerald")}
+            ${riskMetricCard("Unique agents", uniqueAgents.size, "slate")}
+            ${riskMetricCard("Event types", uniqueEventTypes.size, "slate")}
+            <div class="ml-auto flex flex-col leading-tight">
+              <span class="text-[10px] uppercase tracking-wider text-slate-500">Time window</span>
+              <div class="mt-1 flex flex-wrap gap-1" id="incidentsWindowPicker">
+                ${INCIDENT_WINDOWS.map((w) => `
+                  <button type="button" data-window-id="${w.id}" class="rounded-full px-2 py-1 text-[11px] ${state.windowId === w.id ? "bg-cyan-500 text-slate-950 font-semibold" : "bg-slate-900 border border-slate-700 text-slate-300 hover:bg-slate-800"}">${esc(w.label)}</button>
+                `).join("")}
+              </div>
+            </div>
+          </div>
+        `)}
+        ${card(`
+          <div class="space-y-2">
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="text-[10px] uppercase tracking-wider text-slate-500">Decision</span>
+              <button data-decision-chip="all" class="${chipCls(state.decisionFilter === "all")}">All <span class="text-slate-500">·${windowed.length}</span></button>
+              ${decisionOrder.map((d) =>
+                `<button data-decision-chip="${esc(d)}" class="${chipCls(state.decisionFilter === d)}">${esc(d)} <span class="text-slate-500">·${decisionCounts[d]}</span></button>`
+              ).join("")}
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="text-[10px] uppercase tracking-wider text-slate-500">Severity</span>
+              <button data-severity-chip="all" class="${chipCls(state.severityFilter === "all")}">All <span class="text-slate-500">·${windowed.length}</span></button>
+              ${severityOrder.map((s) =>
+                `<button data-severity-chip="${esc(s)}" class="${chipCls(state.severityFilter === s)}">${esc(s)} <span class="text-slate-500">·${severityCounts[s]}</span></button>`
+              ).join("")}
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+              <input id="incidentSearch" type="search" placeholder="Search event type, request, agent, user, reason, finding…" class="flex-1 min-w-[280px] rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm" value="${esc(state.search)}" />
+              <div class="text-xs text-slate-400">${filtered.length} of ${windowed.length} shown</div>
+            </div>
           </div>
         `)}
         <div id="incidentsList"></div>
@@ -3548,6 +3656,10 @@ async function viewIncidents() {
         { key: "decision", label: "Decision", type: "enum",
           value: (r) => String(r.decision || "unknown").toLowerCase(),
           render: (r) => decisionPill(r.decision) },
+        { key: "_sev", label: "Severity", type: "enum",
+          enumValues: ["critical", "high", "medium", "low", "info"],
+          value: (r) => r._sev,
+          render: (r) => severityBadgeHtml(r._sev) },
         { key: "event_type", label: "Event", type: "text",
           value: (r) => r.event_type || "",
           render: (r) => {
@@ -3608,14 +3720,32 @@ async function viewIncidents() {
           ],
         });
       },
-      emptyMessage: filtered.length === 0 && rows.length > 0
-        ? "No incidents match the current decision filter."
+      emptyMessage: filtered.length === 0 && allRows.length > 0
+        ? "No incidents match the current filters."
         : "No incidents found for this tenant. Runtime decisions (block, redact, warn) show up here as enforcement happens.",
     });
 
     document.querySelectorAll("[data-decision-chip]").forEach((el) => {
       el.addEventListener("click", () => { state.decisionFilter = el.dataset.decisionChip; render(); });
     });
+    document.querySelectorAll("[data-severity-chip]").forEach((el) => {
+      el.addEventListener("click", () => { state.severityFilter = el.dataset.severityChip; render(); });
+    });
+    document.querySelectorAll("#incidentsWindowPicker button").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        if (state.windowId === btn.dataset.windowId) return;
+        state.windowId = btn.dataset.windowId;
+        render();
+      });
+    });
+    const sb = $("#incidentSearch");
+    if (sb) {
+      // Restore focus + caret on every render so typing doesn't bounce.
+      const caret = sb.selectionStart;
+      sb.focus();
+      if (caret != null) sb.setSelectionRange(caret, caret);
+      sb.addEventListener("input", () => { state.search = sb.value; render(); });
+    }
   }
 
   render();
@@ -5015,12 +5145,261 @@ async function viewRisk() {
   `;
 }
 
+function delegationStatusPill(d) {
+  const exp = d.expires_at ? Date.parse(d.expires_at) : null;
+  const expired = exp != null && Number.isFinite(exp) && exp < Date.now();
+  const raw = String(d.status || "active").toLowerCase();
+  if (raw === "revoked") {
+    return `<span class="inline-flex items-center rounded-full bg-rose-500/20 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-rose-200">revoked</span>`;
+  }
+  if (expired) {
+    return `<span class="inline-flex items-center rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-amber-200">expired</span>`;
+  }
+  return `<span class="inline-flex items-center rounded-full bg-emerald-500/20 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-emerald-200">active</span>`;
+}
+
 async function viewDelegations() {
-  await tenantScopedConfigPage("delegations", "Delegation Manager", "Create and manage tenant agent delegation chains", [
-    { title: "Delegation Chains", body: "Review agent-to-agent or service-to-agent delegation chains for this tenant.", badge: "tenant admin", tone: "green" },
-    { title: "Scopes", body: "Restrict delegation by provider, action, role, and expiration window.", badge: "least privilege", tone: "cyan" },
-    { title: "Revocation", body: "Disable tenant delegation chains without affecting other tenants.", badge: "isolated", tone: "amber" },
-  ], { chains: [], default_ttl_minutes: 60, require_approval: true }, true);
+  $("#pageTitle").textContent = "Delegation Manager";
+  $("#pageSubtitle").textContent = "Human → agent delegation chains scoped to this tenant — issue, scope, and revoke";
+  const isAdmin = session.role === "tenant_admin";
+
+  let delegations = [];
+  let stats = null;        // {upstream_total, scoped_to_agents, upstream_unavailable}
+  let agentChoices = [];   // [{agent_id, hostname?, username?}]
+  let loadError = null;
+  let statusFilter = "all"; // all | active | revoked | expired
+  let search = "";
+  let createMessage = null;
+
+  async function load() {
+    try {
+      const [dResp, aResp] = await Promise.allSettled([
+        api("/api/customer/delegations?limit=500"),
+        api("/api/customer/agents?limit=500"),
+      ]);
+      if (dResp.status === "fulfilled") {
+        const r = dResp.value || {};
+        delegations = Array.isArray(r) ? r : (r.delegations || []);
+        stats = {
+          upstream_total: r.upstream_total ?? delegations.length,
+          scoped_to_agents: r.scoped_to_agents ?? null,
+          upstream_unavailable: !!r.upstream_unavailable,
+        };
+      } else {
+        delegations = []; loadError = dResp.reason?.message || "delegation fetch failed";
+      }
+      if (aResp.status === "fulfilled") {
+        agentChoices = Array.isArray(aResp.value) ? aResp.value : [];
+      }
+    } catch (err) {
+      loadError = err.message || "load failed";
+    }
+  }
+
+  function effectiveStatus(d) {
+    const raw = String(d.status || "active").toLowerCase();
+    if (raw === "revoked") return "revoked";
+    const exp = d.expires_at ? Date.parse(d.expires_at) : null;
+    if (exp != null && Number.isFinite(exp) && exp < Date.now()) return "expired";
+    return "active";
+  }
+
+  function visible() {
+    return delegations.filter((d) => {
+      if (statusFilter !== "all" && effectiveStatus(d) !== statusFilter) return false;
+      if (!search) return true;
+      const q = search.toLowerCase();
+      if (String(d.chain_id || "").toLowerCase().includes(q)) return true;
+      if (String(d.parent_human_id || "").toLowerCase().includes(q)) return true;
+      if (String(d.agent_id || "").toLowerCase().includes(q)) return true;
+      for (const s of (d.scope || [])) if (String(s).toLowerCase().includes(q)) return true;
+      return false;
+    });
+  }
+
+  function rowHtml(d) {
+    const created = d.created_at ? new Date(d.created_at).toLocaleString() : "—";
+    const exp = d.expires_at ? new Date(d.expires_at).toLocaleString() : "—";
+    const scope = Array.isArray(d.scope) ? d.scope : [];
+    const status = effectiveStatus(d);
+    const canRevoke = isAdmin && status === "active";
+    return `<tr class="border-t border-slate-800">
+      <td class="px-3 py-2 font-mono text-[10px] text-slate-300 break-all">${esc(d.chain_id || "")}</td>
+      <td class="px-3 py-2 text-xs text-slate-200 break-all">${esc(d.parent_human_id || "—")}</td>
+      <td class="px-3 py-2 font-mono text-[11px] text-slate-200 break-all">${esc(d.agent_id || "—")}</td>
+      <td class="px-3 py-2">${delegationStatusPill(d)}</td>
+      <td class="px-3 py-2">
+        ${scope.length === 0 ? `<span class="text-xs text-slate-500">—</span>` : `<div class="flex flex-wrap gap-1">${scope.slice(0, 6).map((s) => `<span class="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-mono text-slate-200">${esc(String(s))}</span>`).join("")}${scope.length > 6 ? `<span class="text-[10px] text-slate-500">+${scope.length - 6}</span>` : ""}</div>`}
+      </td>
+      <td class="px-3 py-2 text-xs text-slate-400">${esc(created)}</td>
+      <td class="px-3 py-2 text-xs text-slate-400">${esc(exp)}</td>
+      <td class="px-3 py-2 text-right">
+        ${canRevoke ? `<button class="revokeDelegationBtn rounded-lg border border-rose-700 bg-rose-500/10 px-2 py-1 text-[11px] text-rose-200 hover:bg-rose-500/20" data-chain-id="${esc(d.chain_id || "")}" type="button">Revoke</button>` : ""}
+      </td>
+    </tr>`;
+  }
+
+  function chipCls(active) {
+    return active
+      ? "rounded-full bg-cyan-500/20 text-cyan-100 border border-cyan-400/40 px-3 py-1 text-xs"
+      : "rounded-full bg-slate-900 text-slate-300 border border-slate-800 hover:border-slate-700 px-3 py-1 text-xs";
+  }
+
+  function statusCounts() {
+    const c = { active: 0, revoked: 0, expired: 0 };
+    for (const d of delegations) c[effectiveStatus(d)]++;
+    return c;
+  }
+
+  function render() {
+    const filtered = visible();
+    const counts = statusCounts();
+    $("#app").innerHTML = `
+      <div class="space-y-4">
+        ${loadError ? `<div class="rounded-2xl border border-rose-900 bg-rose-950/30 p-3 text-sm text-rose-200">Could not load delegations: ${esc(loadError)}.</div>` : ""}
+        ${stats && stats.upstream_unavailable ? `<div class="rounded-2xl border border-amber-900 bg-amber-950/20 p-3 text-sm text-amber-200">Agent-identity service is unavailable — showing empty list.</div>` : ""}
+        ${card(`
+          <div class="flex flex-wrap items-center gap-4">
+            ${riskMetricCard("Total chains", delegations.length, "slate")}
+            ${riskMetricCard("Active", counts.active, "emerald")}
+            ${riskMetricCard("Revoked", counts.revoked, counts.revoked ? "rose" : "emerald")}
+            ${riskMetricCard("Expired", counts.expired, counts.expired ? "amber" : "emerald")}
+            ${riskMetricCard("Tenant agents", stats && stats.scoped_to_agents != null ? stats.scoped_to_agents : "—", "slate")}
+            ${!isAdmin ? `<div class="ml-auto text-xs text-slate-500">View only — admins can create / revoke.</div>` : ""}
+          </div>
+        `)}
+        ${isAdmin ? card(`
+          <div class="flex flex-wrap items-baseline justify-between gap-2 mb-3">
+            <div class="font-semibold">Issue delegation</div>
+            <div class="text-[11px] text-slate-500">Human → Agent, with scope and optional expiry. Agent must belong to this tenant.</div>
+          </div>
+          <form id="delegationCreateForm" class="grid gap-3 md:grid-cols-2">
+            <label class="text-xs text-slate-400">Parent human ID
+              <input id="delHuman" required class="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm" placeholder="user@example.com or human-uuid" />
+            </label>
+            <label class="text-xs text-slate-400">Agent
+              <select id="delAgent" required class="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm">
+                <option value="">— select tenant agent —</option>
+                ${agentChoices.map((a) => `<option value="${esc(a.agent_id || "")}">${esc(a.agent_id || "")}${a.hostname ? ` · ${esc(a.hostname)}` : ""}</option>`).join("")}
+              </select>
+            </label>
+            <label class="text-xs text-slate-400 md:col-span-2">Scope (comma-separated; use <span class="font-mono">*</span> for all)
+              <input id="delScope" class="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm font-mono" placeholder="ai:inference, ai:audit" value="*" />
+            </label>
+            <label class="text-xs text-slate-400">Expires at (optional)
+              <input id="delExpires" type="datetime-local" class="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm" />
+            </label>
+            <div class="flex items-end gap-2">
+              <button type="submit" class="rounded-xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400">Create</button>
+              <div id="delCreateMessage" class="text-xs ${createMessage && createMessage.kind === "ok" ? "text-emerald-300" : "text-rose-300"}">${createMessage ? esc(createMessage.text) : ""}</div>
+            </div>
+          </form>
+        `) : ""}
+        ${card(`
+          <div class="space-y-2">
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="text-[10px] uppercase tracking-wider text-slate-500">Status</span>
+              <button data-status-chip="all" class="${chipCls(statusFilter === "all")}">All <span class="text-slate-500">·${delegations.length}</span></button>
+              <button data-status-chip="active" class="${chipCls(statusFilter === "active")}">active <span class="text-slate-500">·${counts.active}</span></button>
+              <button data-status-chip="revoked" class="${chipCls(statusFilter === "revoked")}">revoked <span class="text-slate-500">·${counts.revoked}</span></button>
+              <button data-status-chip="expired" class="${chipCls(statusFilter === "expired")}">expired <span class="text-slate-500">·${counts.expired}</span></button>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+              <input id="delSearch" type="search" placeholder="Search chain ID, human, agent, scope…" class="flex-1 min-w-[280px] rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm" value="${esc(search)}" />
+              <div class="text-xs text-slate-400">${filtered.length} of ${delegations.length} shown</div>
+            </div>
+          </div>
+        `)}
+        ${card(`
+          <div class="overflow-x-auto">
+            <table class="w-full text-left text-sm">
+              <thead class="text-[10px] uppercase tracking-wider text-slate-500">
+                <tr>
+                  <th class="px-3 py-2">Chain</th>
+                  <th class="px-3 py-2">Human</th>
+                  <th class="px-3 py-2">Agent</th>
+                  <th class="px-3 py-2">Status</th>
+                  <th class="px-3 py-2">Scope</th>
+                  <th class="px-3 py-2">Created</th>
+                  <th class="px-3 py-2">Expires</th>
+                  <th class="px-3 py-2"></th>
+                </tr>
+              </thead>
+              <tbody>
+                ${filtered.length === 0
+                  ? `<tr><td colspan="8" class="px-3 py-8 text-center text-sm text-slate-500">${delegations.length === 0 ? "No delegations yet. Issue one above to create the first chain." : "No delegations match the current filters."}</td></tr>`
+                  : filtered.map(rowHtml).join("")}
+              </tbody>
+            </table>
+          </div>
+        `)}
+      </div>
+    `;
+
+    document.querySelectorAll("[data-status-chip]").forEach((btn) => {
+      btn.addEventListener("click", () => { statusFilter = btn.dataset.statusChip; render(); });
+    });
+    const sb = $("#delSearch");
+    if (sb) {
+      const caret = sb.selectionStart;
+      sb.focus(); if (caret != null) sb.setSelectionRange(caret, caret);
+      sb.addEventListener("input", () => { search = sb.value; render(); });
+    }
+    document.querySelectorAll(".revokeDelegationBtn").forEach((btn) => {
+      btn.addEventListener("click", () => revoke(btn.dataset.chainId));
+    });
+    const form = $("#delegationCreateForm");
+    if (form) form.addEventListener("submit", onCreate);
+  }
+
+  async function onCreate(ev) {
+    ev.preventDefault();
+    const human = $("#delHuman").value.trim();
+    const agent = $("#delAgent").value;
+    const scopeRaw = ($("#delScope").value || "").trim();
+    const expRaw = $("#delExpires").value;
+    if (!human || !agent) {
+      createMessage = { kind: "err", text: "Human and agent are required." };
+      render();
+      return;
+    }
+    const scope = scopeRaw
+      ? scopeRaw.split(",").map((s) => s.trim()).filter(Boolean)
+      : ["*"];
+    const body = { parent_human_id: human, agent_id: agent, scope };
+    if (expRaw) {
+      // Local datetime → ISO with timezone offset preserved as the browser
+      // produced it; the backend parses ISO-8601 tolerantly.
+      const dt = new Date(expRaw);
+      if (!Number.isNaN(dt.getTime())) body.expires_at = dt.toISOString();
+    }
+    createMessage = { kind: "ok", text: "Creating…" };
+    render();
+    try {
+      await api("/api/customer/delegations", { method: "POST", body: JSON.stringify(body) });
+      createMessage = { kind: "ok", text: "Delegation created." };
+      await load();
+      render();
+    } catch (err) {
+      createMessage = { kind: "err", text: err.message || "Create failed." };
+      render();
+    }
+  }
+
+  async function revoke(chainId) {
+    if (!chainId) return;
+    if (!confirm(`Revoke delegation ${chainId}?\nThis cannot be undone.`)) return;
+    try {
+      await api(`/api/customer/delegations/${encodeURIComponent(chainId)}`, { method: "DELETE" });
+      await load();
+      render();
+    } catch (err) {
+      alert(`Revoke failed: ${err.message}`);
+    }
+  }
+
+  await load();
+  render();
 }
 
 // --- Onboarding helpers ---
