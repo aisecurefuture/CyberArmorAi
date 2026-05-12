@@ -184,9 +184,17 @@ PACKAGE_CATALOG: Dict[str, Dict[str, Any]] = {
         # renaming it would force every installed extension to re-redeem.
         # Title + filename are the user-visible strings; both reflect that
         # the bundle works in any Chromium-based browser, not just Edge.
+        #
+        # `path` used to point at extensions/edge/, which is a one-file stub
+        # whose manifest references ../chromium-shared/ via relative parent
+        # paths — the zip ended up containing literally one manifest plus
+        # our generated MANIFEST/BUILD_INFO/README, and the references
+        # broke when unzipped standalone. The real extension is
+        # extensions/chromium-shared/ (its own manifest, background.js,
+        # content.js, icons, etc.) and that's what we now ship.
         "title": "Chromium Browser Extension",
         "category": "browser_extension",
-        "path": "extensions/edge",
+        "path": "extensions/chromium-shared",
         "filename": "cyberarmor-chromium-browser-extension.zip",
         "description": "Shared browser extension bundle for Chromium-based browsers such as Chrome, Edge, Brave, Opera, and similar targets.",
         "install_hint": "Load unpacked extension in the target Chromium-based browser developer mode.",
