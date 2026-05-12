@@ -2256,8 +2256,12 @@ def customer_telemetry(
         except ValueError:
             pass
     rows = q.order_by(desc(TelemetryRecord.occurred_at), desc(TelemetryRecord.created_at)).limit(limit).all()
-    return [
-        {
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        payload = _coerce_meta(r.payload) or {}
+        teaser = _telemetry_teaser(r.event_type, payload) if isinstance(payload, dict) else ""
+        severity = payload.get("severity") if isinstance(payload, dict) else None
+        out.append({
             "id": r.id,
             "tenant_id": r.tenant_id,
             "agent_id": r.agent_id,
@@ -2265,12 +2269,68 @@ def customer_telemetry(
             "user_id": r.user_id,
             "event_type": r.event_type,
             "source": r.source,
-            "payload": _coerce_meta(r.payload) or {},
+            "payload": payload,
             "occurred_at": r.occurred_at.isoformat() if r.occurred_at else None,
             "created_at": r.created_at.isoformat() if r.created_at else None,
-        }
-        for r in rows
-    ]
+            # Derived fields, so the frontend gets a consistent view without
+            # rummaging in payload itself.
+            "action_class": _classify_action(r.event_type),
+            "severity": severity,
+            "payload_teaser": teaser,
+        })
+    return out
+
+
+def _telemetry_teaser(event_type: Optional[str], payload: Dict[str, Any]) -> str:
+    """Build a one-line "what happened" summary for the list view so the
+    operator can scan without opening the modal. Pulls the most useful
+    payload fields per event family.
+    """
+    et = (event_type or "").lower()
+    parts: List[str] = []
+    def push(label: str, value: Any) -> None:
+        if value in (None, "", [], {}):
+            return
+        s = str(value)
+        if len(s) > 80:
+            s = s[:77] + "…"
+        parts.append(f"{label}={s}")
+
+    # Browser-extension / proxy navigation & enforcement events
+    if "policy_block" in et or "policy_redact" in et or "policy_warn" in et:
+        push("policy", payload.get("policy"))
+        push("url", payload.get("url"))
+        if isinstance(payload.get("pii_classes"), list) and payload["pii_classes"]:
+            push("pii", ",".join(payload["pii_classes"]))
+        if payload.get("redacted_url"):
+            push("→", payload["redacted_url"])
+    # Clipboard helper events
+    elif "clipboard_sensitive_data" in et:
+        if isinstance(payload.get("labels"), list) and payload["labels"]:
+            push("labels", ",".join(payload["labels"]))
+        push("len", payload.get("length") or payload.get("original_length"))
+        push("action", payload.get("action"))
+    # PII detection events (input/paste/URL scanning)
+    elif "pii_" in et or "prompt_injection" in et:
+        findings = payload.get("findings")
+        if isinstance(findings, list):
+            push("classes", ",".join(f.get("label", "?") for f in findings if isinstance(f, dict)))
+        push("url", payload.get("url"))
+        push("hostname", payload.get("hostname"))
+    # AI / process detection (endpoint agent)
+    elif et.startswith("ai_tool_") or "ai_service_connection" in et:
+        push("tool", payload.get("tool_name") or payload.get("process_name") or payload.get("provider"))
+        push("user", payload.get("username") or payload.get("user_id"))
+        push("pid", payload.get("pid"))
+        push("domain", payload.get("domain") or payload.get("remote_ip"))
+    # Generic fallback — surface the highest-signal keys we see often.
+    else:
+        for key in ("policy", "url", "hostname", "domain", "tool_name", "process_name", "user_id", "username", "agent_id", "method", "action"):
+            push(key, payload.get(key))
+            if len(parts) >= 3:
+                break
+
+    return " · ".join(parts[:4])
 
 
 @app.get("/customer/audit", response_model=List[AuditLogOut])

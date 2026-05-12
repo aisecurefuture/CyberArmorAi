@@ -1884,16 +1884,101 @@ async function viewReports() {
   });
 }
 
+// --- Telemetry helpers ---
+
+function sourceBadgeHtml(source) {
+  const s = String(source || "unknown");
+  // Differentiated colors so it's obvious at a glance which subsystem
+  // wrote the event. Matches the source values our agents actually emit.
+  const map = {
+    browser_extension:           "bg-cyan-500/20 text-cyan-200",
+    endpoint:                    "bg-emerald-500/20 text-emerald-200",
+    endpoint_clipboard_helper:   "bg-emerald-500/15 text-emerald-200",
+    proxy_agent:                 "bg-amber-500/20 text-amber-200",
+    runtime:                     "bg-amber-500/20 text-amber-200",
+    rasp:                        "bg-violet-500/20 text-violet-200",
+    sdk:                         "bg-violet-500/15 text-violet-200",
+    phishing_warning:            "bg-rose-500/20 text-rose-200",
+  };
+  return `<span class="inline-flex max-w-[14ch] truncate items-center rounded px-1.5 py-0.5 font-mono text-[10px] ${map[s] || "bg-slate-700/40 text-slate-300"}" title="${esc(s)}">${esc(s)}</span>`;
+}
+
+function severityBadgeHtml(severity) {
+  if (!severity) return `<span class="text-slate-700">—</span>`;
+  const s = String(severity).toLowerCase();
+  const cls = (s === "critical" || s === "high") ? "bg-rose-500/20 text-rose-200"
+            : (s === "medium")                   ? "bg-amber-500/20 text-amber-200"
+            : (s === "low")                      ? "bg-slate-700/40 text-slate-200"
+            : (s === "info" || s === "informational") ? "bg-cyan-500/15 text-cyan-200"
+            : "bg-slate-700/40 text-slate-300";
+  return `<span class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wider ${cls}">${esc(severity)}</span>`;
+}
+
+// Time-window options for the picker. Values are millisecond windows or
+// null for "all time".
+const TELEMETRY_WINDOWS = [
+  { id: "1h",  label: "Last hour",   ms:    60 * 60 * 1000 },
+  { id: "24h", label: "Last 24h",    ms: 24 * 60 * 60 * 1000 },
+  { id: "7d",  label: "Last 7 days", ms: 7 * 24 * 60 * 60 * 1000 },
+  { id: "all", label: "All time",    ms: null },
+];
+
 async function viewTelemetry() {
   $("#pageTitle").textContent = "Telemetry";
   $("#pageSubtitle").textContent = "Tenant-scoped events — newest first";
   const PAGE_SIZE = 250;
   const initial = await api(`/api/customer/telemetry?limit=${PAGE_SIZE}`);
   const rows = Array.isArray(initial) ? [...initial] : [];
+
   const state = {
+    sourceFilter: "all",       // "all" | <source value>
+    actionFilter: "all",       // "all" | one of action class names
+    severityFilter: "all",     // "all" | critical/high/medium/low/info
+    windowId: "all",           // matches TELEMETRY_WINDOWS[].id
     loadingMore: false,
     exhausted: rows.length < PAGE_SIZE,
   };
+
+  function rowTimestampMs(r) {
+    const t = r.occurred_at || r.created_at;
+    return t ? Date.parse(t) : 0;
+  }
+
+  function visibleRows() {
+    const win = TELEMETRY_WINDOWS.find((w) => w.id === state.windowId);
+    const cutoff = win && win.ms ? Date.now() - win.ms : 0;
+    return rows.filter((r) => {
+      if (cutoff && rowTimestampMs(r) < cutoff) return false;
+      if (state.sourceFilter !== "all" && (r.source || "unknown") !== state.sourceFilter) return false;
+      if (state.actionFilter !== "all" && (r.action_class || "monitor") !== state.actionFilter) return false;
+      if (state.severityFilter !== "all" && String(r.severity || "").toLowerCase() !== state.severityFilter) return false;
+      return true;
+    });
+  }
+
+  function computeStats() {
+    const action = { block: 0, redact: 0, warn: 0, detect: 0, monitor: 0, allow: 0 };
+    const sources = {};
+    const severities = {};
+    for (const r of rows) {
+      const a = r.action_class || "monitor";
+      action[a] = (action[a] || 0) + 1;
+      const src = r.source || "unknown";
+      sources[src] = (sources[src] || 0) + 1;
+      const sev = String(r.severity || "").toLowerCase();
+      if (sev) severities[sev] = (severities[sev] || 0) + 1;
+    }
+    // Oldest loaded timestamp for "showing last X minutes" context
+    const oldestTs = rows.length ? rowTimestampMs(rows[rows.length - 1]) : 0;
+    const newestTs = rows.length ? rowTimestampMs(rows[0]) : 0;
+    return { action, sources, severities, oldestTs, newestTs };
+  }
+
+  function chipCls(active) {
+    return active
+      ? "rounded-full bg-cyan-500/20 text-cyan-100 border border-cyan-400/40 px-3 py-1 text-xs"
+      : "rounded-full bg-slate-900 text-slate-300 border border-slate-800 hover:border-slate-700 px-3 py-1 text-xs";
+  }
 
   async function loadMore() {
     if (state.loadingMore || state.exhausted) return;
@@ -1918,8 +2003,59 @@ async function viewTelemetry() {
   }
 
   function render() {
+    const filtered = visibleRows();
+    const { action, sources, severities, oldestTs, newestTs } = computeStats();
+    const sourceKeys = Object.keys(sources).sort((a, b) => sources[b] - sources[a]);
+    const severityOrder = ["critical", "high", "medium", "low", "info"].filter((s) => severities[s]);
+    const span = (oldestTs && newestTs && newestTs > oldestTs)
+      ? `${fmt(new Date(oldestTs).toISOString())} → ${fmt(new Date(newestTs).toISOString())}`
+      : "—";
+
     $("#app").innerHTML = `
-      <div class="space-y-3">
+      <div class="space-y-4">
+        ${card(`
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="text-[10px] uppercase tracking-wider text-slate-500">Window</span>
+            ${TELEMETRY_WINDOWS.map((w) =>
+              `<button data-window="${w.id}" class="${chipCls(state.windowId === w.id)}">${esc(w.label)}</button>`
+            ).join("")}
+            <div class="ml-auto text-[11px] text-slate-500 tabular-nums">Loaded span: ${span}</div>
+          </div>
+        `)}
+        ${card(`
+          <div class="space-y-3">
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="text-[10px] uppercase tracking-wider text-slate-500">Action class</span>
+              <button data-action-chip="all" class="${chipCls(state.actionFilter === "all")}">All <span class="text-slate-500">·${rows.length}</span></button>
+              ${ACTION_BUCKETS.filter((b) => action[b.key]).map((b) => `
+                <button data-action-chip="${b.key}" class="${chipCls(state.actionFilter === b.key)} flex items-center gap-1">
+                  <span class="inline-block h-2 w-2 rounded-full" style="background:${b.color}"></span>
+                  ${esc(b.label)} <span class="text-slate-500">·${action[b.key]}</span>
+                </button>
+              `).join("")}
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="text-[10px] uppercase tracking-wider text-slate-500">Source</span>
+              <button data-source-chip="all" class="${chipCls(state.sourceFilter === "all")}">All</button>
+              ${sourceKeys.map((src) => `
+                <button data-source-chip="${esc(src)}" class="${chipCls(state.sourceFilter === src)}">
+                  ${esc(src)} <span class="text-slate-500">·${sources[src]}</span>
+                </button>
+              `).join("")}
+            </div>
+            ${severityOrder.length ? `
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="text-[10px] uppercase tracking-wider text-slate-500">Severity</span>
+                <button data-severity-chip="all" class="${chipCls(state.severityFilter === "all")}">All</button>
+                ${severityOrder.map((s) => `
+                  <button data-severity-chip="${s}" class="${chipCls(state.severityFilter === s)}">
+                    ${esc(s)} <span class="text-slate-500">·${severities[s]}</span>
+                  </button>
+                `).join("")}
+              </div>
+            ` : ""}
+          </div>
+        `)}
         <div id="telemetryList"></div>
         <div id="telemetryPager" class="flex items-center justify-center gap-3 pt-2 pb-1 text-sm">
           ${state.exhausted
@@ -1928,40 +2064,78 @@ async function viewTelemetry() {
         </div>
       </div>
     `;
+
     mountListView({
       container: $("#telemetryList"),
-      rows,
+      rows: filtered,
       filename: `telemetry_${session.tenant_id || "tenant"}`,
       columns: [
-        { key: "occurred_at", label: "Time",  type: "date",
+        { key: "occurred_at", label: "Time", type: "date",
           value: (r) => r.occurred_at || r.created_at || "",
-          render: (r) => `<span class="text-xs text-slate-400">${esc(fmt(r.occurred_at || r.created_at))}</span>` },
-        { key: "source",      label: "Source", type: "enum",
+          render: (r) => `<span class="text-xs text-slate-400 tabular-nums">${esc(fmt(r.occurred_at || r.created_at))}</span>` },
+        { key: "action_class", label: "Action", type: "enum",
+          value: (r) => r.action_class || "monitor",
+          render: (r) => `<span class="inline-flex rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wider ${actionPillClasses(r.action_class)}">${esc(r.action_class || "event")}</span>` },
+        { key: "source", label: "Source", type: "enum",
           value: (r) => r.source || "unknown",
-          render: (r) => badge(r.source || "unknown", "slate") },
-        { key: "event_type",  label: "Event", type: "text",
-          value: (r) => r.event_type || "" },
-        { key: "asset",       label: "Asset", type: "text",
-          value: (r) => r.hostname || r.agent_id || "" },
-        { key: "payload",     label: "Payload", type: "number", sortable: false,
-          value: (r) => r.payload ? Object.keys(r.payload).length : 0,
-          render: (r) => r.payload && Object.keys(r.payload).length ? `<span class="text-xs text-slate-400">${Object.keys(r.payload).length} field${Object.keys(r.payload).length === 1 ? "" : "s"}</span>` : `<span class="text-slate-700">—</span>`,
-          csv: (r) => JSON.stringify(r.payload || {}) },
+          render: (r) => sourceBadgeHtml(r.source) },
+        { key: "event_type", label: "Event", type: "text",
+          value: (r) => r.event_type || "",
+          render: (r) => {
+            const teaser = r.payload_teaser || "";
+            return `<div class="leading-tight">
+              <span class="font-mono text-xs text-slate-100">${esc(r.event_type || "")}</span>
+              ${teaser ? `<div class="mt-0.5 truncate font-mono text-[10px] text-slate-500">${esc(teaser)}</div>` : ""}
+            </div>`;
+          } },
+        { key: "severity", label: "Severity", type: "enum",
+          value: (r) => String(r.severity || "").toLowerCase(),
+          render: (r) => severityBadgeHtml(r.severity) },
+        { key: "asset", label: "Asset", type: "text",
+          value: (r) => r.hostname || r.agent_id || "",
+          render: (r) => {
+            const host = r.hostname || "";
+            const aid = r.agent_id || "";
+            return host
+              ? `<div class="leading-tight">
+                  <div class="text-xs text-slate-200">${esc(host)}</div>
+                  ${aid ? `<div class="font-mono text-[10px] text-slate-500">${esc(aid.slice(0, 8))}…</div>` : ""}
+                </div>`
+              : aid ? `<span class="font-mono text-xs text-slate-300">${esc(aid)}</span>`
+                    : `<span class="text-slate-700">—</span>`;
+          } },
       ],
       onRowClick: (event) => openReadOnlyModal({
-        title: `Telemetry Event — ${event.event_type || ""}`,
+        title: `${event.event_type || "Telemetry"} — ${fmt(event.occurred_at || event.created_at)}`,
         record: event,
         fields: [
-          { key: "occurred_at", label: "Time",   render: (r) => esc(fmt(r.occurred_at || r.created_at)) },
-          { key: "source",      label: "Source" },
-          { key: "event_type",  label: "Event Type" },
-          { key: "hostname",    label: "Hostname" },
-          { key: "agent_id",    label: "Agent" },
-          { key: "user_id",     label: "User" },
-          { key: "tenant_id",   label: "Tenant" },
+          { key: "occurred_at",  label: "Time",         render: (r) => esc(fmt(r.occurred_at || r.created_at)) },
+          { key: "source",       label: "Source",       render: (r) => sourceBadgeHtml(r.source) },
+          { key: "event_type",   label: "Event Type" },
+          { key: "action_class", label: "Action class", render: (r) => r.action_class ? `<span class="inline-flex rounded-full px-2 py-0.5 text-[10px] uppercase ${actionPillClasses(r.action_class)}">${esc(r.action_class)}</span>` : "" },
+          { key: "severity",     label: "Severity",     render: (r) => severityBadgeHtml(r.severity) },
+          { key: "hostname",     label: "Hostname" },
+          { key: "agent_id",     label: "Agent" },
+          { key: "user_id",      label: "User" },
+          { key: "tenant_id",    label: "Tenant" },
         ],
       }),
-      emptyMessage: "No telemetry found for this tenant.",
+      emptyMessage: filtered.length === 0 && rows.length > 0
+        ? "No events match the current filters. Widen the time window or clear chips."
+        : "No telemetry found for this tenant. Install an endpoint agent or browser extension to start collecting events.",
+    });
+
+    document.querySelectorAll("[data-window]").forEach((el) => {
+      el.addEventListener("click", () => { state.windowId = el.dataset.window; render(); });
+    });
+    document.querySelectorAll("[data-action-chip]").forEach((el) => {
+      el.addEventListener("click", () => { state.actionFilter = el.dataset.actionChip; render(); });
+    });
+    document.querySelectorAll("[data-source-chip]").forEach((el) => {
+      el.addEventListener("click", () => { state.sourceFilter = el.dataset.sourceChip; render(); });
+    });
+    document.querySelectorAll("[data-severity-chip]").forEach((el) => {
+      el.addEventListener("click", () => { state.severityFilter = el.dataset.severityChip; render(); });
     });
     const btn = $("#telemetryLoadMore");
     if (btn) btn.addEventListener("click", loadMore);
