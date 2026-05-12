@@ -25,6 +25,30 @@ let config = {
   pqcAuthStrict: false,
 };
 let lastAuthStatus = { mode: 'unknown', algorithm: 'unknown', updatedAt: 0 };
+let extIdentity = { agent_id: '', hostname: '', user_id: '' };
+
+function _browserHostname() {
+  try {
+    const ua = (typeof navigator !== 'undefined' && navigator.userAgent) || '';
+    const m = ua.match(/\(([^;)]+)/);
+    const os = m ? m[1].trim() : '';
+    return os ? `Safari — ${os}` : 'Safari';
+  } catch { return 'Browser Extension'; }
+}
+
+async function _ensureExtIdentity() {
+  const stored = await browser.storage.local.get(['extAgentId', 'extHostname', 'extUserId']);
+  let agent_id = stored.extAgentId;
+  if (!agent_id) {
+    agent_id = (typeof crypto !== 'undefined' && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : 'ext-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+    await browser.storage.local.set({ extAgentId: agent_id });
+  }
+  const hostname = stored.extHostname || _browserHostname();
+  if (!stored.extHostname) browser.storage.local.set({ extHostname: hostname });
+  extIdentity = { agent_id, hostname, user_id: stored.extUserId || '' };
+}
 
 function recordAuthStatus(authInfo, context) {
   if (!authInfo) return;
@@ -47,6 +71,7 @@ const configReady = (async () => {
   if (synced.cyberarmor_policies) policies = synced.cyberarmor_policies;
   const local = await browser.storage.local.get(['cyberarmor_last_auth_status']);
   if (local.cyberarmor_last_auth_status) lastAuthStatus = local.cyberarmor_last_auth_status;
+  await _ensureExtIdentity();
   try { await ensureBootstrapRedeemed(); } catch (err) { console.warn('[CyberArmor] Safari bootstrap redeem failed:', err.message); }
   startPolicySync();
 })();
@@ -127,6 +152,9 @@ async function sendTelemetry(event) {
       keepalive: true,
       body: JSON.stringify({
         tenant_id: config.tenantId,
+        agent_id: extIdentity.agent_id || undefined,
+        hostname: extIdentity.hostname || undefined,
+        user_id: extIdentity.user_id || undefined,
         event_type: event.type,
         payload: event.payload,
         source: 'browser_extension',

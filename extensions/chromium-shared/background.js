@@ -129,13 +129,57 @@ let cachedConfig = { ...DEFAULT_CONFIG };
 let cachedPolicies = [];
 let policySyncTimer = null;
 let lastAuthStatus = { mode: "unknown", algorithm: "unknown", updatedAt: 0 };
+// Stable per-install identity for telemetry. Persisted in chrome.storage.local
+// so it survives service-worker respawns and shows up consistently on every
+// event. agent_id is a UUID generated on first run; hostname is a friendly
+// browser+OS label so the Incidents view + Agent Directory have something
+// human-readable to show before a delegation binds the install to a user.
+let extIdentity = { agent_id: "", hostname: "", user_id: "" };
 
 // MV3 service workers respawn on events after going idle; onInstalled/onStartup
 // don't fire on respawn, so cachedConfig would otherwise stay at defaults until
 // the next browser launch. Kick a top-level load + cache restore so any wake-up
 // event sees real config, and await this in message handlers that need it.
+// Best-effort, OS-friendly hostname for a browser context. The UA string
+// has the OS in the parens; we read the first token after "(" so the
+// portal shows "Chrome — macOS" instead of a UUID. Never throws.
+function _browserHostname() {
+  try {
+    const ua = (typeof navigator !== "undefined" && navigator.userAgent) || "";
+    const m = ua.match(/\(([^;)]+)/);
+    const os = m ? m[1].trim() : "";
+    const brand = ua.includes("Edg/") ? "Edge"
+                : ua.includes("OPR/") ? "Opera"
+                : ua.includes("Brave") ? "Brave"
+                : ua.includes("Firefox/") ? "Firefox"
+                : ua.includes("Safari/") && !ua.includes("Chrome/") ? "Safari"
+                : "Chrome";
+    return os ? `${brand} — ${os}` : brand;
+  } catch { return "Browser Extension"; }
+}
+
+async function _ensureExtIdentity() {
+  const stored = await new Promise((resolve) =>
+    chrome.storage.local.get(["extAgentId", "extHostname", "extUserId"], resolve)
+  );
+  let agent_id = stored.extAgentId;
+  if (!agent_id) {
+    // crypto.randomUUID is available in MV3 service workers.
+    agent_id = (typeof crypto !== "undefined" && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : "ext-" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+    await new Promise((resolve) => chrome.storage.local.set({ extAgentId: agent_id }, resolve));
+  }
+  const hostname = stored.extHostname || _browserHostname();
+  if (!stored.extHostname) {
+    chrome.storage.local.set({ extHostname: hostname });
+  }
+  extIdentity = { agent_id, hostname, user_id: stored.extUserId || "" };
+}
+
 const configReady = (async () => {
   await loadConfig();
+  await _ensureExtIdentity();
   const stored = await new Promise((resolve) =>
     chrome.storage.local.get(["cachedPolicies", "cyberarmorLastAuthStatus"], resolve)
   );
@@ -534,6 +578,9 @@ async function sendTelemetry(event) {
       keepalive: true,
       body: JSON.stringify({
         tenant_id: cachedConfig.tenantId,
+        agent_id: extIdentity.agent_id || undefined,
+        hostname: extIdentity.hostname || undefined,
+        user_id: extIdentity.user_id || undefined,
         event_type: event.type,
         payload: event.payload,
         source: "browser_extension",
