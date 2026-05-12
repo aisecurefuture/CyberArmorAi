@@ -434,6 +434,84 @@ _CONTEXTUAL_EIN_PATTERNS = [
     ),
 ]
 
+# Driver's license is contextual-only because state formats vary too widely
+# (Maryland: 1 letter + 12 digits; California: 1 letter + 7 digits; Texas:
+# 8 digits; etc.). A bare regex over all of those would false-positive on
+# every SKU and ticket ID in tech writing.
+#
+# Label vocabulary requires either the long form ("driver's license"),
+# the abbreviation "DLN", or "DL" *followed by* a disambiguating connector
+# (so bare "DL release v1" doesn't trigger). The gap between label and
+# value accepts an optional short connector word ("is", "no.", etc.) so
+# natural English ("My driver's license is D1234567") matches.
+_DL_LABEL = (
+    r"(?:driver(?:'?s)?\s+license(?:\s+(?:number|no\.?|#))?|DLN|"
+    r"DL\s+(?:number|is)|DL\s*[#:=])"
+)
+_DL_GAP = r"\s*(?:number|no\.?|#|is|=|of|:)?\s*[^A-Za-z0-9]{0,5}"
+_CONTEXTUAL_DRIVERS_LICENSE_PATTERNS = [
+    # No trailing \b after the label group: some label suffixes ("DL #",
+    # "DL:") end in non-word chars, and \b only fires between word/non-word
+    # boundaries — so "DL # X1234567" failed previously. The gap pattern
+    # below already enforces separation.
+    re.compile(
+        r"\b" + _DL_LABEL + _DL_GAP + r"([A-Za-z0-9-]{5,15})\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b([A-Za-z0-9-]{5,15})\b" + _DL_GAP +
+        r"\b(?:driver(?:'?s)?\s+license(?:\s+(?:number|no\.?|#))?|DLN)\b",
+        re.IGNORECASE,
+    ),
+]
+
+# Passport numbers vary internationally (US is 9 alphanumeric; many EU
+# countries 8-9). Anchor on context to avoid false-flagging short IDs.
+_PP_LABEL = r"(?:passport(?:\s+(?:number|no\.?|#))?|US\s+passport)"
+_PP_GAP = r"\s*(?:number|no\.?|#|is|=|:)?\s*[^A-Za-z0-9]{0,5}"
+_CONTEXTUAL_PASSPORT_PATTERNS = [
+    re.compile(
+        r"\b" + _PP_LABEL + r"\b" + _PP_GAP + r"([A-Za-z0-9]{6,9})\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b([A-Za-z0-9]{6,9})\b" + _PP_GAP + r"\b" + _PP_LABEL + r"\b",
+        re.IGNORECASE,
+    ),
+]
+
+# ABA routing numbers are always 9 digits. Bare "routing:" is recognised as
+# a label (a 9-digit + routing context is a strong signal even without
+# "number"); standalone 9-digit values with no nearby label do not match.
+_ABA_LABEL = (
+    r"(?:ABA(?:\s+routing(?:\s+number)?)?|"
+    r"routing\s+(?:number|no\.?|#)|routing\s*[:=]|"
+    r"wire\s+routing|bank\s+routing|ACH\s+routing)"
+)
+_CONTEXTUAL_ABA_ROUTING_PATTERNS = [
+    re.compile(
+        r"\b" + _ABA_LABEL + r"[^\d]{0,15}(\d{9})\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(\d{9})\b[^\d]{0,15}" + _ABA_LABEL + r"\b",
+        re.IGNORECASE,
+    ),
+]
+
+# Date of birth — common US (MM/DD/YYYY) and ISO (YYYY-MM-DD) numeric
+# forms only. "Born on January 5, 1980" written form is intentionally
+# skipped to keep false positives low; PHI/HIPAA workflows that need it
+# can layer on NER.
+_CONTEXTUAL_DOB_PATTERNS = [
+    re.compile(
+        r"\b(?:DOB|date\s+of\s+birth|birth\s*date|birthdate|born\s+on)\b"
+        r"[^/\d-]{0,15}"
+        r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}-\d{2}-\d{2})\b",
+        re.IGNORECASE,
+    ),
+]
+
 _ENTITY_REGEX_PATTERNS = [
     ("email", re.compile(r"\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[A-Za-z]{2,}\b")),
     (
@@ -767,6 +845,29 @@ def _scan_sensitive_data(text: str) -> List[Dict[str, Any]]:
                 }
             )
 
+    # 2d. Context-aware driver's license, passport, ABA routing, DOB.
+    # All four are contextual-only: bare alphanumerics or 9-digit values
+    # without nearby labels create too many false positives.
+    for subtype, patterns in (
+        ("drivers_license", _CONTEXTUAL_DRIVERS_LICENSE_PATTERNS),
+        ("passport",        _CONTEXTUAL_PASSPORT_PATTERNS),
+        ("bank_routing",    _CONTEXTUAL_ABA_ROUTING_PATTERNS),
+        ("date_of_birth",   _CONTEXTUAL_DOB_PATTERNS),
+    ):
+        for pattern in patterns:
+            for match in pattern.finditer(expanded):
+                compact_value = next((g for g in match.groups() if g), match.group(0))
+                findings.append(
+                    {
+                        "type": "sensitive_data",
+                        "subtype": subtype,
+                        "match": compact_value[:120],
+                        "severity": "medium",
+                        "detector": "regex_contextual",
+                        "context": match.group(0)[:120],
+                    }
+                )
+
     # 3. Semantic DLP
     findings.extend(_scan_semantic_dlp(expanded))
 
@@ -818,6 +919,21 @@ _REDACT_CLASS_MAP: Dict[str, List[tuple]] = {
         ("ein",             _SENSITIVE_REGEX_BY_NAME["ein"],          None),
         ("ein",             _CONTEXTUAL_EIN_PATTERNS[0],              1),
         ("ein",             _CONTEXTUAL_EIN_PATTERNS[1],              1),
+    ],
+    "pii.drivers_license":  [
+        ("drivers_license", _CONTEXTUAL_DRIVERS_LICENSE_PATTERNS[0],  1),
+        ("drivers_license", _CONTEXTUAL_DRIVERS_LICENSE_PATTERNS[1],  1),
+    ],
+    "pii.passport":         [
+        ("passport",        _CONTEXTUAL_PASSPORT_PATTERNS[0],         1),
+        ("passport",        _CONTEXTUAL_PASSPORT_PATTERNS[1],         1),
+    ],
+    "pii.bank_routing":     [
+        ("bank_routing",    _CONTEXTUAL_ABA_ROUTING_PATTERNS[0],      1),
+        ("bank_routing",    _CONTEXTUAL_ABA_ROUTING_PATTERNS[1],      1),
+    ],
+    "pii.date_of_birth":    [
+        ("date_of_birth",   _CONTEXTUAL_DOB_PATTERNS[0],              1),
     ],
     "pii.credit_card":      [("credit_card",    _SENSITIVE_REGEX_BY_NAME["credit_card"],    None)],
     "secret.aws_access_key":[("aws_key",        _SENSITIVE_REGEX_BY_NAME["aws_key"],        None)],
