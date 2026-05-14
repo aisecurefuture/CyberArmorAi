@@ -70,6 +70,86 @@ def _have(cmd: str) -> bool:
     return shutil.which(cmd) is not None
 
 
+# ── Console user resolution ───────────────────────────────────────────
+#
+# The endpoint agent runs as a system LaunchDaemon → root → Path.home()
+# is /var/root, which has no Applications/, no Homebrew config, no
+# browser profiles, no AI model caches. To get a useful BOM we need to
+# enumerate the active console (GUI) user's home + Homebrew install
+# from inside the root daemon.
+
+def _console_user_macos() -> Optional[tuple]:
+    """Return (username, home_path) for the active console user, or
+    None when we're already that user / nobody's logged in / can't
+    resolve a real home."""
+    raw = _run(["/usr/bin/stat", "-f", "%Su", "/dev/console"], timeout=2.0) or ""
+    user = raw.strip()
+    if not user or user in ("root", "_unknown"):
+        return None
+    home = ""
+    out = _run(["/usr/bin/dscl", ".", "-read", f"/Users/{user}", "NFSHomeDirectory"], timeout=3.0) or ""
+    for line in out.splitlines():
+        if line.startswith("NFSHomeDirectory:"):
+            home = line.split(":", 1)[1].strip()
+            break
+    if not home:
+        home = f"/Users/{user}"
+    home_p = Path(home)
+    if not home_p.exists():
+        return None
+    return (user, home_p)
+
+
+def _console_user_linux() -> Optional[tuple]:
+    """Best-effort active-user resolution on Linux. Prefer SUDO_USER,
+    then who(1)'s first non-root tty session. Returns (user, home_path)
+    or None."""
+    sudo_user = os.environ.get("SUDO_USER", "").strip()
+    if sudo_user and sudo_user != "root":
+        h = Path(f"/home/{sudo_user}")
+        if h.exists():
+            return (sudo_user, h)
+    out = _run(["/usr/bin/who"], timeout=2.0) or ""
+    for line in out.splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        u = parts[0]
+        if u and u != "root":
+            h = Path(f"/home/{u}")
+            if h.exists():
+                return (u, h)
+    return None
+
+
+def _active_user() -> Optional[tuple]:
+    """Pick the user whose home directory should drive user-scoped
+    collectors. Returns None when we're already running as that user
+    (so the existing Path.home() / shutil.which() paths Just Work) or
+    when no suitable user can be resolved."""
+    try:
+        if os.geteuid() != 0:
+            return None
+    except AttributeError:
+        # Windows has no geteuid; user-scoping for Windows collectors is
+        # handled directly inside the Windows helpers (registry hives,
+        # AppX runs in user context already).
+        return None
+    if platform.system() == "Darwin":
+        return _console_user_macos()
+    if platform.system() == "Linux":
+        return _console_user_linux()
+    return None
+
+
+def _user_home(active_user: Optional[tuple]) -> Path:
+    """Home directory for user-scoped helpers. Falls back to Path.home()
+    when we're already running as the target user."""
+    if active_user is not None:
+        return active_user[1]
+    return Path.home()
+
+
 # ── Operating system ──────────────────────────────────────────────────
 
 def _collect_os() -> List[Dict[str, Any]]:
@@ -357,14 +437,26 @@ def _collect_rpm() -> List[Dict[str, Any]]:
     return rows
 
 
-def _collect_brew() -> List[Dict[str, Any]]:
+def _collect_brew(active_user: Optional[tuple] = None) -> List[Dict[str, Any]]:
     """Homebrew formulae (excluding casks — those are .app bundles we
-    catch separately). brew is a per-user install so prefer the
-    /opt/homebrew/bin or /usr/local/bin entry."""
-    brew = shutil.which("brew") or "/opt/homebrew/bin/brew"
+    catch separately). brew is a per-user install so the daemon-side
+    PATH usually doesn't see /opt/homebrew/bin. Probe both common
+    locations; when we know the console user, invoke brew under
+    ``sudo -u <user> -H`` so it finds the user's tap config and
+    doesn't refuse to run as root."""
+    brew = "/opt/homebrew/bin/brew"
     if not Path(brew).exists():
+        brew = "/usr/local/bin/brew"
+    if not Path(brew).exists():
+        brew = shutil.which("brew") or ""
+    if not brew or not Path(brew).exists():
         return []
-    raw = _run([brew, "list", "--formula", "--versions"], timeout=20.0)
+    if active_user is not None:
+        u, _ = active_user
+        cmd = ["/usr/bin/sudo", "-u", u, "-H", brew, "list", "--formula", "--versions"]
+    else:
+        cmd = [brew, "list", "--formula", "--versions"]
+    raw = _run(cmd, timeout=30.0)
     if raw is None:
         return []
     rows: List[Dict[str, Any]] = []
@@ -502,13 +594,15 @@ def _collect_windows_drivers() -> List[Dict[str, Any]]:
     return rows
 
 
-def _collect_macos_apps() -> List[Dict[str, Any]]:
+def _collect_macos_apps(active_user: Optional[tuple] = None) -> List[Dict[str, Any]]:
     """macOS .app bundles. Reads CFBundleShortVersionString from each
-    Info.plist (via plutil). Walks /Applications + ~/Applications only;
-    /System/Applications is OS-bundled and adds noise.
+    Info.plist (via plutil). Walks /Applications + the console user's
+    ~/Applications when running as the system daemon (root has no apps).
+    /System/Applications is OS-bundled and adds noise — skipped.
     """
     rows: List[Dict[str, Any]] = []
-    locations = [Path("/Applications"), Path.home() / "Applications"]
+    home = _user_home(active_user)
+    locations = [Path("/Applications"), home / "Applications"]
     plutil = shutil.which("plutil")
     if not plutil:
         return rows
@@ -554,12 +648,16 @@ def _collect_macos_apps() -> List[Dict[str, Any]]:
 
 # ── Browser profiles (extensions) ─────────────────────────────────────
 
-def _collect_browser_extensions() -> List[Dict[str, Any]]:
+def _collect_browser_extensions(active_user: Optional[tuple] = None) -> List[Dict[str, Any]]:
     """Chrome / Brave / Edge installed extensions. We don't pull every
     profile field — just enough to identify the extension and its
     version so dependency-style queries work. Firefox + Safari have
-    their own profile shapes; lands in a follow-up."""
-    home = Path.home()
+    their own profile shapes; lands in a follow-up.
+
+    Uses the resolved console user's home when running as root so
+    /var/root (which has no browser profiles) doesn't shadow the real
+    user's install."""
+    home = _user_home(active_user)
     candidates = [
         ("Chrome",  home / "Library" / "Application Support" / "Google" / "Chrome"),
         ("Chrome",  home / ".config" / "google-chrome"),
@@ -621,14 +719,18 @@ def _collect_browser_extensions() -> List[Dict[str, Any]]:
 
 # ── AI models ─────────────────────────────────────────────────────────
 
-def _collect_ai_models() -> List[Dict[str, Any]]:
+def _collect_ai_models(active_user: Optional[tuple] = None) -> List[Dict[str, Any]]:
     """Ollama / Hugging Face / .gguf model artefacts. Emit as
     ``machine-learning-model`` so the CycloneDX ML-BOM section picks
-    them up."""
+    them up.
+
+    Uses the console user's home when running as root so the daemon
+    can still see models in the logged-in user's cache directories."""
     rows: List[Dict[str, Any]] = []
+    home = _user_home(active_user)
 
     # Ollama keeps a manifest store under ~/.ollama/models/manifests
-    ollama_root = Path.home() / ".ollama" / "models" / "manifests"
+    ollama_root = home / ".ollama" / "models" / "manifests"
     if ollama_root.exists():
         for manifest in ollama_root.rglob("latest"):
             # ~/.ollama/models/manifests/registry.ollama.ai/library/llama3.2/latest
@@ -649,7 +751,7 @@ def _collect_ai_models() -> List[Dict[str, Any]]:
                 })
 
     # Hugging Face hub cache
-    hf_cache = Path.home() / ".cache" / "huggingface" / "hub"
+    hf_cache = home / ".cache" / "huggingface" / "hub"
     if hf_cache.exists():
         for entry in hf_cache.iterdir():
             if not entry.is_dir() or not entry.name.startswith("models--"):
@@ -679,24 +781,26 @@ def collect() -> List[Dict[str, Any]]:
     effort; one source failing never blocks the others. Returns a list
     of CycloneDX component dicts ready for the A-BOM ingest endpoint.
     """
+    # Resolve console user once so we don't fork four "stat /dev/console"
+    # subprocesses. user-scoped helpers accept it as a hint; system-scoped
+    # ones ignore the kwarg.
+    active = _active_user()
     rows: List[Dict[str, Any]] = []
-    for fn in (
-        _collect_os,
-        _collect_cpu,
-        _collect_ram,
-        _collect_nics,
-        _collect_dpkg,
-        _collect_rpm,
-        _collect_brew,
-        _collect_macos_apps,
-        _collect_windows_apps,
-        _collect_windows_drivers,
-        _collect_browser_extensions,
-        _collect_ai_models,
-    ):
+    # System-scoped helpers — same as root or user, no diff.
+    for fn in (_collect_os, _collect_cpu, _collect_ram, _collect_nics,
+               _collect_dpkg, _collect_rpm,
+               _collect_windows_apps, _collect_windows_drivers):
         try:
             rows.extend(fn() or [])
         except Exception:  # noqa: BLE001 — never let one collector kill the sweep
+            continue
+    # User-scoped helpers — pass through the resolved active user so the
+    # root daemon can see the actual logged-in user's tools.
+    for fn in (_collect_brew, _collect_macos_apps,
+               _collect_browser_extensions, _collect_ai_models):
+        try:
+            rows.extend(fn(active) or [])
+        except Exception:  # noqa: BLE001
             continue
     return rows
 
