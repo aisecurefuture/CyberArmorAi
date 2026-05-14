@@ -3022,7 +3022,7 @@ async function viewBillOfMaterials() {
   $("#pageTitle").textContent = "Bill of Materials";
   $("#pageSubtitle").textContent = "Continuously-updated inventory of software, hardware, ML models, and crypto — collected from endpoint agents, RASP, IDE plugins, repos, and cloud (CycloneDX 1.6)";
 
-  let tab = "components"; // "components" | "drift" | "sources"
+  let tab = "components"; // "components" | "drift" | "lvi" | "sources" | "ioc"
   let repoConfig = null;          // server view of the repo-collector config (no token)
   let repoSaveMessage = null;     // {kind, text}
   let repoSyncMessage = null;     // {kind, text, summary?}
@@ -3034,7 +3034,7 @@ async function viewBillOfMaterials() {
   let iocsText = "";
   let iocResult = null;
   let iocBusy = false;
-  let iocError = null; | "lvi"
+  let iocError = null;
   let components = [];
   let total = 0;
   let coverage = [];
