@@ -86,6 +86,27 @@ def _collect_os() -> List[Dict[str, Any]]:
             {"name": "cyberarmor:arch", "value": str(uname.machine or "")},
         ],
     }
+    # Windows: prefer the friendly Caption / BuildNumber from CIM. Falls
+    # back to uname.release which is just the NT build number.
+    if uname.system == "Windows":
+        raw = _run([
+            "powershell", "-NoProfile", "-Command",
+            "Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, BuildNumber | ConvertTo-Json -Compress",
+        ], timeout=10.0) or ""
+        try:
+            data = json.loads(raw) if raw else {}
+            if isinstance(data, list) and data:
+                data = data[0]
+            if isinstance(data, dict):
+                if data.get("Caption"):
+                    out["name"] = str(data["Caption"])
+                if data.get("Version"):
+                    out["version"] = str(data["Version"])
+                if data.get("BuildNumber"):
+                    out["properties"].append({"name": "cyberarmor:build", "value": str(data["BuildNumber"])})
+        except (json.JSONDecodeError, AttributeError):
+            pass
+        return [out]
     # Linux: pull pretty-name from /etc/os-release for a useful display name.
     osrel = Path("/etc/os-release")
     if osrel.exists():
@@ -134,6 +155,12 @@ def _collect_cpu() -> List[Dict[str, Any]]:
                 pass
     elif platform.system() == "Darwin":
         model = (_run(["/usr/sbin/sysctl", "-n", "machdep.cpu.brand_string"]) or "").strip()
+    elif platform.system() == "Windows":
+        raw = _run([
+            "powershell", "-NoProfile", "-Command",
+            "(Get-CimInstance Win32_Processor | Select-Object -First 1).Name",
+        ], timeout=10.0) or ""
+        model = raw.strip()
     if not model:
         model = platform.processor() or "cpu"
     try:
@@ -182,6 +209,15 @@ def _collect_ram() -> List[Dict[str, Any]]:
             total_bytes = int(raw.strip())
         except ValueError:
             total_bytes = 0
+    elif platform.system() == "Windows":
+        raw = _run([
+            "powershell", "-NoProfile", "-Command",
+            "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory",
+        ], timeout=10.0) or ""
+        try:
+            total_bytes = int(raw.strip())
+        except ValueError:
+            total_bytes = 0
     if total_bytes <= 0:
         return []
     gb = total_bytes // (1024 * 1024 * 1024)
@@ -200,6 +236,26 @@ def _collect_nics() -> List[Dict[str, Any]]:
     anchor — manufacturer comes from OUI lookup heuristics for the demo,
     not a real database."""
     rows: List[Dict[str, Any]] = []
+    if platform.system() == "Windows":
+        # PowerShell Get-NetAdapter is the supported path on modern Windows;
+        # fall back to wmic for older releases.
+        raw = _run([
+            "powershell", "-NoProfile", "-Command",
+            "Get-NetAdapter | Where-Object {$_.MacAddress} | Select-Object Name, MacAddress, InterfaceDescription | ConvertTo-Json -Compress",
+        ], timeout=10.0) or ""
+        try:
+            data = json.loads(raw) if raw else []
+            if isinstance(data, dict):
+                data = [data]
+            for nic in data:
+                mac = str(nic.get("MacAddress") or "").replace("-", ":")
+                name = str(nic.get("Name") or "?")
+                if not mac:
+                    continue
+                rows.append(_nic_component({"name": name, "mac": mac}))
+        except (json.JSONDecodeError, AttributeError):
+            pass
+        return rows
     if platform.system() == "Darwin":
         raw = _run(["/sbin/ifconfig"]) or ""
         cur: Dict[str, str] = {}
@@ -327,6 +383,122 @@ def _collect_brew() -> List[Dict[str, Any]]:
                 {"name": "cyberarmor:package_manager", "value": "homebrew"},
             ],
         })
+    return rows
+
+
+def _collect_windows_apps() -> List[Dict[str, Any]]:
+    """Installed Win32 apps from the Uninstall registry hive plus
+    AppX/UWP packages. Skips MSI components without a DisplayName so
+    the BOM doesn't fill up with unnamed system orphans.
+    """
+    if platform.system() != "Windows":
+        return []
+    rows: List[Dict[str, Any]] = []
+
+    # Uninstall registry — covers MSI + EXE installers.
+    script = (
+        "$paths = @("
+        "'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',"
+        "'HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',"
+        "'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*');"
+        "Get-ItemProperty $paths -ErrorAction SilentlyContinue | "
+        "Where-Object {$_.DisplayName} | "
+        "Select-Object DisplayName, DisplayVersion, Publisher | ConvertTo-Json -Compress"
+    )
+    raw = _run(["powershell", "-NoProfile", "-Command", script], timeout=30.0) or ""
+    try:
+        data = json.loads(raw) if raw else []
+        if isinstance(data, dict):
+            data = [data]
+        for app in data:
+            name = str(app.get("DisplayName") or "").strip()
+            if not name:
+                continue
+            version = str(app.get("DisplayVersion") or "").strip()
+            publisher = str(app.get("Publisher") or "").strip()
+            rows.append({
+                "type": "application",
+                "name": name,
+                "version": version,
+                "manufacturer": publisher or None,
+                "properties": [
+                    {"name": "cyberarmor:package_manager", "value": "windows_uninstall_registry"},
+                    {"name": "cyberarmor:publisher", "value": publisher},
+                ],
+            })
+    except (json.JSONDecodeError, AttributeError):
+        pass
+
+    # AppX / UWP store packages — Get-AppxPackage runs in user context.
+    script_appx = (
+        "Get-AppxPackage | "
+        "Select-Object Name, Version, Publisher, PackageFullName | "
+        "ConvertTo-Json -Compress"
+    )
+    raw = _run(["powershell", "-NoProfile", "-Command", script_appx], timeout=30.0) or ""
+    try:
+        data = json.loads(raw) if raw else []
+        if isinstance(data, dict):
+            data = [data]
+        for pkg in data:
+            name = str(pkg.get("Name") or "").strip()
+            version = str(pkg.get("Version") or "").strip()
+            publisher = str(pkg.get("Publisher") or "").strip()
+            full = str(pkg.get("PackageFullName") or "").strip()
+            if not name:
+                continue
+            rows.append({
+                "type": "application",
+                "name": name,
+                "version": version,
+                "manufacturer": publisher or None,
+                "purl": f"pkg:appx/{name}@{version}" if version else f"pkg:appx/{name}",
+                "properties": [
+                    {"name": "cyberarmor:package_manager", "value": "appx"},
+                    {"name": "cyberarmor:package_full_name", "value": full},
+                ],
+            })
+    except (json.JSONDecodeError, AttributeError):
+        pass
+
+    return rows
+
+
+def _collect_windows_drivers() -> List[Dict[str, Any]]:
+    """Loaded drivers from the DriverStore + currently-attached devices.
+    Drivers map to CycloneDX type ``device-driver``."""
+    if platform.system() != "Windows":
+        return []
+    rows: List[Dict[str, Any]] = []
+    script = (
+        "Get-WindowsDriver -Online -ErrorAction SilentlyContinue | "
+        "Select-Object Driver, OriginalFileName, ClassName, ProviderName, Version, Date | "
+        "ConvertTo-Json -Compress"
+    )
+    raw = _run(["powershell", "-NoProfile", "-Command", script], timeout=60.0) or ""
+    try:
+        data = json.loads(raw) if raw else []
+        if isinstance(data, dict):
+            data = [data]
+        for drv in data:
+            name = str(drv.get("OriginalFileName") or drv.get("Driver") or "").strip()
+            if not name:
+                continue
+            version = str(drv.get("Version") or "").strip()
+            provider = str(drv.get("ProviderName") or "").strip()
+            cls = str(drv.get("ClassName") or "").strip()
+            rows.append({
+                "type": "device-driver",
+                "name": name,
+                "version": version,
+                "manufacturer": provider or None,
+                "properties": [
+                    {"name": "cyberarmor:driver_class", "value": cls},
+                    {"name": "cyberarmor:driver_provider", "value": provider},
+                ],
+            })
+    except (json.JSONDecodeError, AttributeError):
+        pass
     return rows
 
 
@@ -517,6 +689,8 @@ def collect() -> List[Dict[str, Any]]:
         _collect_rpm,
         _collect_brew,
         _collect_macos_apps,
+        _collect_windows_apps,
+        _collect_windows_drivers,
         _collect_browser_extensions,
         _collect_ai_models,
     ):

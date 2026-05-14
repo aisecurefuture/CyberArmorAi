@@ -485,7 +485,7 @@ function topEventTypesHtml(rows) {
     </div>`;
 }
 
-function missionControlHtml(settings, overview) {
+function missionControlHtml(settings, overview, abomStats) {
   const readiness = readinessFromOverview(overview);
   const tone = readinessTone(readiness.score);
   const nextActions = readiness.checks.filter((item) => !item.complete).slice(0, 3);
@@ -502,13 +502,28 @@ function missionControlHtml(settings, overview) {
   const series24hTotal = series.reduce((a, b) => a + b, 0);
 
   return `
-    <div class="grid gap-3 md:grid-cols-3 lg:grid-cols-6">
+    <div class="grid gap-3 md:grid-cols-3 lg:grid-cols-6 xl:grid-cols-7">
       ${metricCard("Policies", overview.policy_count ?? "0", "cyan", "active and archived")}
       ${metricCard("Endpoints", overview.agent_count ?? "0", "green", "registered or telemetry-only")}
       ${metricCard("Telemetry", overview.telemetry_count ?? "0", "cyan", "tenant events")}
       ${metricCard("Incidents", overview.incident_count ?? "0", "amber", "evidence candidates")}
       ${metricCard("AI Providers", overview.provider_count ?? "0", "green", "router visible")}
       ${metricCard("Audit Events", overview.audit_count ?? "0", "slate", "reviewable records")}
+      ${(() => {
+        // BOM tile shows the rolled-up component count with a 24h delta
+        // when the stats endpoint returns something. Falls back to "—"
+        // when no collector has reported yet so the tile doesn't blink
+        // in and out during demos.
+        if (!abomStats || typeof abomStats.total !== "number") {
+          return metricCard("BOM", "—", "slate", "no collectors reported yet");
+        }
+        const added = abomStats.added_24h || 0;
+        const detail = added > 0
+          ? `${added} added in last 24h`
+          : `${abomStats.stale_7d || 0} stale >7d`;
+        const tone = added > 0 ? "cyan" : (abomStats.stale_7d > 0 ? "amber" : "green");
+        return `<a href="#/bom" class="block">${metricCard("BOM", abomStats.total, tone, detail)}</a>`;
+      })()}
     </div>
 
     <div class="mt-5 grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
@@ -1069,11 +1084,14 @@ async function tenantScopedConfigPage(section, title, subtitle, items, defaults 
 async function viewOverview() {
   $("#pageTitle").textContent = "Mission Control";
   $("#pageSubtitle").textContent = "Tenant readiness, next actions, and live activity";
-  const [settings, overview] = await Promise.all([
+  const [settings, overview, abomStats] = await Promise.all([
     api("/api/customer/settings"),
     api("/api/customer/overview"),
+    // A-BOM stats are optional — Mission Control should still render
+    // before any collectors have reported, so swallow fetch failures.
+    api("/api/customer/abom/stats").catch(() => null),
   ]);
-  $("#app").innerHTML = missionControlHtml(settings, overview);
+  $("#app").innerHTML = missionControlHtml(settings, overview, abomStats);
   // Wire Recent Activity row clicks → quick read-only modal. We don't have
   // the full payload on the overview endpoint by design (kept it lean), so
   // the modal just shows headers + a deep link into Telemetry.
@@ -3004,6 +3022,7 @@ async function viewBillOfMaterials() {
   $("#pageTitle").textContent = "Bill of Materials";
   $("#pageSubtitle").textContent = "Continuously-updated inventory of software, hardware, ML models, and crypto — collected from endpoint agents, RASP, IDE plugins, repos, and cloud (CycloneDX 1.6)";
 
+  let tab = "components"; // "components" | "drift"
   let components = [];
   let total = 0;
   let coverage = [];
@@ -3011,9 +3030,14 @@ async function viewBillOfMaterials() {
   let typeFilter = "all";
   let search = "";
   let sourceFilter = "all";          // all | agent | repo | container | cloud_resource | ide_workspace
+  let staleDays = 0;                 // 0 = no stale filter; otherwise only show last_seen_at older than N days
   let selected = null;               // component id for the inspector panel
   let selectedDetail = null;         // detail payload
   const tablePager = { page: 1, pageSize: 50 };
+  // Drift sub-view state
+  let driftDays = 7;
+  let drift = null;
+  let driftError = null;
 
   async function load() {
     try {
@@ -3023,6 +3047,7 @@ async function viewBillOfMaterials() {
       if (typeFilter !== "all") params.set("type", typeFilter);
       if (search.trim()) params.set("q", search.trim());
       if (sourceFilter !== "all") params.set("source_kind", sourceFilter);
+      if (staleDays > 0) params.set("stale_days", String(staleDays));
       const [resp, cov] = await Promise.allSettled([
         api(`/api/customer/abom/components?${params.toString()}`),
         api("/api/customer/abom/coverage"),
@@ -3052,13 +3077,26 @@ async function viewBillOfMaterials() {
     }
   }
 
-  function exportCycloneDX() {
+  async function loadDrift() {
+    try {
+      drift = await api(`/api/customer/abom/drift?days=${driftDays}`);
+      driftError = null;
+    } catch (err) {
+      drift = null;
+      driftError = err.message || "drift fetch failed";
+    }
+  }
+
+  function exportCycloneDX(opts = {}) {
     // Use a regular <a download> link so the JSON streams straight from
     // the server to disk without going through the api() wrapper (which
-    // would parse + re-serialize a 1MB document for no reason).
+    // would parse + re-serialize a 1MB document for no reason). signed=true
+    // wraps the BOM in an HMAC envelope for evidence-grade exports.
+    const signed = opts.signed === true;
     const a = document.createElement("a");
-    a.href = "/api/customer/abom/export?format=cyclonedx";
-    a.download = `cyberarmor_${session.tenant_id || "tenant"}_bom_${new Date().toISOString().slice(0, 10)}.cdx.json`;
+    a.href = `/api/customer/abom/export?format=cyclonedx${signed ? "&sign=true" : ""}`;
+    const suffix = signed ? ".signed.cdx.json" : ".cdx.json";
+    a.download = `cyberarmor_${session.tenant_id || "tenant"}_bom_${new Date().toISOString().slice(0, 10)}${suffix}`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -3143,6 +3181,95 @@ async function viewBillOfMaterials() {
     </tr>`;
   }
 
+  function renderDriftBody() {
+    if (driftError) {
+      return `<div class="rounded-2xl border border-rose-900 bg-rose-950/30 p-3 text-sm text-rose-200">Could not load drift: ${esc(driftError)}.</div>`;
+    }
+    const added = (drift && drift.added) || [];
+    const removed = (drift && drift.removed) || [];
+    const changed = (drift && drift.version_changed) || [];
+    const winLabel = drift && drift.since
+      ? `${esc(new Date(drift.since).toLocaleString())} → ${esc(new Date(drift.until || Date.now()).toLocaleString())}`
+      : `last ${driftDays}d`;
+
+    const driftRow = (c, tone) => `<tr class="border-t border-slate-800 ${tone}">
+      <td class="px-3 py-2">${abomTypePill(c.type)}</td>
+      <td class="px-3 py-2"><div class="text-sm text-slate-100 break-all">${esc(c.name)}</div>${c.manufacturer ? `<div class="text-[10px] text-slate-500">${esc(c.manufacturer)}</div>` : ""}</td>
+      <td class="px-3 py-2 font-mono text-xs text-slate-300">${esc(c.version || "—")}</td>
+      <td class="px-3 py-2 font-mono text-[10px] text-slate-400 break-all">${esc(c.purl || "—")}</td>
+      <td class="px-3 py-2 text-xs text-slate-400">${esc(c.first_seen_at ? new Date(c.first_seen_at).toLocaleString() : c.last_seen_at ? new Date(c.last_seen_at).toLocaleString() : "—")}</td>
+    </tr>`;
+    const versionRow = (v) => `<tr class="border-t border-slate-800">
+      <td class="px-3 py-2">${abomTypePill(v.type)}</td>
+      <td class="px-3 py-2"><div class="text-sm text-slate-100 break-all">${esc(v.name)}</div>${v.manufacturer ? `<div class="text-[10px] text-slate-500">${esc(v.manufacturer)}</div>` : ""}</td>
+      <td class="px-3 py-2 font-mono text-xs"><span class="text-slate-500 line-through">${esc(v.from_version || "—")}</span> <span class="text-slate-500">→</span> <span class="text-emerald-300">${esc(v.to_version || "—")}</span></td>
+      <td class="px-3 py-2 text-xs text-slate-400">${esc(v.to_first_seen_at ? new Date(v.to_first_seen_at).toLocaleString() : "—")}</td>
+    </tr>`;
+
+    return `
+      ${card(`
+        <div class="flex flex-wrap items-center gap-4">
+          ${riskMetricCard("Added", added.length, added.length > 0 ? "emerald" : "slate")}
+          ${riskMetricCard("Removed", removed.length, removed.length > 0 ? "rose" : "slate")}
+          ${riskMetricCard("Version changed", changed.length, changed.length > 0 ? "amber" : "slate")}
+          <div class="ml-auto flex flex-col leading-tight">
+            <span class="text-[10px] uppercase tracking-wider text-slate-500">Window</span>
+            <div class="mt-1 flex flex-wrap gap-1" id="driftWindowPicker">
+              ${[1, 7, 30, 90].map((d) => `
+                <button type="button" data-drift-days="${d}" class="rounded-full px-2 py-1 text-[11px] ${driftDays === d ? "bg-cyan-500 text-slate-950 font-semibold" : "bg-slate-900 border border-slate-700 text-slate-300 hover:bg-slate-800"}">${d}d</button>
+              `).join("")}
+            </div>
+          </div>
+          <div class="text-[11px] text-slate-500">${winLabel}</div>
+        </div>
+      `)}
+      <div class="grid gap-4 lg:grid-cols-2">
+        ${card(`
+          <div class="font-semibold">Added <span class="text-xs text-slate-500">(${added.length})</span></div>
+          <p class="mt-1 text-xs text-slate-500">Components whose first sighting falls inside the window. New install, new repo dep, fresh cloud resource — all land here.</p>
+          <div class="mt-3 overflow-x-auto">
+            <table class="w-full text-left text-sm">
+              <thead class="text-[10px] uppercase tracking-wider text-slate-500"><tr>
+                <th class="px-3 py-2">Type</th><th class="px-3 py-2">Name</th><th class="px-3 py-2">Version</th><th class="px-3 py-2">PURL</th><th class="px-3 py-2">First seen</th>
+              </tr></thead>
+              <tbody>
+                ${added.length === 0 ? `<tr><td colspan="5" class="px-3 py-6 text-center text-xs text-slate-500">Nothing new.</td></tr>` : added.slice(0, 200).map((c) => driftRow(c, "")).join("")}
+              </tbody>
+            </table>
+          </div>
+        `)}
+        ${card(`
+          <div class="font-semibold">Removed <span class="text-xs text-slate-500">(${removed.length})</span></div>
+          <p class="mt-1 text-xs text-slate-500">Components a collector hasn't seen since before the window. Uninstall, deleted repo, decommissioned host — flagged here.</p>
+          <div class="mt-3 overflow-x-auto">
+            <table class="w-full text-left text-sm">
+              <thead class="text-[10px] uppercase tracking-wider text-slate-500"><tr>
+                <th class="px-3 py-2">Type</th><th class="px-3 py-2">Name</th><th class="px-3 py-2">Version</th><th class="px-3 py-2">PURL</th><th class="px-3 py-2">Last seen</th>
+              </tr></thead>
+              <tbody>
+                ${removed.length === 0 ? `<tr><td colspan="5" class="px-3 py-6 text-center text-xs text-slate-500">Nothing removed.</td></tr>` : removed.slice(0, 200).map((c) => driftRow(c, "")).join("")}
+              </tbody>
+            </table>
+          </div>
+        `)}
+      </div>
+      ${card(`
+        <div class="font-semibold">Version changed <span class="text-xs text-slate-500">(${changed.length})</span></div>
+        <p class="mt-1 text-xs text-slate-500">Old version's identity_key disappeared and a new one with the same (type, name, manufacturer) appeared inside the window.</p>
+        <div class="mt-3 overflow-x-auto">
+          <table class="w-full text-left text-sm">
+            <thead class="text-[10px] uppercase tracking-wider text-slate-500"><tr>
+              <th class="px-3 py-2">Type</th><th class="px-3 py-2">Name</th><th class="px-3 py-2">Version</th><th class="px-3 py-2">First seen (new)</th>
+            </tr></thead>
+            <tbody>
+              ${changed.length === 0 ? `<tr><td colspan="4" class="px-3 py-6 text-center text-xs text-slate-500">No version changes.</td></tr>` : changed.slice(0, 200).map(versionRow).join("")}
+            </tbody>
+          </table>
+        </div>
+      `)}
+    `;
+  }
+
   function render() {
     const typeCounts = {};
     for (const c of components) typeCounts[c.type] = (typeCounts[c.type] || 0) + 1;
@@ -3153,9 +3280,16 @@ async function viewBillOfMaterials() {
     const totalMl = typeCounts["machine-learning-model"] || 0;
     const pager = simplePager({ total, state: tablePager, idPrefix: "bom" });
 
+    const tabsHtml = `
+      <div class="flex flex-wrap gap-2">
+        ${tabButton("components", "Components", tab === "components")}
+        ${tabButton("drift", `Drift${drift && drift.summary ? ` (${drift.summary.added + drift.summary.removed + drift.summary.version_changed})` : ""}`, tab === "drift")}
+      </div>
+    `;
     $("#app").innerHTML = `
       <div class="space-y-4">
         ${loadError ? `<div class="rounded-2xl border border-rose-900 bg-rose-950/30 p-3 text-sm text-rose-200">Could not load BOM: ${esc(loadError)}.</div>` : ""}
+        ${tabsHtml}
         ${card(`
           <div class="flex flex-wrap items-center gap-4">
             ${riskMetricCard("Components", total, "slate")}
@@ -3165,10 +3299,13 @@ async function viewBillOfMaterials() {
             ${riskMetricCard("Collectors", coverage.length, coverage.length === 0 ? "rose" : "emerald")}
             <div class="ml-auto flex flex-wrap gap-2">
               <button id="bomExport" type="button" class="rounded-2xl bg-cyan-500 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-400">Export CycloneDX</button>
+              <button id="bomExportSigned" type="button" class="rounded-2xl border border-cyan-700 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-200 hover:bg-cyan-500/20" title="Wraps the BOM in an HMAC-SHA256 envelope for evidence-grade exports.">Export Signed</button>
               <button id="bomRefresh" type="button" class="rounded-2xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-200 hover:bg-slate-800">Refresh</button>
             </div>
           </div>
         `)}
+        ${tab === "drift" ? renderDriftBody() : ""}
+        ${tab !== "components" ? "" : `
         ${card(`
           <div class="flex flex-wrap items-center gap-2">
             <span class="text-[10px] uppercase tracking-wider text-slate-500">Type</span>
@@ -3185,8 +3322,19 @@ async function viewBillOfMaterials() {
             `).join("")}
           </div>
           <div class="mt-2 flex flex-wrap items-center gap-2">
+            <span class="text-[10px] uppercase tracking-wider text-slate-500">Freshness</span>
+            ${[
+              { v: 0, label: "All" },
+              { v: 1, label: "Stale >1d" },
+              { v: 7, label: "Stale >7d" },
+              { v: 30, label: "Stale >30d" },
+            ].map((opt) => `
+              <button type="button" data-stale-filter="${opt.v}" class="rounded-full px-2 py-1 text-[11px] ${staleDays === opt.v ? "bg-cyan-500 text-slate-950 font-semibold" : "bg-slate-900 border border-slate-700 text-slate-300 hover:bg-slate-800"}">${esc(opt.label)}</button>
+            `).join("")}
+          </div>
+          <div class="mt-2 flex flex-wrap items-center gap-2">
             <input id="bomSearch" type="search" placeholder="Search by name (substring)…" class="flex-1 min-w-[280px] rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm" value="${esc(search)}" />
-            <div class="text-xs text-slate-400">${total} total · ${distinctTypes.length} types</div>
+            <div class="text-xs text-slate-400">${total} total · ${distinctTypes.length} types${staleDays > 0 ? ` · stale >${staleDays}d` : ""}</div>
           </div>
         `)}
         <div class="grid gap-4 lg:grid-cols-[1fr_400px]">
@@ -3230,6 +3378,7 @@ async function viewBillOfMaterials() {
             </table>
           </div>
         `)}
+        `}
       </div>
     `;
 
@@ -3278,9 +3427,52 @@ async function viewBillOfMaterials() {
     });
     const clearBtn = $("#bomClearSelection");
     if (clearBtn) clearBtn.addEventListener("click", () => { selected = null; selectedDetail = null; render(); });
-    const exp = $("#bomExport"); if (exp) exp.addEventListener("click", exportCycloneDX);
-    const ref = $("#bomRefresh"); if (ref) ref.addEventListener("click", async () => { await load(); render(); });
+    const exp = $("#bomExport"); if (exp) exp.addEventListener("click", () => exportCycloneDX({ signed: false }));
+    const expSigned = $("#bomExportSigned"); if (expSigned) expSigned.addEventListener("click", () => exportCycloneDX({ signed: true }));
+    const ref = $("#bomRefresh"); if (ref) ref.addEventListener("click", async () => {
+      // Refresh refreshes whichever tab is active so the Refresh button
+      // behaves consistently from either sub-view.
+      await load();
+      if (tab === "drift") await loadDrift();
+      render();
+    });
     pager.wire(document, async () => { await load(); render(); });
+
+    // Tab bar: switching to Drift triggers a fetch if we haven't loaded
+    // it yet; switching back to Components reuses cached data.
+    document.querySelectorAll(".sectionTab").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const next = btn.dataset.tab;
+        if (!next || next === tab) return;
+        tab = next;
+        if (tab === "drift" && drift === null) await loadDrift();
+        render();
+      });
+    });
+
+    // Stale-days chips: zero means "no filter"; non-zero passes
+    // stale_days through to /customer/abom/components.
+    document.querySelectorAll("[data-stale-filter]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const next = Number(btn.dataset.staleFilter || 0);
+        if (next === staleDays) return;
+        staleDays = next;
+        tablePager.page = 1;
+        await load();
+        render();
+      });
+    });
+
+    // Drift window picker.
+    document.querySelectorAll("[data-drift-days]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const next = Number(btn.dataset.driftDays || 0);
+        if (next === driftDays || !next) return;
+        driftDays = next;
+        await loadDrift();
+        render();
+      });
+    });
   }
 
   await load();

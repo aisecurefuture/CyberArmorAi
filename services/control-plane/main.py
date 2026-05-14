@@ -4971,9 +4971,14 @@ def customer_abom_components(
     q: Optional[str] = None,
     source_kind: Optional[str] = None,
     has_license: Optional[str] = None,
+    stale_days: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Paginated component list with filters. Joins to observations only
     when ``source_kind`` is set so the common path stays fast.
+
+    ``stale_days`` filters to components whose ``last_seen_at`` is older
+    than the cutoff — useful for "what used to be here that's gone?"
+    queries the Drift view doesn't cover.
     """
     limit = max(1, min(limit, 500))
     offset = max(0, offset)
@@ -4983,6 +4988,9 @@ def customer_abom_components(
     if q:
         like = f"%{q.lower()}%"
         base = base.filter(func.lower(ABOMComponent.name).like(like))
+    if stale_days is not None and stale_days > 0:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=stale_days)
+        base = base.filter(ABOMComponent.last_seen_at < cutoff)
     if source_kind:
         # Pull component_ids that have an observation matching the kind.
         sub = (
@@ -5069,6 +5077,157 @@ def customer_abom_component_detail(
     }
 
 
+@app.get("/customer/abom/drift")
+def customer_abom_drift(
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    db: Annotated[Session, Depends(get_db)],
+    since: Optional[str] = None,
+    days: int = 1,
+) -> Dict[str, Any]:
+    """What's changed in the tenant's component set in the last window?
+
+    Buckets:
+      - ``added``:   ``first_seen_at`` falls inside the window (still active).
+      - ``removed``: ``last_seen_at`` is older than the window start — we
+                     haven't seen the component in any sweep since.
+      - ``version_changed``: pairs where ``(type, name, manufacturer)`` is
+                     the same but ``identity_key`` differs and one entry
+                     went stale while another appeared inside the window.
+
+    Identity-key changes are the only way we detect version churn since
+    we never demote a component row's version — a new version is a new
+    identity_key per the design doc.
+    """
+    if since:
+        try:
+            since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="since must be ISO-8601")
+    else:
+        days = max(1, min(days, 365))
+        since_dt = datetime.now(timezone.utc) - timedelta(days=days)
+
+    # Pull every component once; the drift view operates on the full set.
+    # Component counts are usually <10k per tenant — keeping it simple.
+    rows = (
+        db.query(ABOMComponent)
+        .filter(ABOMComponent.tenant_id == ctx.tenant_id)
+        .all()
+    )
+
+    added: list[Dict[str, Any]] = []
+    removed: list[Dict[str, Any]] = []
+    # Group by (type, name, manufacturer) so we can pair an old version's
+    # disappearance with a new version's appearance.
+    by_key: Dict[Tuple[str, str, str], list[ABOMComponent]] = {}
+
+    for r in rows:
+        key = (r.type or "", (r.name or "").lower(), (r.manufacturer or "").lower())
+        by_key.setdefault(key, []).append(r)
+        first = r.first_seen_at
+        last = r.last_seen_at
+        if first is not None and first >= since_dt:
+            added.append(_abom_row_to_drift_dict(r))
+        elif last is not None and last < since_dt:
+            removed.append(_abom_row_to_drift_dict(r))
+
+    version_changed: list[Dict[str, Any]] = []
+    for key, entries in by_key.items():
+        if len(entries) < 2:
+            continue
+        # Pair every recently-appearing row with every recently-stale row
+        # in the same name/manufacturer cluster. Drop pairs that share an
+        # identity_key (shouldn't happen, but defensive).
+        new_ones = [e for e in entries if e.first_seen_at and e.first_seen_at >= since_dt]
+        old_ones = [e for e in entries if e.last_seen_at and e.last_seen_at < since_dt]
+        for new in new_ones:
+            for old in old_ones:
+                if new.identity_key == old.identity_key:
+                    continue
+                version_changed.append({
+                    "type": new.type,
+                    "name": new.name,
+                    "manufacturer": new.manufacturer,
+                    "from_version": old.version,
+                    "from_purl": old.purl,
+                    "from_identity_key": old.identity_key,
+                    "from_last_seen_at": old.last_seen_at.isoformat() if old.last_seen_at else None,
+                    "to_version": new.version,
+                    "to_purl": new.purl,
+                    "to_identity_key": new.identity_key,
+                    "to_first_seen_at": new.first_seen_at.isoformat() if new.first_seen_at else None,
+                    "to_id": new.id,
+                })
+
+    # A row showing up as version_changed is by definition also in
+    # added/removed; drop those copies so the three lists don't double-count.
+    vc_to_ids = {v["to_identity_key"] for v in version_changed}
+    vc_from_ids = {v["from_identity_key"] for v in version_changed}
+    added = [a for a in added if a["identity_key"] not in vc_to_ids]
+    removed = [r for r in removed if r["identity_key"] not in vc_from_ids]
+
+    return {
+        "since": since_dt.isoformat(),
+        "until": datetime.now(timezone.utc).isoformat(),
+        "added": added,
+        "removed": removed,
+        "version_changed": version_changed,
+        "summary": {
+            "added": len(added),
+            "removed": len(removed),
+            "version_changed": len(version_changed),
+        },
+    }
+
+
+def _abom_row_to_drift_dict(r: "ABOMComponent") -> Dict[str, Any]:
+    return {
+        "id": r.id,
+        "identity_key": r.identity_key,
+        "type": r.type,
+        "name": r.name,
+        "version": r.version,
+        "purl": r.purl,
+        "manufacturer": r.manufacturer,
+        "first_seen_at": r.first_seen_at.isoformat() if r.first_seen_at else None,
+        "last_seen_at": r.last_seen_at.isoformat() if r.last_seen_at else None,
+    }
+
+
+@app.get("/customer/abom/stats")
+def customer_abom_stats(
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    db: Annotated[Session, Depends(get_db)],
+) -> Dict[str, Any]:
+    """Tiny summary used by Mission Control + the BOM nav badge. Cheap
+    queries only — never walks observations."""
+    base = db.query(ABOMComponent).filter(ABOMComponent.tenant_id == ctx.tenant_id)
+    total = base.count()
+
+    now = datetime.now(timezone.utc)
+    day_ago = now - timedelta(days=1)
+    week_ago = now - timedelta(days=7)
+
+    added_24h = base.filter(ABOMComponent.first_seen_at >= day_ago).count()
+    added_7d = base.filter(ABOMComponent.first_seen_at >= week_ago).count()
+    stale_7d = base.filter(ABOMComponent.last_seen_at < week_ago).count()
+
+    by_type_rows = (
+        db.query(ABOMComponent.type, func.count(ABOMComponent.id))
+        .filter(ABOMComponent.tenant_id == ctx.tenant_id)
+        .group_by(ABOMComponent.type)
+        .all()
+    )
+    by_type = {str(t or "unknown"): int(c) for t, c in by_type_rows}
+    return {
+        "total": total,
+        "added_24h": added_24h,
+        "added_7d": added_7d,
+        "stale_7d": stale_7d,
+        "by_type": by_type,
+    }
+
+
 @app.get("/customer/abom/coverage")
 def customer_abom_coverage(
     ctx: Annotated[CustomerContext, Depends(get_customer_context)],
@@ -5102,12 +5261,32 @@ def customer_abom_coverage(
     return {"collectors": out}
 
 
+def _abom_signing_key(tenant_id: str) -> bytes:
+    """Derive a tenant-scoped signing key. Prefer the explicit
+    ``ABOM_SIGNING_KEY`` env var when set; otherwise mix the existing
+    customer-session secret with the tenant_id so a tenant can verify
+    their own exports without us shipping a new key-management surface.
+    """
+    explicit = os.environ.get("ABOM_SIGNING_KEY")
+    if explicit:
+        return hashlib.sha256((explicit + ":" + tenant_id).encode("utf-8")).digest()
+    base = (CUSTOMER_SESSION_SECRET or "abom").encode("utf-8")
+    return hmac.new(base, ("abom:" + tenant_id).encode("utf-8"), hashlib.sha256).digest()
+
+
+def _abom_canonical_bytes(bom: Dict[str, Any]) -> bytes:
+    """Stable byte representation of the BOM for signing. Sort keys so a
+    reordered round-trip still verifies."""
+    return json.dumps(bom, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
 @app.get("/customer/abom/export")
 def customer_abom_export(
     ctx: Annotated[CustomerContext, Depends(get_customer_context)],
     db: Annotated[Session, Depends(get_db)],
     format: str = Query("cyclonedx", pattern="^(cyclonedx)$"),
     type: Optional[str] = None,
+    sign: bool = False,
 ) -> Dict[str, Any]:
     """Generate a CycloneDX 1.6 document for the tenant. Streams every
     component (no pagination) — the export is meant to drop into evidence
@@ -5142,7 +5321,7 @@ def customer_abom_export(
         ]
         components_out.append(c)
 
-    return {
+    bom = {
         "bomFormat": "CycloneDX",
         "specVersion": "1.6",
         "serialNumber": f"urn:uuid:{uuid4()}",
@@ -5153,6 +5332,26 @@ def customer_abom_export(
             "component": {"type": "platform", "name": f"tenant:{ctx.tenant_id}"},
         },
         "components": components_out,
+    }
+    if not sign:
+        return bom
+    # Signed envelope: HMAC-SHA256 over the canonical (sort_keys + compact)
+    # bytes of the BOM. Verifiers reconstruct the same canonical bytes and
+    # match. CMS / Sigstore swap-in is a follow-up — the envelope shape
+    # already carries alg and key_id so we can extend later without breaking
+    # consumers.
+    key = _abom_signing_key(ctx.tenant_id)
+    canonical = _abom_canonical_bytes(bom)
+    sig = hmac.new(key, canonical, hashlib.sha256).hexdigest()
+    return {
+        "bom": bom,
+        "signature": {
+            "alg": "HMAC-SHA256",
+            "key_id": f"tenant:{ctx.tenant_id}:abom-v1",
+            "value": sig,
+            "signed_at": datetime.now(timezone.utc).isoformat(),
+            "canonical_bytes_len": len(canonical),
+        },
     }
 
 
