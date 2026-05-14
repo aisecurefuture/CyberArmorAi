@@ -5499,6 +5499,182 @@ def customer_abom_stats(
     }
 
 
+class ABOMIocScanRequest(BaseModel):
+    """IOC scan input. ``iocs`` accepts one entry per IOC; ``raw`` is a
+    convenience for portal paste boxes that just tile a list of names /
+    name@version / pkg:purl lines. Either or both may be set; the
+    server parses each line of ``raw`` into iocs[] entries before
+    matching."""
+    iocs: Optional[List[Dict[str, Any]]] = None
+    raw: Optional[str] = None
+
+
+_PURL_RE = re.compile(r"^pkg:[a-z][a-z0-9.+\-]*/", re.IGNORECASE)
+
+
+def _parse_ioc_line(line: str) -> Optional[Dict[str, Any]]:
+    """Parse one IOC text line into a structured query.
+
+    Accepted forms (highest precision first):
+      ``pkg:npm/@scope/name@1.2.3``     → match by full purl prefix
+      ``pkg:pypi/name@1.2.3``           → match by full purl prefix
+      ``@scope/name@1.2.3``             → name + version (any package
+                                          manager)
+      ``name@1.2.3``                    → name + version
+      ``@scope/name`` or ``name``       → name-only, any version
+    """
+    s = (line or "").strip()
+    # Strip CycloneDX-VEX-style suffixes a user might paste verbatim,
+    # like ``pkg:npm/foo@1.2.3?type=tar`` or trailing comments.
+    s = s.split("#", 1)[0].split("//", 1)[0].strip()
+    if not s:
+        return None
+    if _PURL_RE.match(s):
+        return {"purl": s}
+    # name@version. Scoped names start with @ which complicates "find
+    # the last @" — split on the last @ that isn't index 0.
+    if "@" in s[1:]:
+        name, _, version = s.rpartition("@")
+        name = name.strip()
+        version = version.strip()
+        if name and version:
+            return {"name": name, "version": version}
+    return {"name": s}
+
+
+def _parse_iocs(payload: ABOMIocScanRequest) -> List[Dict[str, Any]]:
+    parsed: List[Dict[str, Any]] = []
+    for entry in (payload.iocs or []):
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name") or ""
+        version = entry.get("version") or ""
+        purl = entry.get("purl") or ""
+        if purl:
+            parsed.append({"purl": str(purl)})
+        elif name:
+            row = {"name": str(name)}
+            if version:
+                row["version"] = str(version)
+            parsed.append(row)
+    if payload.raw:
+        for line in payload.raw.splitlines():
+            row = _parse_ioc_line(line)
+            if row:
+                parsed.append(row)
+    # Dedup; preserve order of first appearance for predictable UX.
+    seen: set = set()
+    out: List[Dict[str, Any]] = []
+    for r in parsed:
+        key = (r.get("purl") or "", r.get("name") or "", r.get("version") or "")
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+    return out
+
+
+@app.post("/customer/abom/ioc-scan")
+def customer_abom_ioc_scan(
+    payload: ABOMIocScanRequest,
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    db: Annotated[Session, Depends(get_db)],
+) -> Dict[str, Any]:
+    """Cross-reference a list of IOCs against the tenant's components.
+
+    Matching strategy per IOC:
+      - ``purl``: prefix match on ``ABOMComponent.purl`` (so a
+        ``pkg:npm/foo@1.2.3`` IOC catches ``pkg:npm/foo@1.2.3?arch=amd64``).
+      - ``name + version``: exact match on both columns.
+      - ``name`` only: match every version we've seen.
+
+    For each match we attach the most recent 5 observations so the
+    portal can show ``which agents / which repos / which hosts`` for
+    incident-response triage.
+    """
+    iocs = _parse_iocs(payload)
+    if not iocs:
+        raise HTTPException(status_code=400, detail="no iocs provided")
+    if len(iocs) > 2000:
+        raise HTTPException(status_code=400, detail="too many iocs (limit 2000)")
+
+    # Collect component matches per IOC. We run one targeted query per
+    # IOC so a single typo doesn't cause an O(N*M) join; component counts
+    # per tenant top out in the low-thousands and the IOC list is
+    # usually <500, so the per-row cost is fine.
+    matches: List[Dict[str, Any]] = []
+    total_components = 0
+    total_observations = 0
+
+    base = db.query(ABOMComponent).filter(ABOMComponent.tenant_id == ctx.tenant_id)
+
+    for ioc in iocs:
+        q = base
+        ioc_label = ioc.get("purl") or (
+            f"{ioc.get('name','')}@{ioc.get('version','')}" if ioc.get("version") else ioc.get("name", "")
+        )
+        if "purl" in ioc:
+            q = q.filter(ABOMComponent.purl.like(ioc["purl"] + "%"))
+        else:
+            q = q.filter(ABOMComponent.name == ioc["name"])
+            if "version" in ioc:
+                q = q.filter(ABOMComponent.version == ioc["version"])
+        rows = q.all()
+
+        if not rows:
+            matches.append({"ioc": ioc, "label": ioc_label, "components": []})
+            continue
+
+        component_blocks: List[Dict[str, Any]] = []
+        for r in rows:
+            obs = (
+                db.query(ABOMObservation)
+                .filter(
+                    ABOMObservation.tenant_id == ctx.tenant_id,
+                    ABOMObservation.component_id == r.id,
+                )
+                .order_by(desc(ABOMObservation.observed_at))
+                .limit(5)
+                .all()
+            )
+            total_observations += len(obs)
+            component_blocks.append({
+                "id": r.id,
+                "identity_key": r.identity_key,
+                "type": r.type,
+                "name": r.name,
+                "version": r.version,
+                "purl": r.purl,
+                "manufacturer": r.manufacturer,
+                "observation_count": r.observation_count,
+                "first_seen_at": r.first_seen_at.isoformat() if r.first_seen_at else None,
+                "last_seen_at": r.last_seen_at.isoformat() if r.last_seen_at else None,
+                "observations": [
+                    {
+                        "collector": o.collector,
+                        "source_kind": o.source_kind,
+                        "source_id": o.source_id,
+                        "hostname": o.hostname,
+                        "path": o.path,
+                        "observed_at": o.observed_at.isoformat() if o.observed_at else None,
+                    }
+                    for o in obs
+                ],
+            })
+        total_components += len(component_blocks)
+        matches.append({"ioc": ioc, "label": ioc_label, "components": component_blocks})
+
+    hit_count = sum(1 for m in matches if m["components"])
+    return {
+        "scanned_at": datetime.now(timezone.utc).isoformat(),
+        "iocs_total": len(iocs),
+        "iocs_with_hits": hit_count,
+        "components_matched": total_components,
+        "observations_matched": total_observations,
+        "matches": matches,
+    }
+
+
 @app.get("/customer/abom/loaded-vs-installed")
 def customer_abom_loaded_vs_installed(
     ctx: Annotated[CustomerContext, Depends(get_customer_context)],

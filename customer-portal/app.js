@@ -3028,7 +3028,13 @@ async function viewBillOfMaterials() {
   let repoSyncMessage = null;     // {kind, text, summary?}
   let repoSyncing = false;
   // Local edit buffers so typing doesn't ping the server on every keystroke.
-  let repoEdit = { provider: "github", reposText: "", token: "", enabled: true }; | "lvi"
+  let repoEdit = { provider: "github", reposText: "", token: "", enabled: true };
+  // IOC scan state. iocsText is the raw textarea content; iocResult is
+  // the most recent /ioc-scan response. iocBusy gates the Scan button.
+  let iocsText = "";
+  let iocResult = null;
+  let iocBusy = false;
+  let iocError = null; | "lvi"
   let components = [];
   let total = 0;
   let coverage = [];
@@ -3274,6 +3280,121 @@ async function viewBillOfMaterials() {
       <td class="px-3 py-2 text-xs tabular-nums">${esc(String(cv.observation_count || 0))}</td>
       <td class="px-3 py-2 text-xs ${stale ? "text-amber-300" : "text-slate-300"}">${esc(last)}${stale ? ` <span class="text-[10px] text-amber-400">(stale)</span>` : ""}</td>
     </tr>`;
+  }
+
+  function renderIocBody() {
+    const placeholder = `Paste one IOC per line. Accepted forms:
+  pkg:npm/@tanstack/react-router@1.169.5
+  @tanstack/react-router@1.169.5
+  @tanstack/react-router        (any version)
+  log4j-core@2.14.1
+  log4j-core                    (any version)`;
+
+    const matchesHtml = !iocResult ? "" : (() => {
+      const hits = (iocResult.matches || []).filter((m) => m.components && m.components.length);
+      const misses = (iocResult.matches || []).filter((m) => !m.components || !m.components.length);
+      const hitRows = hits.map((m) => {
+        const comps = m.components.map((c) => {
+          const obsRows = (c.observations || []).map((o) => `
+            <div class="rounded-lg bg-slate-900 px-2 py-1">
+              <div class="flex items-center justify-between gap-2">
+                <span class="font-mono text-[11px] text-slate-200">${esc(o.collector || "")}<span class="text-slate-500"> / ${esc(o.source_kind || "")}</span></span>
+                <span class="text-[10px] text-slate-500">${esc(o.observed_at ? new Date(o.observed_at).toLocaleString() : "")}</span>
+              </div>
+              <div class="mt-0.5 text-[10px] text-slate-400 break-all">${esc(o.hostname || o.source_id || "")}${o.path ? ` · <span class="text-slate-500">${esc(o.path)}</span>` : ""}</div>
+            </div>
+          `).join("");
+          return `
+            <div class="rounded-xl border border-rose-900/60 bg-rose-950/20 px-3 py-2">
+              <div class="flex flex-wrap items-baseline gap-2">
+                ${abomTypePill(c.type)}
+                <span class="font-mono text-sm text-rose-100 break-all">${esc(c.name)}${c.version ? `<span class="ml-2 text-xs text-rose-300/80">${esc(c.version)}</span>` : ""}</span>
+                <span class="text-[10px] text-slate-500">${c.observation_count || 0} total obs · last seen ${c.last_seen_at ? esc(new Date(c.last_seen_at).toLocaleString()) : "—"}</span>
+              </div>
+              ${c.purl ? `<div class="mt-1 font-mono text-[10px] text-slate-400 break-all">${esc(c.purl)}</div>` : ""}
+              ${obsRows ? `<div class="mt-2 space-y-1">${obsRows}</div>` : ""}
+            </div>
+          `;
+        }).join("");
+        return `
+          <div class="rounded-2xl border border-rose-900 bg-rose-950/10 p-3">
+            <div class="flex flex-wrap items-baseline justify-between gap-2">
+              <span class="font-mono text-sm text-rose-200 break-all">⚠ ${esc(m.label || "")}</span>
+              <span class="text-xs text-rose-300/80">${m.components.length} component${m.components.length === 1 ? "" : "s"} matched</span>
+            </div>
+            <div class="mt-2 space-y-2">${comps}</div>
+          </div>
+        `;
+      }).join("");
+
+      return `
+        <div class="space-y-3">
+          ${hits.length > 0 ? hitRows : `<div class="rounded-2xl border border-emerald-900 bg-emerald-950/20 p-3 text-sm text-emerald-200">✓ Clean — none of the ${iocResult.iocs_total} IOC${iocResult.iocs_total === 1 ? "" : "s"} matched any tenant component.</div>`}
+          ${misses.length > 0 ? `
+            <details class="rounded-2xl border border-slate-800 bg-slate-950 p-3">
+              <summary class="cursor-pointer text-xs text-slate-400">No match for ${misses.length} IOC${misses.length === 1 ? "" : "s"} (click to expand)</summary>
+              <div class="mt-2 flex flex-wrap gap-1">
+                ${misses.map((m) => `<span class="rounded bg-slate-900 px-1.5 py-0.5 font-mono text-[10px] text-slate-400">${esc(m.label || "")}</span>`).join("")}
+              </div>
+            </details>
+          ` : ""}
+        </div>
+      `;
+    })();
+
+    return `
+      ${card(`
+        <div class="font-semibold">IOC scan</div>
+        <p class="mt-1 text-xs text-slate-500">Paste a list of compromised package coordinates. The server matches each line against this tenant's BOM and returns every observation — endpoint agent, repo, RASP workload — so you can see exactly where the IOC is present.</p>
+        <textarea id="iocsText" rows="8" class="mt-3 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-xs font-mono" placeholder="${esc(placeholder)}">${esc(iocsText)}</textarea>
+        <div class="mt-3 flex flex-wrap items-center gap-2">
+          <button id="iocScan" type="button" class="rounded-xl bg-rose-500 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-rose-400 disabled:opacity-50" ${iocBusy || !iocsText.trim() ? "disabled" : ""}>${iocBusy ? "Scanning…" : "Scan tenant"}</button>
+          ${iocResult ? `<button id="iocDownload" type="button" class="rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-200 hover:bg-slate-800">Download JSON</button>` : ""}
+          <button id="iocClear" type="button" class="rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-200 hover:bg-slate-800">Clear</button>
+          ${iocError ? `<span class="text-xs text-rose-300">${esc(iocError)}</span>` : ""}
+        </div>
+      `)}
+      ${iocResult ? card(`
+        <div class="flex flex-wrap items-center gap-4">
+          ${riskMetricCard("Scanned", iocResult.iocs_total, "slate")}
+          ${riskMetricCard("Matched", iocResult.iocs_with_hits, iocResult.iocs_with_hits > 0 ? "rose" : "emerald")}
+          ${riskMetricCard("Components", iocResult.components_matched, iocResult.components_matched > 0 ? "rose" : "emerald")}
+          ${riskMetricCard("Observations", iocResult.observations_matched, iocResult.observations_matched > 0 ? "amber" : "emerald")}
+          <span class="ml-auto text-[11px] text-slate-500">Scanned ${esc(new Date(iocResult.scanned_at).toLocaleString())}</span>
+        </div>
+      `) : ""}
+      ${matchesHtml}
+    `;
+  }
+
+  function downloadIocJson() {
+    if (!iocResult) return;
+    const blob = new Blob([JSON.stringify(iocResult, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `cyberarmor_${session.tenant_id || "tenant"}_ioc_scan_${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 100);
+  }
+
+  async function runIocScan() {
+    iocError = null;
+    if (!iocsText.trim()) return;
+    iocBusy = true;
+    render();
+    try {
+      iocResult = await api("/api/customer/abom/ioc-scan", {
+        method: "POST",
+        body: JSON.stringify({ raw: iocsText }),
+      });
+    } catch (err) {
+      iocResult = null;
+      iocError = err.message || "scan failed";
+    } finally {
+      iocBusy = false;
+      render();
+    }
   }
 
   function renderSourcesBody() {
@@ -3545,6 +3666,7 @@ async function viewBillOfMaterials() {
         ${tabButton("drift", `Drift${drift && drift.summary ? ` (${drift.summary.added + drift.summary.removed + drift.summary.version_changed})` : ""}`, tab === "drift")}
         ${tabButton("lvi", `Loaded vs Installed${lvi && lvi.summary ? ` (${lvi.summary.both})` : ""}`, tab === "lvi")}
         ${tabButton("sources", "Sources", tab === "sources")}
+        ${tabButton("ioc", `IOC Scan${iocResult && iocResult.iocs_with_hits ? ` (${iocResult.iocs_with_hits})` : ""}`, tab === "ioc")}
       </div>
     `;
     $("#app").innerHTML = `
@@ -3568,6 +3690,7 @@ async function viewBillOfMaterials() {
         ${tab === "drift" ? renderDriftBody() : ""}
         ${tab === "lvi" ? renderLviBody() : ""}
         ${tab === "sources" ? renderSourcesBody() : ""}
+        ${tab === "ioc" ? renderIocBody() : ""}
         ${tab !== "components" ? "" : `
         ${card(`
           <div class="flex flex-wrap items-center gap-2">
@@ -3729,6 +3852,24 @@ async function viewBillOfMaterials() {
     if (enabledChk) enabledChk.addEventListener("change", () => { repoEdit.enabled = enabledChk.checked; });
     const saveBtn = $("#repoSave"); if (saveBtn) saveBtn.addEventListener("click", async () => { await saveRepoConfig(); render(); });
     const syncBtn = $("#repoSync"); if (syncBtn) syncBtn.addEventListener("click", runRepoSync);
+
+    // IOC tab: textarea writes into the local buffer; Scan POSTs to the
+    // backend; Download / Clear are pure client-side.
+    const iocsInput = $("#iocsText");
+    if (iocsInput) {
+      iocsInput.addEventListener("input", () => {
+        iocsText = iocsInput.value;
+        // Toggle the scan button without a full re-render so typing
+        // stays smooth.
+        const btn = $("#iocScan");
+        if (btn) btn.disabled = iocBusy || !iocsText.trim();
+      });
+    }
+    const iocBtn = $("#iocScan"); if (iocBtn) iocBtn.addEventListener("click", runIocScan);
+    const iocDl = $("#iocDownload"); if (iocDl) iocDl.addEventListener("click", downloadIocJson);
+    const iocClr = $("#iocClear"); if (iocClr) iocClr.addEventListener("click", () => {
+      iocsText = ""; iocResult = null; iocError = null; render();
+    });
     // Loaded-vs-Installed hostname filter handlers
     const lviApply = $("#lviApply");
     const lviInput = $("#lviHostname");
