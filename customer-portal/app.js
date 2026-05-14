@@ -3026,6 +3026,10 @@ async function viewBillOfMaterials() {
   let components = [];
   let total = 0;
   let coverage = [];
+  // Full-tenant type histogram from /customer/abom/stats. Drives the
+  // filter chip strip so types absent from the current page (e.g. one
+  // operating-system row on page 3 of 50) still render their chip.
+  let typeCountsGlobal = {};
   let loadError = null;
   let typeFilter = "all";
   let search = "";
@@ -3052,9 +3056,10 @@ async function viewBillOfMaterials() {
       if (search.trim()) params.set("q", search.trim());
       if (sourceFilter !== "all") params.set("source_kind", sourceFilter);
       if (staleDays > 0) params.set("stale_days", String(staleDays));
-      const [resp, cov] = await Promise.allSettled([
+      const [resp, cov, stats] = await Promise.allSettled([
         api(`/api/customer/abom/components?${params.toString()}`),
         api("/api/customer/abom/coverage"),
+        api("/api/customer/abom/stats"),
       ]);
       if (resp.status === "fulfilled") {
         components = Array.isArray(resp.value && resp.value.components) ? resp.value.components : [];
@@ -3068,6 +3073,9 @@ async function viewBillOfMaterials() {
       coverage = cov.status === "fulfilled" && Array.isArray(cov.value && cov.value.collectors)
         ? cov.value.collectors
         : [];
+      typeCountsGlobal = stats.status === "fulfilled" && stats.value && typeof stats.value.by_type === "object"
+        ? stats.value.by_type
+        : {};
     } catch (err) {
       loadError = err.message || "fetch failed";
     }
@@ -3362,8 +3370,16 @@ async function viewBillOfMaterials() {
   }
 
   function render() {
-    const typeCounts = {};
-    for (const c of components) typeCounts[c.type] = (typeCounts[c.type] || 0) + 1;
+    // Chip strip + metric tiles use the full-tenant histogram from
+    // /customer/abom/stats so a type with one row on page 3 of 50 still
+    // gets a chip. Fall back to the page-local counts when stats fails.
+    const typeCounts = (typeCountsGlobal && Object.keys(typeCountsGlobal).length)
+      ? typeCountsGlobal
+      : (() => {
+          const tc = {};
+          for (const c of components) tc[c.type] = (tc[c.type] || 0) + 1;
+          return tc;
+        })();
     const distinctTypes = Object.keys(typeCounts).sort();
     const typesForPicker = ["all", ...Object.keys(ABOM_TYPE_TONE).filter((t) => typeCounts[t] || typeFilter === t)];
     const totalDevices = (typeCounts["device"] || 0) + (typeCounts["device-driver"] || 0) + (typeCounts["firmware"] || 0);
