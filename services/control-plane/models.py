@@ -165,3 +165,52 @@ class TelemetryRecord(Base):
     payload = Column(JSONB().with_variant(Text, "sqlite"), nullable=True)
     occurred_at = Column(DateTime(timezone=True), default=now_utc, index=True)
     created_at = Column(DateTime(timezone=True), default=now_utc)
+
+
+class ABOMComponent(Base):
+    """Tenant-scoped rolled-up component row. Collisions on identity_key
+    merge observations; one row per logical component per tenant.
+
+    identity_key is the sha256 of an ordered tuple — see
+    docs/architecture/a-bom-design.md §3.1 — so distinct collectors that
+    report the same library / device land on the same row.
+    """
+    __tablename__ = "abom_components"
+    __table_args__ = (UniqueConstraint("tenant_id", "identity_key", name="uq_abom_components_tenant_identity"),)
+
+    id            = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    tenant_id     = Column(String, nullable=False, index=True)
+    identity_key  = Column(String, nullable=False, index=True)
+    type          = Column(String, nullable=False, index=True)   # CycloneDX component.type
+    name          = Column(String, nullable=False, index=True)
+    version       = Column(String, nullable=True)
+    purl          = Column(String, nullable=True, index=True)
+    cpe           = Column(String, nullable=True, index=True)
+    manufacturer  = Column(String, nullable=True)
+    licenses      = Column(JSONB().with_variant(Text, "sqlite"), nullable=True)  # list[str]
+    hashes        = Column(JSONB().with_variant(Text, "sqlite"), nullable=True)  # {alg: digest}
+    properties    = Column(JSONB().with_variant(Text, "sqlite"), nullable=True)  # CycloneDX properties
+    observation_count = Column(Integer, nullable=False, default=0)
+    first_seen_at = Column(DateTime(timezone=True), default=now_utc, nullable=False)
+    last_seen_at  = Column(DateTime(timezone=True), default=now_utc, nullable=False, index=True)
+
+
+class ABOMObservation(Base):
+    """Append-only history of who saw what when. One row per collector
+    sighting; rolls up to ABOMComponent via identity_key. Keep the raw
+    payload so we can replay if the rollup logic changes."""
+    __tablename__ = "abom_observations"
+
+    id                = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    tenant_id         = Column(String, nullable=False, index=True)
+    component_id      = Column(String, nullable=False, index=True)
+    identity_key      = Column(String, nullable=False, index=True)
+    collector         = Column(String, nullable=False, index=True)   # endpoint-agent | rasp | ide | github | cloud-aws | …
+    collector_version = Column(String, nullable=True)
+    source_kind       = Column(String, nullable=False, index=True)   # agent | repo | container | cloud_resource | ide_workspace
+    source_id         = Column(String, nullable=False, index=True)   # agent_id | repo_id | cloud_arn | …
+    hostname          = Column(String, nullable=True, index=True)
+    path              = Column(String, nullable=True)
+    raw_properties    = Column(JSONB().with_variant(Text, "sqlite"), nullable=True)
+    observed_at       = Column(DateTime(timezone=True), default=now_utc, nullable=False, index=True)
+    created_at        = Column(DateTime(timezone=True), default=now_utc)

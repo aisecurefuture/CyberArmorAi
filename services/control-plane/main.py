@@ -27,6 +27,8 @@ from sqlalchemy.orm import Session
 
 from db import Base, SessionLocal, engine
 from models import (
+    ABOMComponent,
+    ABOMObservation,
     ApiKey,
     AuditLog,
     BootstrapInstall,
@@ -4712,6 +4714,446 @@ def agent_heartbeat(
             "status": payload.get("status", "running"),
         }
     return {"status": "ok", "agent_id": agent_id}
+
+
+# ── A-BOM ingest + read + export ───────────────────────────────────────
+#
+# See docs/architecture/a-bom-design.md for the data model. The ingest
+# endpoint accepts a CycloneDX 1.6 components list (or a full BOM); each
+# component is normalized, identity-keyed, upserted into ABOMComponent,
+# and an ABOMObservation row is appended carrying provenance.
+
+# CycloneDX component.type values we accept. Anything outside this set
+# is coerced to "library" so a misconfigured collector can't pollute the
+# store with arbitrary strings. Mirror docs/architecture/a-bom-design.md §2.
+_ABOM_VALID_TYPES = {
+    "application", "framework", "library", "container", "platform",
+    "operating-system", "device", "device-driver", "firmware", "file",
+    "machine-learning-model", "data", "cryptographic-asset",
+}
+
+
+def _abom_normalize_type(raw: Any) -> str:
+    t = str(raw or "").strip().lower()
+    return t if t in _ABOM_VALID_TYPES else "library"
+
+
+def _abom_identity_key(component: Dict[str, Any]) -> str:
+    """Stable identity hash for dedup across collectors. Mirrors the
+    design doc's identity_key formula: type + primary identifier
+    (purl ≻ cpe ≻ name@version) + vendor + sha256 hash when present.
+    """
+    type_ = _abom_normalize_type(component.get("type"))
+    purl = str(component.get("purl") or "").strip()
+    cpe = str(component.get("cpe") or "").strip()
+    name = str(component.get("name") or "").strip()
+    version = str(component.get("version") or "").strip()
+    manufacturer = str(
+        component.get("manufacturer")
+        or component.get("publisher")
+        or component.get("supplier")
+        or ""
+    ).strip()
+    primary = purl or cpe or (f"{name}@{version}" if version else name)
+    file_hash = ""
+    hashes = component.get("hashes")
+    if isinstance(hashes, list):
+        for h in hashes:
+            if isinstance(h, dict):
+                alg = str(h.get("alg") or "").upper()
+                if alg in ("SHA-256", "SHA256"):
+                    file_hash = str(h.get("content") or "")
+                    break
+    elif isinstance(hashes, dict):
+        file_hash = str(hashes.get("SHA-256") or hashes.get("sha256") or "")
+    payload = f"{type_}:{primary}:{manufacturer}:{file_hash}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _abom_extract_licenses(component: Dict[str, Any]) -> List[str]:
+    """CycloneDX licenses can be a list of {license: {id}} or {license: {name}}
+    or {expression}; flatten to plain string list."""
+    raw = component.get("licenses")
+    if not isinstance(raw, list):
+        return []
+    out: List[str] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        lic = entry.get("license")
+        if isinstance(lic, dict):
+            v = lic.get("id") or lic.get("name") or ""
+            if v:
+                out.append(str(v))
+        expr = entry.get("expression")
+        if isinstance(expr, str) and expr:
+            out.append(expr)
+    return out
+
+
+def _abom_normalize_hashes(component: Dict[str, Any]) -> Dict[str, str]:
+    raw = component.get("hashes")
+    out: Dict[str, str] = {}
+    if isinstance(raw, list):
+        for h in raw:
+            if isinstance(h, dict) and h.get("alg") and h.get("content"):
+                out[str(h["alg"]).upper()] = str(h["content"])
+    elif isinstance(raw, dict):
+        for k, v in raw.items():
+            if k and v:
+                out[str(k).upper()] = str(v)
+    return out
+
+
+class ABOMIngestRequest(BaseModel):
+    """Collector → server. Send either a flat ``components`` list or a
+    nested ``bom`` (full CycloneDX document) — we accept either for
+    convenience.
+    """
+    tenant_id: Optional[str] = None
+    collector: str
+    collector_version: Optional[str] = None
+    source_kind: str = "agent"            # agent | repo | container | cloud_resource | ide_workspace
+    source_id: str                        # agent_id, repo_id, cloud_arn, …
+    hostname: Optional[str] = None
+    observed_at: Optional[str] = None
+    components: Optional[List[Dict[str, Any]]] = None
+    bom: Optional[Dict[str, Any]] = None
+
+
+def _abom_upsert_component(
+    db: Session,
+    tenant_id: str,
+    component: Dict[str, Any],
+    now: datetime,
+) -> Tuple[ABOMComponent, str]:
+    """Upsert one component row keyed on identity_key. Returns (row,
+    identity_key)."""
+    ikey = _abom_identity_key(component)
+    type_ = _abom_normalize_type(component.get("type"))
+    name = str(component.get("name") or "").strip() or "unknown"
+    version = (str(component.get("version") or "").strip() or None)
+    purl = (str(component.get("purl") or "").strip() or None)
+    cpe = (str(component.get("cpe") or "").strip() or None)
+    manufacturer = (
+        str(component.get("manufacturer") or component.get("publisher") or component.get("supplier") or "").strip()
+        or None
+    )
+    licenses = _abom_extract_licenses(component)
+    hashes = _abom_normalize_hashes(component)
+    properties = component.get("properties") if isinstance(component.get("properties"), list) else None
+
+    row = (
+        db.query(ABOMComponent)
+        .filter(ABOMComponent.tenant_id == tenant_id, ABOMComponent.identity_key == ikey)
+        .first()
+    )
+    if row is None:
+        row = ABOMComponent(
+            tenant_id=tenant_id,
+            identity_key=ikey,
+            type=type_,
+            name=name,
+            version=version,
+            purl=purl,
+            cpe=cpe,
+            manufacturer=manufacturer,
+            licenses=_encode_meta_for_db(licenses) if licenses else None,
+            hashes=_encode_meta_for_db(hashes) if hashes else None,
+            properties=_encode_meta_for_db(properties) if properties else None,
+            observation_count=0,
+            first_seen_at=now,
+            last_seen_at=now,
+        )
+        db.add(row)
+        db.flush()
+    else:
+        # Refresh facts that may have improved (name/version on first sight
+        # may have been unknown). Never demote — keep the strongest known
+        # value if the new observation is weaker.
+        if version and not row.version:
+            row.version = version
+        if purl and not row.purl:
+            row.purl = purl
+        if cpe and not row.cpe:
+            row.cpe = cpe
+        if manufacturer and not row.manufacturer:
+            row.manufacturer = manufacturer
+        if licenses:
+            row.licenses = _encode_meta_for_db(licenses)
+        if hashes:
+            row.hashes = _encode_meta_for_db(hashes)
+        if now > row.last_seen_at:
+            row.last_seen_at = now
+    return row, ikey
+
+
+@app.post("/agents/{agent_id}/abom/ingest")
+def agent_abom_ingest(
+    agent_id: str,
+    payload: ABOMIngestRequest,
+    x_api_key: Annotated[Optional[str], Header(alias="x-api-key")] = None,
+):
+    """Endpoint-agent / RASP / IDE / repo-worker ingest path.
+
+    Idempotent on (tenant_id, identity_key): rerunning the same component
+    set produces no duplicate component rows. Observations always append
+    so we keep history.
+    """
+    _dev_or_key_ok(x_api_key)
+    tenant_id = (payload.tenant_id or _AGENTS.get(agent_id, {}).get("tenant_id") or "unknown")
+    components = payload.components or []
+    if payload.bom and isinstance(payload.bom, dict):
+        bom_components = payload.bom.get("components")
+        if isinstance(bom_components, list):
+            components = components + bom_components
+
+    if payload.observed_at:
+        try:
+            observed_at = datetime.fromisoformat(payload.observed_at.replace("Z", "+00:00"))
+        except ValueError:
+            observed_at = datetime.now(timezone.utc)
+    else:
+        observed_at = datetime.now(timezone.utc)
+
+    inserted = 0
+    upserted_components = 0
+    skipped = 0
+    with SessionLocal() as db:
+        for component in components:
+            if not isinstance(component, dict):
+                skipped += 1
+                continue
+            try:
+                row, ikey = _abom_upsert_component(db, tenant_id, component, observed_at)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("abom_ingest upsert failed: %s", exc)
+                skipped += 1
+                continue
+            row.observation_count = (row.observation_count or 0) + 1
+            obs = ABOMObservation(
+                tenant_id=tenant_id,
+                component_id=row.id,
+                identity_key=ikey,
+                collector=payload.collector,
+                collector_version=payload.collector_version,
+                source_kind=payload.source_kind,
+                source_id=payload.source_id,
+                hostname=payload.hostname,
+                path=str(component.get("__path") or "")[:1024] or None,
+                raw_properties=_encode_meta_for_db(component.get("properties") or {}),
+                observed_at=observed_at,
+            )
+            db.add(obs)
+            inserted += 1
+            upserted_components += 1
+        db.commit()
+
+    logger.info(
+        "abom_ingest agent=%s tenant=%s collector=%s components=%d skipped=%d",
+        agent_id, tenant_id, payload.collector, inserted, skipped,
+    )
+    return JSONResponse(
+        {"status": "accepted", "components_ingested": inserted, "skipped": skipped},
+        status_code=202,
+    )
+
+
+# ── A-BOM customer-facing reads ────────────────────────────────────────
+
+@app.get("/customer/abom/components")
+def customer_abom_components(
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    db: Annotated[Session, Depends(get_db)],
+    limit: int = 100,
+    offset: int = 0,
+    type: Optional[str] = None,
+    q: Optional[str] = None,
+    source_kind: Optional[str] = None,
+    has_license: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Paginated component list with filters. Joins to observations only
+    when ``source_kind`` is set so the common path stays fast.
+    """
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
+    base = db.query(ABOMComponent).filter(ABOMComponent.tenant_id == ctx.tenant_id)
+    if type:
+        base = base.filter(ABOMComponent.type == type)
+    if q:
+        like = f"%{q.lower()}%"
+        base = base.filter(func.lower(ABOMComponent.name).like(like))
+    if source_kind:
+        # Pull component_ids that have an observation matching the kind.
+        sub = (
+            db.query(ABOMObservation.component_id)
+            .filter(ABOMObservation.tenant_id == ctx.tenant_id)
+            .filter(ABOMObservation.source_kind == source_kind)
+            .distinct()
+            .subquery()
+        )
+        base = base.filter(ABOMComponent.id.in_(sub))
+    total = base.count()
+    rows = base.order_by(desc(ABOMComponent.last_seen_at)).offset(offset).limit(limit).all()
+    items: List[Dict[str, Any]] = []
+    for r in rows:
+        licenses = _coerce_meta(r.licenses) or []
+        if has_license and (not isinstance(licenses, list) or not any(
+            has_license.lower() in str(l).lower() for l in licenses
+        )):
+            continue
+        items.append({
+            "id": r.id,
+            "identity_key": r.identity_key,
+            "type": r.type,
+            "name": r.name,
+            "version": r.version,
+            "purl": r.purl,
+            "cpe": r.cpe,
+            "manufacturer": r.manufacturer,
+            "licenses": licenses if isinstance(licenses, list) else [],
+            "hashes": _coerce_meta(r.hashes) or {},
+            "observation_count": r.observation_count,
+            "first_seen_at": r.first_seen_at.isoformat() if r.first_seen_at else None,
+            "last_seen_at": r.last_seen_at.isoformat() if r.last_seen_at else None,
+        })
+    return {"components": items, "total": total, "limit": limit, "offset": offset}
+
+
+@app.get("/customer/abom/components/{component_id}")
+def customer_abom_component_detail(
+    component_id: str,
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    db: Annotated[Session, Depends(get_db)],
+) -> Dict[str, Any]:
+    row = (
+        db.query(ABOMComponent)
+        .filter(ABOMComponent.tenant_id == ctx.tenant_id, ABOMComponent.id == component_id)
+        .first()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="component not found")
+    observations = (
+        db.query(ABOMObservation)
+        .filter(ABOMObservation.tenant_id == ctx.tenant_id, ABOMObservation.component_id == component_id)
+        .order_by(desc(ABOMObservation.observed_at))
+        .limit(100)
+        .all()
+    )
+    obs_out = [{
+        "id": o.id,
+        "collector": o.collector,
+        "collector_version": o.collector_version,
+        "source_kind": o.source_kind,
+        "source_id": o.source_id,
+        "hostname": o.hostname,
+        "path": o.path,
+        "observed_at": o.observed_at.isoformat() if o.observed_at else None,
+    } for o in observations]
+    return {
+        "id": row.id,
+        "identity_key": row.identity_key,
+        "type": row.type,
+        "name": row.name,
+        "version": row.version,
+        "purl": row.purl,
+        "cpe": row.cpe,
+        "manufacturer": row.manufacturer,
+        "licenses": _coerce_meta(row.licenses) or [],
+        "hashes": _coerce_meta(row.hashes) or {},
+        "properties": _coerce_meta(row.properties) or [],
+        "observation_count": row.observation_count,
+        "first_seen_at": row.first_seen_at.isoformat() if row.first_seen_at else None,
+        "last_seen_at": row.last_seen_at.isoformat() if row.last_seen_at else None,
+        "observations": obs_out,
+    }
+
+
+@app.get("/customer/abom/coverage")
+def customer_abom_coverage(
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    db: Annotated[Session, Depends(get_db)],
+) -> Dict[str, Any]:
+    """Per-collector freshness summary. Surfaces silent-collector
+    failures: if endpoint-agent hasn't reported in 24h, that's a problem.
+    """
+    rows = (
+        db.query(
+            ABOMObservation.collector,
+            ABOMObservation.source_kind,
+            func.count(ABOMObservation.id).label("count"),
+            func.max(ABOMObservation.observed_at).label("latest"),
+            func.min(ABOMObservation.observed_at).label("earliest"),
+        )
+        .filter(ABOMObservation.tenant_id == ctx.tenant_id)
+        .group_by(ABOMObservation.collector, ABOMObservation.source_kind)
+        .all()
+    )
+    out = []
+    for r in rows:
+        out.append({
+            "collector": r.collector,
+            "source_kind": r.source_kind,
+            "observation_count": r.count,
+            "first_seen_at": r.earliest.isoformat() if r.earliest else None,
+            "last_seen_at": r.latest.isoformat() if r.latest else None,
+        })
+    out.sort(key=lambda x: x["last_seen_at"] or "", reverse=True)
+    return {"collectors": out}
+
+
+@app.get("/customer/abom/export")
+def customer_abom_export(
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    db: Annotated[Session, Depends(get_db)],
+    format: str = Query("cyclonedx", pattern="^(cyclonedx)$"),
+    type: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Generate a CycloneDX 1.6 document for the tenant. Streams every
+    component (no pagination) — the export is meant to drop into evidence
+    packs verbatim. Signing hook is reserved for a follow-up commit.
+    """
+    rows = (
+        db.query(ABOMComponent)
+        .filter(ABOMComponent.tenant_id == ctx.tenant_id)
+        .order_by(ABOMComponent.type, ABOMComponent.name)
+        .all()
+    )
+    if type:
+        rows = [r for r in rows if r.type == type]
+    components_out: List[Dict[str, Any]] = []
+    for r in rows:
+        c: Dict[str, Any] = {"type": r.type, "name": r.name}
+        if r.version:      c["version"] = r.version
+        if r.purl:         c["purl"] = r.purl
+        if r.cpe:          c["cpe"] = r.cpe
+        if r.manufacturer: c["manufacturer"] = {"name": r.manufacturer}
+        licenses = _coerce_meta(r.licenses) or []
+        if isinstance(licenses, list) and licenses:
+            c["licenses"] = [{"license": {"id": str(l)}} for l in licenses]
+        hashes = _coerce_meta(r.hashes) or {}
+        if isinstance(hashes, dict) and hashes:
+            c["hashes"] = [{"alg": k, "content": v} for k, v in hashes.items()]
+        c["properties"] = [
+            {"name": "cyberarmor:identity_key", "value": r.identity_key},
+            {"name": "cyberarmor:observation_count", "value": str(r.observation_count or 0)},
+            {"name": "cyberarmor:first_seen_at", "value": r.first_seen_at.isoformat() if r.first_seen_at else ""},
+            {"name": "cyberarmor:last_seen_at", "value": r.last_seen_at.isoformat() if r.last_seen_at else ""},
+        ]
+        components_out.append(c)
+
+    return {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.6",
+        "serialNumber": f"urn:uuid:{uuid4()}",
+        "version": 1,
+        "metadata": {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "tools": [{"vendor": "CyberArmor", "name": "abom-exporter", "version": "1.0"}],
+            "component": {"type": "platform", "name": f"tenant:{ctx.tenant_id}"},
+        },
+        "components": components_out,
+    }
 
 
 @app.post("/agents/{agent_id}/telemetry")
