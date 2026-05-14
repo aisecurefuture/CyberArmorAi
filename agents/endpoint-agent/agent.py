@@ -370,6 +370,13 @@ class EndpointAgent:
         self.telemetry_flush_interval: int = self._cfg.getint(
             "agent", "telemetry_flush_interval", fallback=TELEMETRY_FLUSH_INTERVAL_SECONDS
         )
+        # A-BOM sweep cadence (seconds). Default to 6h — hardware + OS rarely
+        # change; package list changes on apt/brew install. Demo
+        # configurations can dial this down to 300 to make changes visible
+        # in real time.
+        self.abom_sweep_interval: int = self._cfg.getint(
+            "agent", "abom_sweep_interval", fallback=6 * 60 * 60
+        )
         self.http_timeout_seconds: float = self._cfg.getfloat(
             "agent", "http_timeout_seconds", fallback=25.0
         )
@@ -723,6 +730,66 @@ class EndpointAgent:
             await asyncio.sleep(self.telemetry_flush_interval)
             await self._flush_telemetry()
 
+    async def _abom_loop(self) -> None:
+        """Sweep the host's installed components and ship a CycloneDX
+        snapshot to /agents/{agent_id}/abom/ingest. First sweep fires on
+        startup so the dashboard populates immediately; subsequent sweeps
+        run at abom_sweep_interval. Whole sweep is best-effort — failures
+        log and the loop continues so a flaky package manager can't kill
+        the loop or starve the rest of the agent."""
+        # Stagger first sweep a bit so we don't compete with the
+        # heartbeat-after-register burst on agent start.
+        await asyncio.sleep(15)
+        while self._running:
+            try:
+                await self._abom_sweep()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("A-BOM sweep failed: %s", exc)
+            await asyncio.sleep(self.abom_sweep_interval)
+
+    async def _abom_sweep(self) -> None:
+        """One pass of the A-BOM collector + ingest POST."""
+        # Import lazily so collector code path doesn't load on agents that
+        # are pinned to an older config without the abom_sweep_interval
+        # key in their agent.ini.
+        from collectors import abom as _abom_collector
+
+        # collect() is CPU/disk bound; offload to a thread so we don't
+        # block other tasks (especially heartbeats) while it runs.
+        loop = asyncio.get_running_loop()
+        components = await loop.run_in_executor(None, _abom_collector.collect)
+        if not components:
+            logger.debug("A-BOM sweep produced no components — skipping ingest")
+            return
+
+        body: Dict[str, Any] = {
+            "tenant_id": self.tenant_id,
+            "collector": "endpoint-agent",
+            "collector_version": AGENT_VERSION,
+            "source_kind": "agent",
+            "source_id": self.agent_id,
+            "hostname": _abom_collector.host_source_id(),
+            "observed_at": datetime.now(timezone.utc).isoformat(),
+            "components": components,
+        }
+
+        url = f"{self.control_plane_url.rstrip('/')}/agents/{self.agent_id}/abom/ingest"
+        try:
+            client = await self._ensure_http_client()
+            resp = await client.post(url, json=body, headers=await self._auth_headers())
+            if resp.status_code >= 300:
+                logger.warning(
+                    "A-BOM ingest rejected status=%s body=%s",
+                    resp.status_code, resp.text[:200],
+                )
+                return
+            logger.info(
+                "A-BOM sweep ingested components=%d tenant=%s agent=%s",
+                len(components), self.tenant_id, self.agent_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("A-BOM ingest POST failed: %s", exc)
+
     async def _windows_bridge_watchdog_loop(self) -> None:
         """Ensure the Windows kernel bridge service remains up."""
         if not self._windows_platform:
@@ -805,6 +872,12 @@ class EndpointAgent:
         )
         self._monitor_tasks.append(
             asyncio.create_task(self._telemetry_loop(), name="telemetry_flush")
+        )
+        # Phase-1 A-BOM sweep loop. Lightweight on the wire (one POST every
+        # ~6h) but expensive to compute (package manager + .app + plist),
+        # which is why the sweep itself runs in a thread pool.
+        self._monitor_tasks.append(
+            asyncio.create_task(self._abom_loop(), name="abom_sweep")
         )
 
         logger.info("Agent fully started with %d tasks", len(self._monitor_tasks))
