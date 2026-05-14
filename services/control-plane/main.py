@@ -4959,6 +4959,204 @@ def agent_abom_ingest(
     )
 
 
+class RepoCollectorConfig(BaseModel):
+    """Tenant config for the repo-collector. Stored under
+    TenantPortalConfig section ``abom-repo-collector``."""
+    provider: str = Field(default="github", description="github | gitlab | azure_devops")
+    token: Optional[str] = Field(default=None, description="PAT; write-only — never echoed back")
+    repos: List[str] = Field(default_factory=list, description="org/repo entries")
+    enabled: bool = True
+
+
+def _repo_collector_config(db: Session, tenant_id: str) -> Dict[str, Any]:
+    """Read the tenant's repo-collector config row. Returns the stored
+    dict directly so the caller can decide what to redact."""
+    record = (
+        db.query(TenantPortalConfig)
+        .filter(
+            TenantPortalConfig.tenant_id == tenant_id,
+            TenantPortalConfig.section == "abom-repo-collector",
+        )
+        .first()
+    )
+    if not record:
+        return {}
+    cfg = _coerce_meta(record.config) if hasattr(record, "config") else None
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def _save_repo_collector_config(
+    db: Session, tenant_id: str, payload: Dict[str, Any], updated_by: str
+) -> Dict[str, Any]:
+    """Upsert the tenant's repo-collector config. Token is preserved
+    when the caller omits it (the portal sends ``token: None`` after the
+    operator types it once and reloads)."""
+    existing = _repo_collector_config(db, tenant_id)
+    merged = {**existing, **{k: v for k, v in payload.items() if v is not None or k != "token"}}
+    # If the caller explicitly set token to "" or None, keep the prior
+    # value so a reload that re-PUTs the config doesn't clobber the PAT.
+    if not payload.get("token"):
+        if existing.get("token"):
+            merged["token"] = existing["token"]
+        else:
+            merged.pop("token", None)
+    record = (
+        db.query(TenantPortalConfig)
+        .filter(
+            TenantPortalConfig.tenant_id == tenant_id,
+            TenantPortalConfig.section == "abom-repo-collector",
+        )
+        .first()
+    )
+    now = datetime.now(timezone.utc)
+    if record:
+        record.config = _encode_meta_for_db(merged)
+        record.updated_by = updated_by
+        record.updated_at = now
+    else:
+        record = TenantPortalConfig(
+            tenant_id=tenant_id,
+            section="abom-repo-collector",
+            config=_encode_meta_for_db(merged),
+            updated_by=updated_by,
+            updated_at=now,
+        )
+        db.add(record)
+    db.commit()
+    return merged
+
+
+@app.get("/customer/abom/repo-config")
+def customer_abom_repo_config_get(
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    db: Annotated[Session, Depends(get_db)],
+) -> Dict[str, Any]:
+    """Return the tenant repo-collector config with the PAT redacted.
+    A token-present hint lets the UI render "configured" without ever
+    handing the secret back."""
+    cfg = _repo_collector_config(db, ctx.tenant_id)
+    return {
+        "provider": cfg.get("provider", "github"),
+        "repos": cfg.get("repos") or [],
+        "enabled": cfg.get("enabled", True),
+        "token_configured": bool(cfg.get("token")),
+        "last_synced_at": cfg.get("last_synced_at"),
+        "last_sync_summary": cfg.get("last_sync_summary"),
+    }
+
+
+@app.put("/customer/abom/repo-config")
+def customer_abom_repo_config_put(
+    payload: RepoCollectorConfig,
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> Dict[str, Any]:
+    """Admin-only: persist provider / token / repos. PAT is never
+    echoed back."""
+    merged = _save_repo_collector_config(
+        db, ctx.tenant_id,
+        payload.model_dump(),
+        updated_by=ctx.email,
+    )
+    return {
+        "provider": merged.get("provider", "github"),
+        "repos": merged.get("repos") or [],
+        "enabled": merged.get("enabled", True),
+        "token_configured": bool(merged.get("token")),
+    }
+
+
+@app.post("/customer/abom/repo-sync")
+def customer_abom_repo_sync(
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> Dict[str, Any]:
+    """Trigger a one-shot repo sweep using the stored config. Sync runs
+    inline — bounded by GITHUB_API_BUDGET per repo so the handler
+    latency stays predictable. Background scheduling is a follow-up
+    (FastAPI background task or a dedicated worker).
+    """
+    cfg = _repo_collector_config(db, ctx.tenant_id)
+    if not cfg or not cfg.get("token"):
+        raise HTTPException(status_code=400, detail="repo collector not configured (token required)")
+    if not cfg.get("enabled", True):
+        raise HTTPException(status_code=400, detail="repo collector disabled")
+    repos = cfg.get("repos") or []
+    if not isinstance(repos, list) or not repos:
+        raise HTTPException(status_code=400, detail="no repos configured")
+    provider = str(cfg.get("provider") or "github")
+    token = str(cfg.get("token") or "")
+
+    from repo_collector import sync_repos, GitHubError  # lazy: keeps cold-start fast
+
+    summaries: List[Dict[str, Any]] = []
+    total_components = 0
+    total_observations = 0
+    now = datetime.now(timezone.utc)
+
+    try:
+        results = sync_repos(provider, token, repos)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    for source_id, components in results:
+        repo_summary = {
+            "source_id": source_id,
+            "components": len(components),
+            "ingested": 0,
+            "skipped": 0,
+        }
+        for component in components:
+            if not isinstance(component, dict):
+                repo_summary["skipped"] += 1
+                continue
+            try:
+                row, ikey = _abom_upsert_component(db, ctx.tenant_id, component, now)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("repo-sync upsert failed: %s", exc)
+                repo_summary["skipped"] += 1
+                continue
+            row.observation_count = (row.observation_count or 0) + 1
+            obs = ABOMObservation(
+                tenant_id=ctx.tenant_id,
+                component_id=row.id,
+                identity_key=ikey,
+                collector="repo-collector",
+                collector_version="1.0",
+                source_kind="repo",
+                source_id=source_id,
+                hostname=None,
+                path=str(component.get("__path") or "")[:1024] or None,
+                raw_properties=_encode_meta_for_db(component.get("properties") or {}),
+                observed_at=now,
+            )
+            db.add(obs)
+            repo_summary["ingested"] += 1
+        db.commit()
+        total_components += repo_summary["components"]
+        total_observations += repo_summary["ingested"]
+        summaries.append(repo_summary)
+
+    # Cache the summary on the config row so the portal can show
+    # "Last sync: 2 repos, 47 components, 23 minutes ago" without
+    # walking the observation history.
+    summary_payload = {
+        "repos": len(summaries),
+        "components": total_components,
+        "observations": total_observations,
+        "per_repo": summaries,
+    }
+    cfg["last_synced_at"] = now.isoformat()
+    cfg["last_sync_summary"] = summary_payload
+    _save_repo_collector_config(db, ctx.tenant_id, cfg, updated_by=ctx.email)
+
+    return {
+        "status": "ok",
+        "synced_at": now.isoformat(),
+        "summary": summary_payload,
+    }
+
+
 @app.post("/rasp/abom/ingest")
 def rasp_abom_ingest(
     payload: ABOMIngestRequest,

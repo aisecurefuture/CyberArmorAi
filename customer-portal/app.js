@@ -3022,7 +3022,13 @@ async function viewBillOfMaterials() {
   $("#pageTitle").textContent = "Bill of Materials";
   $("#pageSubtitle").textContent = "Continuously-updated inventory of software, hardware, ML models, and crypto — collected from endpoint agents, RASP, IDE plugins, repos, and cloud (CycloneDX 1.6)";
 
-  let tab = "components"; // "components" | "drift" | "lvi"
+  let tab = "components"; // "components" | "drift" | "sources"
+  let repoConfig = null;          // server view of the repo-collector config (no token)
+  let repoSaveMessage = null;     // {kind, text}
+  let repoSyncMessage = null;     // {kind, text, summary?}
+  let repoSyncing = false;
+  // Local edit buffers so typing doesn't ping the server on every keystroke.
+  let repoEdit = { provider: "github", reposText: "", token: "", enabled: true }; | "lvi"
   let components = [];
   let total = 0;
   let coverage = [];
@@ -3096,6 +3102,70 @@ async function viewBillOfMaterials() {
     } catch (err) {
       drift = null;
       driftError = err.message || "drift fetch failed";
+    }
+  }
+
+  async function loadRepoConfig() {
+    try {
+      repoConfig = await api("/api/customer/abom/repo-config");
+      // Seed the local edit buffer from the saved config so the UI
+      // shows the current repo list. We never get the token back —
+      // token_configured is the only hint.
+      repoEdit.provider = repoConfig.provider || "github";
+      repoEdit.reposText = (repoConfig.repos || []).join("\n");
+      repoEdit.enabled = repoConfig.enabled !== false;
+      repoEdit.token = ""; // empty means "keep prior server-side"
+    } catch (err) {
+      repoConfig = { error: err.message || "fetch failed" };
+    }
+  }
+
+  async function saveRepoConfig() {
+    repoSaveMessage = null;
+    const repos = repoEdit.reposText
+      .split("\n")
+      .map((s) => s.trim())
+      .filter((s) => s && s.includes("/"));
+    const body = {
+      provider: repoEdit.provider || "github",
+      repos,
+      enabled: !!repoEdit.enabled,
+      // Only send a token when the operator typed one in this session;
+      // null preserves the prior value server-side.
+      token: repoEdit.token ? repoEdit.token : null,
+    };
+    try {
+      await api("/api/customer/abom/repo-config", { method: "PUT", body: JSON.stringify(body) });
+      repoEdit.token = ""; // clear so subsequent saves don't re-send the same secret
+      repoSaveMessage = { kind: "ok", text: `Saved ${repos.length} repo${repos.length === 1 ? "" : "s"}.` };
+      await loadRepoConfig();
+    } catch (err) {
+      repoSaveMessage = { kind: "err", text: err.message || "save failed" };
+    }
+  }
+
+  async function runRepoSync() {
+    repoSyncMessage = null;
+    repoSyncing = true;
+    render();
+    try {
+      const resp = await api("/api/customer/abom/repo-sync", { method: "POST" });
+      const summary = resp && resp.summary;
+      const repoCount = summary && summary.repos || 0;
+      const compCount = summary && summary.components || 0;
+      repoSyncMessage = {
+        kind: "ok",
+        text: `Synced ${repoCount} repo${repoCount === 1 ? "" : "s"} — ${compCount} components ingested.`,
+        summary,
+      };
+      await loadRepoConfig();
+      // Refresh the components page so the new rows are immediately visible.
+      await load();
+    } catch (err) {
+      repoSyncMessage = { kind: "err", text: err.message || "sync failed" };
+    } finally {
+      repoSyncing = false;
+      render();
     }
   }
 
@@ -3204,6 +3274,88 @@ async function viewBillOfMaterials() {
       <td class="px-3 py-2 text-xs tabular-nums">${esc(String(cv.observation_count || 0))}</td>
       <td class="px-3 py-2 text-xs ${stale ? "text-amber-300" : "text-slate-300"}">${esc(last)}${stale ? ` <span class="text-[10px] text-amber-400">(stale)</span>` : ""}</td>
     </tr>`;
+  }
+
+  function renderSourcesBody() {
+    const isAdmin = session.role === "tenant_admin";
+    if (!repoConfig) {
+      return `<div class="rounded-2xl border border-slate-800 bg-slate-950 p-4 text-sm text-slate-400">Loading sources…</div>`;
+    }
+    if (repoConfig.error) {
+      return `<div class="rounded-2xl border border-rose-900 bg-rose-950/30 p-3 text-sm text-rose-200">${esc(repoConfig.error)}</div>`;
+    }
+    const last = repoConfig.last_synced_at
+      ? new Date(repoConfig.last_synced_at).toLocaleString()
+      : "—";
+    const lastSummary = repoConfig.last_sync_summary || null;
+    const perRepo = lastSummary && Array.isArray(lastSummary.per_repo) ? lastSummary.per_repo : [];
+
+    return `
+      ${card(`
+        <div class="flex flex-wrap items-baseline justify-between gap-2">
+          <div>
+            <div class="font-semibold">Repository sources</div>
+            <p class="mt-1 text-xs text-slate-500">Connect a Git provider so the repo-collector can scan manifests on every configured repo's default branch. Components land in the BOM with <span class="font-mono">source_kind=repo</span> alongside what endpoint agents see — so the same library shows up across the SDLC.</p>
+          </div>
+          <div class="flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+            <span>Last synced: ${esc(last)}</span>
+            ${lastSummary ? `<span>· ${lastSummary.repos} repo${lastSummary.repos === 1 ? "" : "s"} → ${lastSummary.observations} ingested</span>` : ""}
+          </div>
+        </div>
+      `)}
+      ${card(`
+        <div class="font-semibold">Connection</div>
+        ${!isAdmin ? `<p class="mt-2 text-xs text-slate-500">View only — tenant admins can edit.</p>` : ""}
+        <div class="mt-3 grid gap-3 md:grid-cols-2">
+          <label class="text-xs text-slate-400">Provider
+            <select id="repoProvider" class="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm" ${isAdmin ? "" : "disabled"}>
+              <option value="github" ${repoEdit.provider === "github" ? "selected" : ""}>GitHub</option>
+              <option value="gitlab" disabled>GitLab (coming soon)</option>
+              <option value="azure_devops" disabled>Azure DevOps (coming soon)</option>
+            </select>
+          </label>
+          <label class="text-xs text-slate-400">Personal access token
+            <input id="repoToken" type="password" autocomplete="off" placeholder="${repoConfig.token_configured ? "•••••••• (configured — leave blank to keep)" : "ghp_..."}" class="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm font-mono" ${isAdmin ? "" : "disabled"} value="${esc(repoEdit.token)}" />
+            <span class="block mt-1 text-[10px] text-slate-500">${repoConfig.token_configured ? "PAT is stored server-side. Type a new value to replace it." : "Required to read repos. Write-only: never echoed back."}</span>
+          </label>
+          <label class="text-xs text-slate-400 md:col-span-2">Repos (one per line, <span class="font-mono">org/repo</span> format)
+            <textarea id="repoList" rows="6" class="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-xs font-mono" ${isAdmin ? "" : "disabled"} placeholder="acme/api-server\nacme/frontend">${esc(repoEdit.reposText)}</textarea>
+          </label>
+          <label class="text-xs text-slate-400 flex items-center gap-2 md:col-span-2">
+            <input id="repoEnabled" type="checkbox" ${repoEdit.enabled ? "checked" : ""} ${isAdmin ? "" : "disabled"} /> Enabled
+          </label>
+        </div>
+        ${isAdmin ? `
+          <div class="mt-4 flex flex-wrap items-center gap-2">
+            <button id="repoSave" type="button" class="rounded-xl bg-cyan-500 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-400">Save</button>
+            <button id="repoSync" type="button" class="rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-200 hover:bg-slate-800 disabled:opacity-50" ${(!repoConfig.token_configured || repoSyncing) ? "disabled" : ""}>${repoSyncing ? "Syncing…" : "Sync now"}</button>
+            ${repoSaveMessage ? `<span class="text-xs ${repoSaveMessage.kind === "ok" ? "text-emerald-300" : "text-rose-300"}">${esc(repoSaveMessage.text)}</span>` : ""}
+            ${repoSyncMessage ? `<span class="text-xs ${repoSyncMessage.kind === "ok" ? "text-emerald-300" : "text-rose-300"}">${esc(repoSyncMessage.text)}</span>` : ""}
+          </div>
+        ` : ""}
+      `)}
+      ${perRepo.length > 0 ? card(`
+        <div class="font-semibold">Per-repo summary (last sync)</div>
+        <div class="mt-3 overflow-x-auto">
+          <table class="w-full text-left text-sm">
+            <thead class="text-[10px] uppercase tracking-wider text-slate-500"><tr>
+              <th class="px-3 py-2">Source ID</th>
+              <th class="px-3 py-2">Components found</th>
+              <th class="px-3 py-2">Ingested</th>
+              <th class="px-3 py-2">Skipped</th>
+            </tr></thead>
+            <tbody>
+              ${perRepo.map((r) => `<tr class="border-t border-slate-800">
+                <td class="px-3 py-2 font-mono text-xs">${esc(r.source_id || "")}</td>
+                <td class="px-3 py-2 text-xs tabular-nums">${esc(String(r.components ?? 0))}</td>
+                <td class="px-3 py-2 text-xs tabular-nums">${esc(String(r.ingested ?? 0))}</td>
+                <td class="px-3 py-2 text-xs tabular-nums ${(r.skipped || 0) > 0 ? "text-amber-300" : ""}">${esc(String(r.skipped ?? 0))}</td>
+              </tr>`).join("")}
+            </tbody>
+          </table>
+        </div>
+      `) : ""}
+    `;
   }
 
   function renderLviBody() {
@@ -3392,6 +3544,7 @@ async function viewBillOfMaterials() {
         ${tabButton("components", "Components", tab === "components")}
         ${tabButton("drift", `Drift${drift && drift.summary ? ` (${drift.summary.added + drift.summary.removed + drift.summary.version_changed})` : ""}`, tab === "drift")}
         ${tabButton("lvi", `Loaded vs Installed${lvi && lvi.summary ? ` (${lvi.summary.both})` : ""}`, tab === "lvi")}
+        ${tabButton("sources", "Sources", tab === "sources")}
       </div>
     `;
     $("#app").innerHTML = `
@@ -3414,6 +3567,7 @@ async function viewBillOfMaterials() {
         `)}
         ${tab === "drift" ? renderDriftBody() : ""}
         ${tab === "lvi" ? renderLviBody() : ""}
+        ${tab === "sources" ? renderSourcesBody() : ""}
         ${tab !== "components" ? "" : `
         ${card(`
           <div class="flex flex-wrap items-center gap-2">
@@ -3557,9 +3711,24 @@ async function viewBillOfMaterials() {
         tab = next;
         if (tab === "drift" && drift === null) await loadDrift();
         if (tab === "lvi" && lvi === null) await loadLvi();
+        if (tab === "sources" && repoConfig === null) await loadRepoConfig();
         render();
       });
     });
+
+    // Sources tab: connection editor + sync. Form fields write into
+    // the local edit buffer so re-render-from-other-state doesn't blow
+    // away typing. Save / Sync are explicit buttons.
+    const provSel = $("#repoProvider");
+    if (provSel) provSel.addEventListener("change", () => { repoEdit.provider = provSel.value; });
+    const tokenInput = $("#repoToken");
+    if (tokenInput) tokenInput.addEventListener("input", () => { repoEdit.token = tokenInput.value; });
+    const listInput = $("#repoList");
+    if (listInput) listInput.addEventListener("input", () => { repoEdit.reposText = listInput.value; });
+    const enabledChk = $("#repoEnabled");
+    if (enabledChk) enabledChk.addEventListener("change", () => { repoEdit.enabled = enabledChk.checked; });
+    const saveBtn = $("#repoSave"); if (saveBtn) saveBtn.addEventListener("click", async () => { await saveRepoConfig(); render(); });
+    const syncBtn = $("#repoSync"); if (syncBtn) syncBtn.addEventListener("click", runRepoSync);
     // Loaded-vs-Installed hostname filter handlers
     const lviApply = $("#lviApply");
     const lviInput = $("#lviHostname");
