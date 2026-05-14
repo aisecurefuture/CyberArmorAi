@@ -4959,6 +4959,79 @@ def agent_abom_ingest(
     )
 
 
+@app.post("/rasp/abom/ingest")
+def rasp_abom_ingest(
+    payload: ABOMIngestRequest,
+    x_api_key: Annotated[Optional[str], Header(alias="x-api-key")] = None,
+):
+    """RASP-runtime A-BOM ingest. Different shape from the agent endpoint
+    because RASP isn't enrolled as an agent — there's no agent_id to put
+    in the path. ``source_id`` carries the workload identifier
+    (workload:<host>:<pid> by convention) so multiple processes on the
+    same host stay distinguishable in observations.
+
+    Validates ``source_kind`` is "workload" (or one of the other A-BOM
+    kinds) so a misconfigured caller can't pollute the agent path.
+    """
+    _dev_or_key_ok(x_api_key)
+    if not payload.tenant_id:
+        raise HTTPException(status_code=400, detail="tenant_id required for RASP ingest")
+    if payload.source_kind not in ("workload", "container", "agent", "repo", "cloud_resource", "ide_workspace"):
+        raise HTTPException(status_code=400, detail="unsupported source_kind")
+    components = payload.components or []
+    if payload.bom and isinstance(payload.bom, dict):
+        bom_components = payload.bom.get("components")
+        if isinstance(bom_components, list):
+            components = components + bom_components
+
+    if payload.observed_at:
+        try:
+            observed_at = datetime.fromisoformat(payload.observed_at.replace("Z", "+00:00"))
+        except ValueError:
+            observed_at = datetime.now(timezone.utc)
+    else:
+        observed_at = datetime.now(timezone.utc)
+
+    inserted, skipped = 0, 0
+    with SessionLocal() as db:
+        for component in components:
+            if not isinstance(component, dict):
+                skipped += 1
+                continue
+            try:
+                row, ikey = _abom_upsert_component(db, payload.tenant_id, component, observed_at)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("rasp_abom_ingest upsert failed: %s", exc)
+                skipped += 1
+                continue
+            row.observation_count = (row.observation_count or 0) + 1
+            obs = ABOMObservation(
+                tenant_id=payload.tenant_id,
+                component_id=row.id,
+                identity_key=ikey,
+                collector=payload.collector,
+                collector_version=payload.collector_version,
+                source_kind=payload.source_kind,
+                source_id=payload.source_id,
+                hostname=payload.hostname,
+                path=str(component.get("__path") or "")[:1024] or None,
+                raw_properties=_encode_meta_for_db(component.get("properties") or {}),
+                observed_at=observed_at,
+            )
+            db.add(obs)
+            inserted += 1
+        db.commit()
+
+    logger.info(
+        "rasp_abom_ingest tenant=%s source=%s collector=%s ingested=%d",
+        payload.tenant_id, payload.source_id, payload.collector, inserted,
+    )
+    return JSONResponse(
+        {"status": "accepted", "components_ingested": inserted, "skipped": skipped},
+        status_code=202,
+    )
+
+
 # ── A-BOM customer-facing reads ────────────────────────────────────────
 
 @app.get("/customer/abom/components")
@@ -5225,6 +5298,98 @@ def customer_abom_stats(
         "added_7d": added_7d,
         "stale_7d": stale_7d,
         "by_type": by_type,
+    }
+
+
+@app.get("/customer/abom/loaded-vs-installed")
+def customer_abom_loaded_vs_installed(
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    db: Annotated[Session, Depends(get_db)],
+    hostname: Optional[str] = None,
+    limit: int = 500,
+) -> Dict[str, Any]:
+    """RASP-vs-endpoint overlay. The endpoint agent reports what's
+    *installed* on a host; RASP reports what's *actually loaded* in a
+    running process. The intersection / set-difference between the two
+    observation sets per hostname is the demo signal — "log4j 2.14.1 is
+    installed AND loaded in PID 4231" vs "installed but never loaded".
+
+    Returns three buckets keyed off identity_key:
+      - ``loaded_only``: RASP saw it; endpoint agent didn't surface it.
+      - ``installed_only``: endpoint saw it; no workload has loaded it.
+      - ``both``: matched on identity_key from both sources.
+
+    Endpoints / containers can ship many components; cap raw + dedup so
+    a single call stays predictable.
+    """
+    limit = max(1, min(limit, 2000))
+
+    # Pull observations grouped by source_kind. Limit per kind so a noisy
+    # collector doesn't push the other off the result set.
+    base = db.query(ABOMObservation).filter(ABOMObservation.tenant_id == ctx.tenant_id)
+    if hostname:
+        base = base.filter(ABOMObservation.hostname == hostname)
+    agent_obs = (
+        base.filter(ABOMObservation.source_kind == "agent")
+        .order_by(desc(ABOMObservation.observed_at)).limit(limit).all()
+    )
+    workload_obs = (
+        base.filter(ABOMObservation.source_kind.in_(["workload", "container"]))
+        .order_by(desc(ABOMObservation.observed_at)).limit(limit).all()
+    )
+
+    agent_keys = {o.identity_key for o in agent_obs}
+    workload_keys = {o.identity_key for o in workload_obs}
+    # Pull rolled-up component rows in one query per key set, indexed for
+    # lookup so we can shape each bucket without N+1 queries.
+    all_keys = agent_keys | workload_keys
+    if not all_keys:
+        return {
+            "loaded_only": [],
+            "installed_only": [],
+            "both": [],
+            "hostname": hostname,
+            "summary": {"loaded_only": 0, "installed_only": 0, "both": 0},
+        }
+    rows = (
+        db.query(ABOMComponent)
+        .filter(ABOMComponent.tenant_id == ctx.tenant_id)
+        .filter(ABOMComponent.identity_key.in_(list(all_keys)))
+        .all()
+    )
+    by_key = {r.identity_key: r for r in rows}
+
+    def fmt(r: ABOMComponent) -> Dict[str, Any]:
+        return {
+            "id": r.id,
+            "identity_key": r.identity_key,
+            "type": r.type,
+            "name": r.name,
+            "version": r.version,
+            "purl": r.purl,
+            "manufacturer": r.manufacturer,
+            "last_seen_at": r.last_seen_at.isoformat() if r.last_seen_at else None,
+        }
+
+    loaded_only = [fmt(by_key[k]) for k in (workload_keys - agent_keys) if k in by_key]
+    installed_only = [fmt(by_key[k]) for k in (agent_keys - workload_keys) if k in by_key]
+    both = [fmt(by_key[k]) for k in (agent_keys & workload_keys) if k in by_key]
+
+    # Sort each bucket newest-first by last_seen_at so the demo lands on
+    # something the operator just produced.
+    for bucket in (loaded_only, installed_only, both):
+        bucket.sort(key=lambda c: c.get("last_seen_at") or "", reverse=True)
+
+    return {
+        "hostname": hostname,
+        "loaded_only": loaded_only,
+        "installed_only": installed_only,
+        "both": both,
+        "summary": {
+            "loaded_only": len(loaded_only),
+            "installed_only": len(installed_only),
+            "both": len(both),
+        },
     }
 
 

@@ -419,12 +419,28 @@ def protect(func):
 
 # ── Auto-init ─────────────────────────────────────────────
 def init(**kwargs):
-    """Initialize CyberArmor RASP with custom configuration."""
+    """Initialize CyberArmor RASP with custom configuration.
+
+    ``abom_sweep_interval`` (seconds) and ``abom_enabled`` are recognized
+    in kwargs even though they aren't RASPConfig attributes — they drive
+    the A-BOM collector spawned alongside the monkey-patch path.
+    """
+    abom_enabled = kwargs.pop("abom_enabled", True)
+    abom_interval = int(kwargs.pop("abom_sweep_interval", 30 * 60))
     for k, v in kwargs.items():
         if hasattr(config, k):
             setattr(config, k, v)
     patch()
-    logger.info("CyberArmor RASP initialized (mode=%s)", config.mode)
+    if abom_enabled:
+        try:
+            from . import cyberarmor_abom  # type: ignore[no-redef]
+        except ImportError:
+            import cyberarmor_abom  # type: ignore[no-redef]
+        try:
+            cyberarmor_abom.start_periodic(config, interval_s=abom_interval)
+        except Exception as exc:  # noqa: BLE001 — collector must never block init
+            logger.warning("CyberArmor RASP A-BOM collector failed to start: %s", exc)
+    logger.info("CyberArmor RASP initialized (mode=%s, abom=%s)", config.mode, abom_enabled)
 
 
 # Canonical class aliases for CyberArmor naming.

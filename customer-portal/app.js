@@ -3022,7 +3022,7 @@ async function viewBillOfMaterials() {
   $("#pageTitle").textContent = "Bill of Materials";
   $("#pageSubtitle").textContent = "Continuously-updated inventory of software, hardware, ML models, and crypto — collected from endpoint agents, RASP, IDE plugins, repos, and cloud (CycloneDX 1.6)";
 
-  let tab = "components"; // "components" | "drift"
+  let tab = "components"; // "components" | "drift" | "lvi"
   let components = [];
   let total = 0;
   let coverage = [];
@@ -3038,6 +3038,10 @@ async function viewBillOfMaterials() {
   let driftDays = 7;
   let drift = null;
   let driftError = null;
+  // Loaded-vs-Installed sub-view state. hostname empty = all hosts.
+  let lvi = null;
+  let lviError = null;
+  let lviHostname = "";
 
   async function load() {
     try {
@@ -3084,6 +3088,19 @@ async function viewBillOfMaterials() {
     } catch (err) {
       drift = null;
       driftError = err.message || "drift fetch failed";
+    }
+  }
+
+  async function loadLvi() {
+    try {
+      const q = lviHostname.trim()
+        ? `?hostname=${encodeURIComponent(lviHostname.trim())}`
+        : "";
+      lvi = await api(`/api/customer/abom/loaded-vs-installed${q}`);
+      lviError = null;
+    } catch (err) {
+      lvi = null;
+      lviError = err.message || "loaded-vs-installed fetch failed";
     }
   }
 
@@ -3179,6 +3196,80 @@ async function viewBillOfMaterials() {
       <td class="px-3 py-2 text-xs tabular-nums">${esc(String(cv.observation_count || 0))}</td>
       <td class="px-3 py-2 text-xs ${stale ? "text-amber-300" : "text-slate-300"}">${esc(last)}${stale ? ` <span class="text-[10px] text-amber-400">(stale)</span>` : ""}</td>
     </tr>`;
+  }
+
+  function renderLviBody() {
+    if (lviError) {
+      return `<div class="rounded-2xl border border-rose-900 bg-rose-950/30 p-3 text-sm text-rose-200">Could not load: ${esc(lviError)}.</div>`;
+    }
+    const loadedOnly = (lvi && lvi.loaded_only) || [];
+    const installedOnly = (lvi && lvi.installed_only) || [];
+    const both = (lvi && lvi.both) || [];
+    const lviRow = (c) => `<tr class="border-t border-slate-800">
+      <td class="px-3 py-2">${abomTypePill(c.type)}</td>
+      <td class="px-3 py-2"><div class="text-sm text-slate-100 break-all">${esc(c.name)}</div>${c.manufacturer ? `<div class="text-[10px] text-slate-500">${esc(c.manufacturer)}</div>` : ""}</td>
+      <td class="px-3 py-2 font-mono text-xs text-slate-300">${esc(c.version || "—")}</td>
+      <td class="px-3 py-2 font-mono text-[10px] text-slate-400 break-all">${esc(c.purl || "—")}</td>
+      <td class="px-3 py-2 text-xs text-slate-400">${esc(c.last_seen_at ? new Date(c.last_seen_at).toLocaleString() : "—")}</td>
+    </tr>`;
+    return `
+      ${card(`
+        <div class="flex flex-wrap items-center gap-4">
+          ${riskMetricCard("Loaded only", loadedOnly.length, loadedOnly.length > 0 ? "violet" : "slate")}
+          ${riskMetricCard("Installed only", installedOnly.length, installedOnly.length > 0 ? "amber" : "slate")}
+          ${riskMetricCard("Both (in use)", both.length, "emerald")}
+          <div class="ml-auto flex flex-wrap items-center gap-2">
+            <input id="lviHostname" type="search" placeholder="Filter to a hostname (optional)…" value="${esc(lviHostname)}" class="rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm min-w-[260px]" />
+            <button id="lviApply" type="button" class="rounded-2xl bg-cyan-500 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-400">Apply</button>
+          </div>
+        </div>
+        <p class="mt-2 text-xs text-slate-500">RASP reports what's actually loaded in a running process; the endpoint agent reports what's installed on the host. Intersection on identity_key produces three buckets — useful for vulnerability prioritisation ("log4j 2.14.1 is loaded in PID 4231, not just on disk") and dead-weight cleanup.</p>
+      `)}
+      <div class="grid gap-4 lg:grid-cols-2">
+        ${card(`
+          <div class="font-semibold">Loaded but not installed <span class="text-xs text-slate-500">(${loadedOnly.length})</span></div>
+          <p class="mt-1 text-xs text-slate-500">RASP saw these in a workload, but the endpoint agent didn't surface them via the package manager. Usually means it's an in-process Python module / dylib bundled with the app, not a system install.</p>
+          <div class="mt-3 overflow-x-auto">
+            <table class="w-full text-left text-sm">
+              <thead class="text-[10px] uppercase tracking-wider text-slate-500"><tr>
+                <th class="px-3 py-2">Type</th><th class="px-3 py-2">Name</th><th class="px-3 py-2">Version</th><th class="px-3 py-2">PURL</th><th class="px-3 py-2">Last seen</th>
+              </tr></thead>
+              <tbody>
+                ${loadedOnly.length === 0 ? `<tr><td colspan="5" class="px-3 py-6 text-center text-xs text-slate-500">Nothing.</td></tr>` : loadedOnly.slice(0, 200).map(lviRow).join("")}
+              </tbody>
+            </table>
+          </div>
+        `)}
+        ${card(`
+          <div class="font-semibold">Installed but not loaded <span class="text-xs text-slate-500">(${installedOnly.length})</span></div>
+          <p class="mt-1 text-xs text-slate-500">Installed on the host but no RASP workload has loaded them. Often safe to uninstall — or, in a CVE context, lower priority because nothing actually executes them.</p>
+          <div class="mt-3 overflow-x-auto">
+            <table class="w-full text-left text-sm">
+              <thead class="text-[10px] uppercase tracking-wider text-slate-500"><tr>
+                <th class="px-3 py-2">Type</th><th class="px-3 py-2">Name</th><th class="px-3 py-2">Version</th><th class="px-3 py-2">PURL</th><th class="px-3 py-2">Last seen</th>
+              </tr></thead>
+              <tbody>
+                ${installedOnly.length === 0 ? `<tr><td colspan="5" class="px-3 py-6 text-center text-xs text-slate-500">Nothing.</td></tr>` : installedOnly.slice(0, 200).map(lviRow).join("")}
+              </tbody>
+            </table>
+          </div>
+        `)}
+      </div>
+      ${card(`
+        <div class="font-semibold">Both — installed and loaded <span class="text-xs text-slate-500">(${both.length})</span></div>
+        <p class="mt-1 text-xs text-slate-500">High-confidence active dependencies — present on disk AND actually loaded by a workload. Prioritise these for patching.</p>
+        <div class="mt-3 overflow-x-auto">
+          <table class="w-full text-left text-sm">
+            <thead class="text-[10px] uppercase tracking-wider text-slate-500"><tr>
+              <th class="px-3 py-2">Type</th><th class="px-3 py-2">Name</th><th class="px-3 py-2">Version</th><th class="px-3 py-2">PURL</th><th class="px-3 py-2">Last seen</th>
+            </tr></thead>
+            <tbody>
+              ${both.length === 0 ? `<tr><td colspan="5" class="px-3 py-6 text-center text-xs text-slate-500">Nothing yet. Install RASP in a workload and the endpoint agent on the same host to populate this.</td></tr>` : both.slice(0, 200).map(lviRow).join("")}
+            </tbody>
+          </table>
+        </div>
+      `)}
+    `;
   }
 
   function renderDriftBody() {
@@ -3284,6 +3375,7 @@ async function viewBillOfMaterials() {
       <div class="flex flex-wrap gap-2">
         ${tabButton("components", "Components", tab === "components")}
         ${tabButton("drift", `Drift${drift && drift.summary ? ` (${drift.summary.added + drift.summary.removed + drift.summary.version_changed})` : ""}`, tab === "drift")}
+        ${tabButton("lvi", `Loaded vs Installed${lvi && lvi.summary ? ` (${lvi.summary.both})` : ""}`, tab === "lvi")}
       </div>
     `;
     $("#app").innerHTML = `
@@ -3305,6 +3397,7 @@ async function viewBillOfMaterials() {
           </div>
         `)}
         ${tab === "drift" ? renderDriftBody() : ""}
+        ${tab === "lvi" ? renderLviBody() : ""}
         ${tab !== "components" ? "" : `
         ${card(`
           <div class="flex flex-wrap items-center gap-2">
@@ -3431,9 +3524,10 @@ async function viewBillOfMaterials() {
     const expSigned = $("#bomExportSigned"); if (expSigned) expSigned.addEventListener("click", () => exportCycloneDX({ signed: true }));
     const ref = $("#bomRefresh"); if (ref) ref.addEventListener("click", async () => {
       // Refresh refreshes whichever tab is active so the Refresh button
-      // behaves consistently from either sub-view.
+      // behaves consistently from any sub-view.
       await load();
       if (tab === "drift") await loadDrift();
+      if (tab === "lvi") await loadLvi();
       render();
     });
     pager.wire(document, async () => { await load(); render(); });
@@ -3446,9 +3540,27 @@ async function viewBillOfMaterials() {
         if (!next || next === tab) return;
         tab = next;
         if (tab === "drift" && drift === null) await loadDrift();
+        if (tab === "lvi" && lvi === null) await loadLvi();
         render();
       });
     });
+    // Loaded-vs-Installed hostname filter handlers
+    const lviApply = $("#lviApply");
+    const lviInput = $("#lviHostname");
+    const applyLvi = async () => {
+      lviHostname = lviInput ? lviInput.value : "";
+      await loadLvi();
+      render();
+    };
+    if (lviApply) lviApply.addEventListener("click", applyLvi);
+    if (lviInput) {
+      lviInput.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          applyLvi();
+        }
+      });
+    }
 
     // Stale-days chips: zero means "no filter"; non-zero passes
     // stale_days through to /customer/abom/components.
@@ -5777,6 +5889,7 @@ function riskMetricCard(label, value, tone, sub) {
   const cls = tone === "rose"    ? "border-rose-900 text-rose-200"
             : tone === "amber"   ? "border-amber-900 text-amber-200"
             : tone === "emerald" ? "border-emerald-900 text-emerald-200"
+            : tone === "violet"  ? "border-violet-900 text-violet-200"
             : "border-slate-800 text-slate-200";
   return `<div class="rounded-2xl border ${cls} bg-slate-950 p-4">
     <div class="text-[10px] uppercase tracking-wider text-slate-500">${esc(label)}</div>
