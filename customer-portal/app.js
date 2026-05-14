@@ -23,6 +23,7 @@ const navItems = [
   { id: "identity", label: "Identity / SSO", hash: "#/identity" },
   { id: "dlp", label: "DLP & Data Class.", hash: "#/dlp" },
   { id: "upload-discovery", label: "Upload Discovery", hash: "#/upload-discovery" },
+  { id: "bom", label: "Bill of Materials", hash: "#/bom" },
   { id: "reports", label: "Reports", hash: "#/reports" },
   { id: "agents", label: "Agent Directory", hash: "#/agents" },
   { id: "providers", label: "AI Providers", hash: "#/providers" },
@@ -2967,6 +2968,319 @@ async function viewUploadDiscovery() {
       actionMessage = { kind: "err", text: err.message || "Remove failed." };
       render();
     }
+  }
+
+  await load();
+  render();
+}
+
+// CycloneDX component.type → display badge tone. Hardware (device/firmware)
+// gets emerald, software libraries amber, applications cyan, ML models
+// violet, OS slate. Same palette the rest of the portal uses for cluster
+// pills so the BOM view reads like the others at a glance.
+const ABOM_TYPE_TONE = {
+  "application":            { label: "App",       cls: "bg-cyan-500/20 text-cyan-200" },
+  "library":                { label: "Library",   cls: "bg-amber-500/20 text-amber-200" },
+  "framework":              { label: "Framework", cls: "bg-amber-500/20 text-amber-200" },
+  "container":              { label: "Container", cls: "bg-cyan-500/15 text-cyan-200" },
+  "platform":               { label: "Platform",  cls: "bg-slate-700/40 text-slate-200" },
+  "operating-system":       { label: "OS",        cls: "bg-slate-700/40 text-slate-200" },
+  "device":                 { label: "Device",    cls: "bg-emerald-500/20 text-emerald-200" },
+  "device-driver":          { label: "Driver",    cls: "bg-emerald-500/15 text-emerald-200" },
+  "firmware":               { label: "Firmware",  cls: "bg-emerald-500/15 text-emerald-200" },
+  "file":                   { label: "File",      cls: "bg-slate-700/40 text-slate-200" },
+  "machine-learning-model": { label: "ML model",  cls: "bg-violet-500/20 text-violet-200" },
+  "data":                   { label: "Data",      cls: "bg-cyan-500/15 text-cyan-200" },
+  "cryptographic-asset":    { label: "Crypto",    cls: "bg-violet-500/20 text-violet-200" },
+};
+
+function abomTypePill(type) {
+  const t = String(type || "").toLowerCase();
+  const meta = ABOM_TYPE_TONE[t] || { label: type || "—", cls: "bg-slate-700/40 text-slate-200" };
+  return `<span class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${meta.cls}">${esc(meta.label)}</span>`;
+}
+
+async function viewBillOfMaterials() {
+  $("#pageTitle").textContent = "Bill of Materials";
+  $("#pageSubtitle").textContent = "Continuously-updated inventory of software, hardware, ML models, and crypto — collected from endpoint agents, RASP, IDE plugins, repos, and cloud (CycloneDX 1.6)";
+
+  let components = [];
+  let total = 0;
+  let coverage = [];
+  let loadError = null;
+  let typeFilter = "all";
+  let search = "";
+  let sourceFilter = "all";          // all | agent | repo | container | cloud_resource | ide_workspace
+  let selected = null;               // component id for the inspector panel
+  let selectedDetail = null;         // detail payload
+  const tablePager = { page: 1, pageSize: 50 };
+
+  async function load() {
+    try {
+      const params = new URLSearchParams();
+      params.set("limit", String(tablePager.pageSize === "all" ? 500 : tablePager.pageSize));
+      params.set("offset", String(tablePager.pageSize === "all" ? 0 : (tablePager.page - 1) * tablePager.pageSize));
+      if (typeFilter !== "all") params.set("type", typeFilter);
+      if (search.trim()) params.set("q", search.trim());
+      if (sourceFilter !== "all") params.set("source_kind", sourceFilter);
+      const [resp, cov] = await Promise.allSettled([
+        api(`/api/customer/abom/components?${params.toString()}`),
+        api("/api/customer/abom/coverage"),
+      ]);
+      if (resp.status === "fulfilled") {
+        components = Array.isArray(resp.value && resp.value.components) ? resp.value.components : [];
+        total = resp.value && resp.value.total || 0;
+        loadError = null;
+      } else {
+        components = [];
+        total = 0;
+        loadError = resp.reason?.message || "fetch failed";
+      }
+      coverage = cov.status === "fulfilled" && Array.isArray(cov.value && cov.value.collectors)
+        ? cov.value.collectors
+        : [];
+    } catch (err) {
+      loadError = err.message || "fetch failed";
+    }
+  }
+
+  async function loadDetail(componentId) {
+    try {
+      selectedDetail = await api(`/api/customer/abom/components/${encodeURIComponent(componentId)}`);
+    } catch (err) {
+      selectedDetail = { error: err.message || "fetch failed" };
+    }
+  }
+
+  function exportCycloneDX() {
+    // Use a regular <a download> link so the JSON streams straight from
+    // the server to disk without going through the api() wrapper (which
+    // would parse + re-serialize a 1MB document for no reason).
+    const a = document.createElement("a");
+    a.href = "/api/customer/abom/export?format=cyclonedx";
+    a.download = `cyberarmor_${session.tenant_id || "tenant"}_bom_${new Date().toISOString().slice(0, 10)}.cdx.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
+  function detailPanel() {
+    if (!selected) {
+      return `<div class="rounded-2xl border border-slate-800 bg-slate-950 p-4 text-sm text-slate-400">
+        <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-2">Inspector</div>
+        Click any row to see provenance — which collectors saw this component, on which hosts, when. Versions and PURLs are tracked strongest-wins across sources.
+      </div>`;
+    }
+    if (!selectedDetail) {
+      return `<div class="rounded-2xl border border-slate-800 bg-slate-950 p-4 text-sm text-slate-400">Loading…</div>`;
+    }
+    if (selectedDetail.error) {
+      return `<div class="rounded-2xl border border-rose-900 bg-rose-950/30 p-3 text-sm text-rose-200">${esc(selectedDetail.error)}</div>`;
+    }
+    const d = selectedDetail;
+    const licenses = Array.isArray(d.licenses) ? d.licenses : [];
+    const hashes = d.hashes && typeof d.hashes === "object" ? d.hashes : {};
+    const observations = Array.isArray(d.observations) ? d.observations : [];
+    return `
+      <div class="rounded-2xl border border-slate-800 bg-slate-950 p-4">
+        <div class="flex items-baseline justify-between gap-2">
+          <div class="min-w-0">
+            <div class="flex items-center gap-2">${abomTypePill(d.type)}<span class="text-[10px] uppercase tracking-wider text-slate-500">Component</span></div>
+            <div class="mt-1 font-semibold text-slate-100 break-all">${esc(d.name)}${d.version ? `<span class="ml-2 text-xs text-slate-400 font-normal">${esc(d.version)}</span>` : ""}</div>
+          </div>
+          <button id="bomClearSelection" type="button" class="text-xs text-slate-400 hover:text-slate-200">Clear</button>
+        </div>
+        <div class="mt-3 grid grid-cols-2 gap-2">
+          <div class="rounded-xl bg-slate-900 px-3 py-2"><div class="text-[10px] uppercase tracking-wider text-slate-500">Observations</div><div class="text-lg font-semibold tabular-nums">${d.observation_count || 0}</div></div>
+          <div class="rounded-xl bg-slate-900 px-3 py-2"><div class="text-[10px] uppercase tracking-wider text-slate-500">First seen</div><div class="text-xs text-slate-300">${d.first_seen_at ? esc(new Date(d.first_seen_at).toLocaleString()) : "—"}</div></div>
+        </div>
+        ${d.purl ? `<div class="mt-3 rounded-xl bg-slate-900 px-3 py-2"><div class="text-[10px] uppercase tracking-wider text-slate-500">PURL</div><div class="font-mono text-xs text-slate-200 break-all">${esc(d.purl)}</div></div>` : ""}
+        ${d.cpe ? `<div class="mt-2 rounded-xl bg-slate-900 px-3 py-2"><div class="text-[10px] uppercase tracking-wider text-slate-500">CPE</div><div class="font-mono text-xs text-slate-200 break-all">${esc(d.cpe)}</div></div>` : ""}
+        ${d.manufacturer ? `<div class="mt-2 rounded-xl bg-slate-900 px-3 py-2"><div class="text-[10px] uppercase tracking-wider text-slate-500">Manufacturer</div><div class="text-xs text-slate-200">${esc(d.manufacturer)}</div></div>` : ""}
+        ${licenses.length ? `<div class="mt-2 rounded-xl bg-slate-900 px-3 py-2"><div class="text-[10px] uppercase tracking-wider text-slate-500">Licenses</div><div class="mt-1 flex flex-wrap gap-1">${licenses.map((l) => `<span class="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-200">${esc(String(l))}</span>`).join("")}</div></div>` : ""}
+        ${Object.keys(hashes).length ? `<div class="mt-2 rounded-xl bg-slate-900 px-3 py-2"><div class="text-[10px] uppercase tracking-wider text-slate-500">Hashes</div>${Object.entries(hashes).map(([k, v]) => `<div class="mt-1 font-mono text-[10px] text-slate-400 break-all">${esc(k)}: ${esc(String(v))}</div>`).join("")}</div>` : ""}
+        <div class="mt-3">
+          <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-2">Observations (${observations.length})</div>
+          ${observations.length === 0 ? `<div class="text-xs text-slate-500">No observations yet.</div>` : `
+            <div class="space-y-1">${observations.slice(0, 12).map((o) => `
+              <div class="rounded-lg bg-slate-900 px-2 py-1.5">
+                <div class="flex items-center justify-between gap-2">
+                  <span class="font-mono text-xs text-slate-200 truncate">${esc(o.collector)}${o.collector_version ? ` <span class="text-slate-500">v${esc(o.collector_version)}</span>` : ""}</span>
+                  <span class="rounded-full bg-slate-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-slate-300">${esc(o.source_kind || "")}</span>
+                </div>
+                <div class="mt-0.5 text-[10px] text-slate-400 break-all">${esc(o.hostname || o.source_id || "")}${o.path ? ` · <span class="text-slate-500">${esc(o.path)}</span>` : ""}</div>
+                <div class="mt-0.5 text-[10px] text-slate-500">${esc(o.observed_at ? new Date(o.observed_at).toLocaleString() : "")}</div>
+              </div>
+            `).join("")}</div>
+          `}
+        </div>
+        <div class="mt-3 font-mono text-[10px] text-slate-500 break-all">identity_key: ${esc(d.identity_key || "")}</div>
+      </div>
+    `;
+  }
+
+  function row(c) {
+    const isSel = selected === c.id;
+    const last = c.last_seen_at ? new Date(c.last_seen_at).toLocaleString() : "—";
+    return `<tr data-component-id="${esc(c.id)}" class="border-t border-slate-800 cursor-pointer ${isSel ? "bg-cyan-500/5" : "hover:bg-slate-900/60"}">
+      <td class="px-3 py-2">${abomTypePill(c.type)}</td>
+      <td class="px-3 py-2"><div class="text-sm text-slate-100 break-all">${esc(c.name)}</div>${c.manufacturer ? `<div class="text-[10px] text-slate-500">${esc(c.manufacturer)}</div>` : ""}</td>
+      <td class="px-3 py-2 font-mono text-xs text-slate-300">${esc(c.version || "—")}</td>
+      <td class="px-3 py-2 font-mono text-[10px] text-slate-400 break-all">${esc(c.purl || c.cpe || "—")}</td>
+      <td class="px-3 py-2 text-xs tabular-nums">${esc(String(c.observation_count || 0))}</td>
+      <td class="px-3 py-2 text-xs text-slate-400">${esc(last)}</td>
+    </tr>`;
+  }
+
+  function coverageRow(cv) {
+    const last = cv.last_seen_at ? new Date(cv.last_seen_at).toLocaleString() : "—";
+    const stale = cv.last_seen_at ? (Date.now() - Date.parse(cv.last_seen_at)) > 24 * 60 * 60 * 1000 : true;
+    return `<tr class="border-t border-slate-800">
+      <td class="px-3 py-2 font-mono text-xs text-slate-200">${esc(cv.collector)}</td>
+      <td class="px-3 py-2"><span class="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] uppercase tracking-wider text-slate-300">${esc(cv.source_kind || "—")}</span></td>
+      <td class="px-3 py-2 text-xs tabular-nums">${esc(String(cv.observation_count || 0))}</td>
+      <td class="px-3 py-2 text-xs ${stale ? "text-amber-300" : "text-slate-300"}">${esc(last)}${stale ? ` <span class="text-[10px] text-amber-400">(stale)</span>` : ""}</td>
+    </tr>`;
+  }
+
+  function render() {
+    const typeCounts = {};
+    for (const c of components) typeCounts[c.type] = (typeCounts[c.type] || 0) + 1;
+    const distinctTypes = Object.keys(typeCounts).sort();
+    const typesForPicker = ["all", ...Object.keys(ABOM_TYPE_TONE).filter((t) => typeCounts[t] || typeFilter === t)];
+    const totalDevices = (typeCounts["device"] || 0) + (typeCounts["device-driver"] || 0) + (typeCounts["firmware"] || 0);
+    const totalSoftware = (typeCounts["library"] || 0) + (typeCounts["application"] || 0) + (typeCounts["framework"] || 0) + (typeCounts["container"] || 0);
+    const totalMl = typeCounts["machine-learning-model"] || 0;
+    const pager = simplePager({ total, state: tablePager, idPrefix: "bom" });
+
+    $("#app").innerHTML = `
+      <div class="space-y-4">
+        ${loadError ? `<div class="rounded-2xl border border-rose-900 bg-rose-950/30 p-3 text-sm text-rose-200">Could not load BOM: ${esc(loadError)}.</div>` : ""}
+        ${card(`
+          <div class="flex flex-wrap items-center gap-4">
+            ${riskMetricCard("Components", total, "slate")}
+            ${riskMetricCard("Software", totalSoftware, "slate")}
+            ${riskMetricCard("Hardware", totalDevices, "emerald")}
+            ${riskMetricCard("ML models", totalMl, totalMl > 0 ? "amber" : "slate")}
+            ${riskMetricCard("Collectors", coverage.length, coverage.length === 0 ? "rose" : "emerald")}
+            <div class="ml-auto flex flex-wrap gap-2">
+              <button id="bomExport" type="button" class="rounded-2xl bg-cyan-500 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-400">Export CycloneDX</button>
+              <button id="bomRefresh" type="button" class="rounded-2xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-200 hover:bg-slate-800">Refresh</button>
+            </div>
+          </div>
+        `)}
+        ${card(`
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="text-[10px] uppercase tracking-wider text-slate-500">Type</span>
+            ${typesForPicker.map((t) => `
+              <button type="button" data-type-filter="${esc(t)}" class="rounded-full px-2 py-1 text-[11px] ${typeFilter === t ? "bg-cyan-500 text-slate-950 font-semibold" : "bg-slate-900 border border-slate-700 text-slate-300 hover:bg-slate-800"}">
+                ${esc(t === "all" ? "All" : (ABOM_TYPE_TONE[t]?.label || t))}${t !== "all" && typeCounts[t] ? ` <span class="text-slate-500">·${typeCounts[t]}</span>` : ""}
+              </button>
+            `).join("")}
+          </div>
+          <div class="mt-2 flex flex-wrap items-center gap-2">
+            <span class="text-[10px] uppercase tracking-wider text-slate-500">Source</span>
+            ${["all", "agent", "repo", "container", "cloud_resource", "ide_workspace"].map((s) => `
+              <button type="button" data-source-filter="${esc(s)}" class="rounded-full px-2 py-1 text-[11px] ${sourceFilter === s ? "bg-cyan-500 text-slate-950 font-semibold" : "bg-slate-900 border border-slate-700 text-slate-300 hover:bg-slate-800"}">${esc(s === "all" ? "All" : s)}</button>
+            `).join("")}
+          </div>
+          <div class="mt-2 flex flex-wrap items-center gap-2">
+            <input id="bomSearch" type="search" placeholder="Search by name (substring)…" class="flex-1 min-w-[280px] rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm" value="${esc(search)}" />
+            <div class="text-xs text-slate-400">${total} total · ${distinctTypes.length} types</div>
+          </div>
+        `)}
+        <div class="grid gap-4 lg:grid-cols-[1fr_400px]">
+          ${card(`
+            <div class="overflow-x-auto">
+              <table class="w-full text-left text-sm">
+                <thead class="text-[10px] uppercase tracking-wider text-slate-500">
+                  <tr>
+                    <th class="px-3 py-2">Type</th>
+                    <th class="px-3 py-2">Name</th>
+                    <th class="px-3 py-2">Version</th>
+                    <th class="px-3 py-2">Identifier</th>
+                    <th class="px-3 py-2">Observed</th>
+                    <th class="px-3 py-2">Last seen</th>
+                  </tr>
+                </thead>
+                <tbody id="bomRows">
+                  ${components.length === 0
+                    ? `<tr><td colspan="6" class="px-3 py-8 text-center text-sm text-slate-500">${loadError ? "Unable to load." : "No components reported yet. Install the endpoint agent or wait for the first 6h sweep."}</td></tr>`
+                    : components.map(row).join("")}
+                </tbody>
+              </table>
+            </div>
+            ${total > 0 ? pager.html : ""}
+          `)}
+          <div>${detailPanel()}</div>
+        </div>
+        ${card(`
+          <div class="font-semibold">Collector coverage</div>
+          <p class="mt-1 text-xs text-slate-500">When each collector last reported. Stale rows (>24h) are amber — that's usually a silent agent or a stopped CI job.</p>
+          <div class="mt-3 overflow-x-auto">
+            <table class="w-full text-left text-sm">
+              <thead class="text-[10px] uppercase tracking-wider text-slate-500"><tr>
+                <th class="px-3 py-2">Collector</th><th class="px-3 py-2">Source</th><th class="px-3 py-2">Observations</th><th class="px-3 py-2">Last reported</th>
+              </tr></thead>
+              <tbody>
+                ${coverage.length === 0
+                  ? `<tr><td colspan="4" class="px-3 py-6 text-center text-xs text-slate-500">No collectors have reported yet.</td></tr>`
+                  : coverage.map(coverageRow).join("")}
+              </tbody>
+            </table>
+          </div>
+        `)}
+      </div>
+    `;
+
+    document.querySelectorAll("[data-type-filter]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const next = btn.dataset.typeFilter;
+        if (next === typeFilter) return;
+        typeFilter = next;
+        tablePager.page = 1;
+        selected = null;
+        selectedDetail = null;
+        await load();
+        render();
+      });
+    });
+    document.querySelectorAll("[data-source-filter]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const next = btn.dataset.sourceFilter;
+        if (next === sourceFilter) return;
+        sourceFilter = next;
+        tablePager.page = 1;
+        selected = null;
+        selectedDetail = null;
+        await load();
+        render();
+      });
+    });
+    const sb = $("#bomSearch");
+    if (sb) {
+      sb.addEventListener("change", async () => {
+        if (sb.value === search) return;
+        search = sb.value;
+        tablePager.page = 1;
+        await load();
+        render();
+      });
+    }
+    document.querySelectorAll("#bomRows tr[data-component-id]").forEach((tr) => {
+      tr.addEventListener("click", async () => {
+        const cid = tr.dataset.componentId;
+        selected = (selected === cid) ? null : cid;
+        selectedDetail = null;
+        if (selected) await loadDetail(selected);
+        render();
+      });
+    });
+    const clearBtn = $("#bomClearSelection");
+    if (clearBtn) clearBtn.addEventListener("click", () => { selected = null; selectedDetail = null; render(); });
+    const exp = $("#bomExport"); if (exp) exp.addEventListener("click", exportCycloneDX);
+    const ref = $("#bomRefresh"); if (ref) ref.addEventListener("click", async () => { await load(); render(); });
+    pager.wire(document, async () => { await load(); render(); });
   }
 
   await load();
@@ -6154,6 +6468,7 @@ async function route() {
     if (routeName === "identity") return await viewIdentity();
     if (routeName === "dlp") return await viewDlp();
     if (routeName === "upload-discovery") return await viewUploadDiscovery();
+    if (routeName === "bom") return await viewBillOfMaterials();
     if (routeName === "reports") return await viewReports();
     if (routeName === "agents") return await viewAgents();
     if (routeName === "telemetry") return await viewTelemetry();
