@@ -69,8 +69,9 @@ const configReady = (async () => {
   const synced = await browser.storage.sync.get(['cyberarmor_config', 'cyberarmor_policies']);
   if (synced.cyberarmor_config) config = { ...config, ...synced.cyberarmor_config };
   if (synced.cyberarmor_policies) policies = synced.cyberarmor_policies;
-  const local = await browser.storage.local.get(['cyberarmor_last_auth_status']);
+  const local = await browser.storage.local.get(['cyberarmor_last_auth_status', 'tenantUploadPatterns']);
   if (local.cyberarmor_last_auth_status) lastAuthStatus = local.cyberarmor_last_auth_status;
+  if (Array.isArray(local.tenantUploadPatterns)) tenantUploadPatterns = local.tenantUploadPatterns;
   await _ensureExtIdentity();
   try { await ensureBootstrapRedeemed(); } catch (err) { console.warn('[CyberArmor] Safari bootstrap redeem failed:', err.message); }
   startPolicySync();
@@ -124,6 +125,7 @@ async function syncPolicies() {
       policies = await resp.json();
       await browser.storage.local.set({ cyberarmor_policies: policies });
       console.log(`[CyberArmor] Synced ${policies.length} policies`);
+      try { await syncTenantUploadPatterns(); } catch {}
       return { ok: true, count: policies.length };
     }
     const body = await resp.text().catch(() => '');
@@ -196,12 +198,44 @@ const AI_UPLOAD_PATTERNS = [
   '/api/files/upload',
 ];
 
+// Tenant-promoted patterns from /customer/upload-patterns/extras.
+// Same shape as the chromium and firefox builds; persisted via
+// browser.storage.local for worker-respawn resilience.
+let tenantUploadPatterns = [];
+
+async function syncTenantUploadPatterns() {
+  if (!config.controlPlaneUrl || !config.apiKey) return tenantUploadPatterns;
+  try {
+    const resp = await fetch(`${config.controlPlaneUrl.replace(/\/$/, '')}/customer/upload-patterns/extras`, {
+      headers: await authHeaders(),
+    });
+    if (!resp.ok) return tenantUploadPatterns;
+    const data = await resp.json().catch(() => ({}));
+    const next = Array.isArray(data.patterns)
+      ? data.patterns.filter((p) => typeof p === 'string' && p.trim().length > 0)
+      : [];
+    tenantUploadPatterns = next;
+    browser.storage.local.set({ tenantUploadPatterns: next });
+    return next;
+  } catch {
+    return tenantUploadPatterns;
+  }
+}
+
+function effectiveUploadPatternList() {
+  return AI_UPLOAD_PATTERNS.concat(tenantUploadPatterns || []);
+}
+
+function isAIServiceHost(url) {
+  try { return AI_DOMAINS.has(new URL(url).hostname); } catch { return false; }
+}
+
 function urlMatchesUploadPattern(url) {
   if (!url) return false;
   let parsed;
   try { parsed = new URL(url); } catch { return false; }
   const hostPath = parsed.hostname + parsed.pathname;
-  for (const raw of AI_UPLOAD_PATTERNS) {
+  for (const raw of effectiveUploadPatternList()) {
     const segments = raw.split('*');
     let cursor = 0;
     let ok = true;
@@ -289,7 +323,30 @@ browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
   if (msg.type === 'evaluate_policy') {
-    sendResponse({ result: evaluatePolicy(msg.context) });
+    let url = '';
+    try { url = (msg.context && msg.context.request && msg.context.request.url) || ''; } catch { /* ignore */ }
+    sendResponse({
+      result: evaluatePolicy(msg.context),
+      inCatalog: url ? urlMatchesUploadPattern(url) : false,
+      isAIService: url ? isAIServiceHost(url) : false,
+    });
+    return false;
+  }
+  if (msg.type === 'safari_upload_discovered') {
+    sendTelemetry({
+      type: 'upload_endpoint_discovered',
+      payload: {
+        url: msg.url,
+        hostname: msg.hostname,
+        path: msg.path,
+        file_count: msg.file_count,
+        file_types: msg.file_types,
+        total_bytes: msg.total_bytes,
+        suggested_pattern: msg.suggested_pattern,
+        browser: 'safari',
+      },
+    });
+    sendResponse({ ok: true });
     return false;
   }
   if (msg.type === 'safari_upload_blocked') {

@@ -104,6 +104,8 @@
       const result = resp && resp.result;
       const action = (result && result.matched && result.action) || 'allow';
       const policy = (result && result.policy) || '';
+      const inCatalog = !!(resp && resp.inCatalog);
+      const isAIService = !!(resp && resp.isAIService);
       window.postMessage({ type: 'cyberarmor:upload_decision', id: msg.id, action, policy }, '*');
       if (action === 'block_upload' && _shouldShowBanner(url)) {
         _showUploadBlockedBanner(url, policy);
@@ -114,6 +116,35 @@
           url, policy, file_count: files.length,
           file_names: files.map((f) => String(f.name || '')),
         }).catch(() => {});
+      } else if (!inCatalog && isAIService) {
+        // Discovery: upload passed through to an AI-service host we don't
+        // cover yet. Throttle per (host,path) for 1h so heavy sessions
+        // don't flood the server — mirrors the chromium bridge.
+        let pathKey = url;
+        let hostname = '';
+        let pathname = '';
+        try {
+          const u = new URL(url);
+          hostname = u.hostname; pathname = u.pathname;
+          pathKey = hostname + pathname;
+        } catch { /* ignore */ }
+        window._cyberarmorDiscSeen = window._cyberarmorDiscSeen || new Map();
+        const now = Date.now();
+        const prev = window._cyberarmorDiscSeen.get(pathKey);
+        if (!prev || now - prev > 60 * 60 * 1000) {
+          window._cyberarmorDiscSeen.set(pathKey, now);
+          const totalBytes = files.reduce((acc, f) => acc + (Number(f.size) || 0), 0);
+          browser.runtime.sendMessage({
+            type: 'safari_upload_discovered',
+            url,
+            hostname,
+            path: pathname,
+            file_count: files.length,
+            file_types: [...new Set(files.map((f) => String(f.type || '')).filter(Boolean))],
+            total_bytes: totalBytes,
+            suggested_pattern: pathKey,
+          }).catch(() => {});
+        }
       }
     }).catch(() => {
       // Failed eval → fail open so the page still works.

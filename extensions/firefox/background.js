@@ -76,8 +76,9 @@ function recordAuthStatus(authInfo, context) {
 browser.storage.sync.get(['cyberarmor_config', 'cyberarmor_policies']).then(data => {
   if (data.cyberarmor_config) config = { ...config, ...data.cyberarmor_config };
   if (data.cyberarmor_policies) policies = data.cyberarmor_policies;
-  browser.storage.local.get(['cyberarmor_last_auth_status']).then((localData) => {
+  browser.storage.local.get(['cyberarmor_last_auth_status', 'tenantUploadPatterns']).then((localData) => {
     if (localData.cyberarmor_last_auth_status) lastAuthStatus = localData.cyberarmor_last_auth_status;
+    if (Array.isArray(localData.tenantUploadPatterns)) tenantUploadPatterns = localData.tenantUploadPatterns;
     _ensureExtIdentity().finally(() => ensureBootstrapRedeemed().finally(() => startPolicySync()));
   });
 });
@@ -133,6 +134,10 @@ async function syncPolicies() {
       policies = await resp.json();
       browser.storage.local.set({ cyberarmor_policies: policies });
       console.log(`[CyberArmor] Synced ${policies.length} policies`);
+      // Refresh tenant-promoted upload patterns on the same cadence as
+      // policies so block_upload + discovery stays in lockstep with what
+      // the portal shows.
+      try { await syncTenantUploadPatterns(); } catch {}
       return { ok: true, count: policies.length };
     }
     const body = await resp.text().catch(() => '');
@@ -271,12 +276,50 @@ const AI_UPLOAD_PATTERNS = [
   "/api/files/upload",
 ];
 
+// Tenant-promoted patterns from /customer/upload-patterns/extras. Synced
+// at policy-sync cadence; persisted in browser.storage.local so a worker
+// idle/wake doesn't drop runtime coverage.
+let tenantUploadPatterns = [];
+
+async function syncTenantUploadPatterns() {
+  if (!config.controlPlaneUrl || !config.apiKey) return tenantUploadPatterns;
+  const url = `${config.controlPlaneUrl.replace(/\/$/, '')}/customer/upload-patterns/extras`;
+  try {
+    const auth = await CyberArmorPQCAuth.buildHeaders({
+      baseUrl: config.controlPlaneUrl,
+      apiKey: config.apiKey,
+      pqcEnabled: config.pqcAuthEnabled !== false,
+      strict: config.pqcAuthStrict === true,
+      headers: { 'Content-Type': 'application/json', 'x-tenant-id': config.tenantId || '' },
+    });
+    const resp = await fetch(url, { headers: auth.headers });
+    if (!resp.ok) return tenantUploadPatterns;
+    const data = await resp.json().catch(() => ({}));
+    const next = Array.isArray(data.patterns)
+      ? data.patterns.filter((p) => typeof p === 'string' && p.trim().length > 0)
+      : [];
+    tenantUploadPatterns = next;
+    browser.storage.local.set({ tenantUploadPatterns: next });
+    return next;
+  } catch {
+    return tenantUploadPatterns;
+  }
+}
+
+function effectiveUploadPatternList() {
+  // Tenant patterns are plain strings (no DNR syntax). Concat preserves
+  // built-in precedence — built-ins live in AI_UPLOAD_PATTERNS top of
+  // file, extras append. urlMatchesUploadPattern doesn't care about
+  // order since it returns true on first match, but keep deterministic.
+  return AI_UPLOAD_PATTERNS.concat(tenantUploadPatterns || []);
+}
+
 function urlMatchesUploadPattern(url) {
   if (!url) return false;
   let parsed;
   try { parsed = new URL(url); } catch { return false; }
   const hostPath = parsed.hostname + parsed.pathname;
-  for (const raw of AI_UPLOAD_PATTERNS) {
+  for (const raw of effectiveUploadPatternList()) {
     // Ordered-segment match: each * is a wildcard, every other segment
     // must appear in hostPath in order. No regex compilation needed.
     const segments = raw.split('*');
@@ -302,6 +345,43 @@ function _shouldShowBlockBanner(tabId, url) {
   if (prev && now - prev < 4000) return false;
   _recentUploadBlocks.set(key, now);
   return true;
+}
+
+// Per-(host,path) throttle for discovery emits — same 1h window the
+// chromium bridge uses, so a heavy session doesn't flood the server.
+const _recentDiscoveryEmits = new Map();
+function _shouldEmitDiscovery(hostpath) {
+  const now = Date.now();
+  const prev = _recentDiscoveryEmits.get(hostpath);
+  if (prev && now - prev < 60 * 60 * 1000) return false;
+  _recentDiscoveryEmits.set(hostpath, now);
+  return true;
+}
+
+// Heuristic: did this request carry multipart/form-data with at least one
+// file part? Firefox's requestBody.formData is a {key: [values]} dict;
+// file fields appear with empty string values, and the raw bytes live in
+// requestBody.raw. We don't decode raw, so the signal is: there's a
+// non-empty formData object AND at least one value is empty (file field).
+// Imperfect (text-only forms with empty inputs match too), but the
+// server-side aggregator is what an admin reviews — false positives are
+// triaged before promotion.
+function _looksLikeFileUpload(details) {
+  const body = details.requestBody;
+  if (!body) return false;
+  if (body.formData && typeof body.formData === 'object') {
+    for (const vals of Object.values(body.formData)) {
+      if (Array.isArray(vals)) {
+        for (const v of vals) {
+          if (typeof v === 'string' && v === '') return true;
+        }
+      }
+    }
+  }
+  if (Array.isArray(body.raw) && body.raw.length && body.raw.some((r) => r && r.bytes && r.bytes.byteLength > 256)) {
+    return true;
+  }
+  return false;
 }
 
 // Intercept every outgoing request:
@@ -363,6 +443,35 @@ browser.webRequest.onBeforeRequest.addListener(
           return { cancel: true };
         }
       } catch (e) { console.debug('[CyberArmor] block_upload evaluation error:', e); }
+    } else if (
+      AI_DOMAINS.has(parsedUrl.hostname)
+      && (details.method === 'POST' || details.method === 'PUT' || details.method === 'PATCH')
+      && _looksLikeFileUpload(details)
+    ) {
+      // Discovery: an upload to an AI-service host that the catalog
+      // doesn't know about. Surface it so the admin can promote.
+      const hostpath = parsedUrl.hostname + parsedUrl.pathname;
+      if (_shouldEmitDiscovery(hostpath)) {
+        let totalBytes = 0;
+        try {
+          if (Array.isArray(details.requestBody && details.requestBody.raw)) {
+            for (const r of details.requestBody.raw) {
+              if (r && r.bytes && r.bytes.byteLength) totalBytes += r.bytes.byteLength;
+            }
+          }
+        } catch { /* best-effort */ }
+        sendTelemetry({
+          type: 'upload_endpoint_discovered',
+          payload: {
+            url: details.url,
+            hostname: parsedUrl.hostname,
+            path: parsedUrl.pathname,
+            method: details.method,
+            total_bytes: totalBytes,
+            suggested_pattern: hostpath,
+          },
+        });
+      }
     }
 
     // --- General tenant policy evaluation ---
