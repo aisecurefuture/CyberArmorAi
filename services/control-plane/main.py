@@ -1469,6 +1469,80 @@ def _run_artifact_sync_pass(sync_fn) -> None:
                         row.tenant_id, provider, len(per_ref_summaries), total_obs)
 
 
+def _run_cloud_sync_pass(sync_fn) -> None:
+    """Cloud-collector equivalent of _run_artifact_sync_pass — walks
+    every tenant config row, resolves creds (OpenBao or JSONB
+    fallback), runs sync_cloud_source, ingests components."""
+    with SessionLocal() as db:
+        rows = (
+            db.query(TenantPortalConfig)
+            .filter(TenantPortalConfig.section == "abom-cloud-collector")
+            .all()
+        )
+        for row in rows:
+            cfg = _coerce_meta(row.config) or {}
+            if not isinstance(cfg, dict) or not cfg.get("enabled", True):
+                continue
+            regions = cfg.get("regions") or []
+            if not isinstance(regions, list) or not regions:
+                continue
+            provider = str(cfg.get("provider") or "aws")
+            creds = _resolve_cloud_creds(row.tenant_id, cfg)
+            if not creds.get("access_key_id") or not creds.get("secret_access_key"):
+                continue
+            try:
+                results = sync_fn(provider, creds, regions)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("cloud-sync scheduler tenant=%s provider=%s failed: %s",
+                               row.tenant_id, provider, exc)
+                continue
+            now = datetime.now(timezone.utc)
+            per_region_summaries = []
+            total_obs = 0
+            for source_id, components in results:
+                summary = {"source_id": source_id, "components": len(components), "ingested": 0, "skipped": 0}
+                for component in components:
+                    if not isinstance(component, dict):
+                        summary["skipped"] += 1
+                        continue
+                    try:
+                        comp_row, ikey = _abom_upsert_component(db, row.tenant_id, component, now)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("scheduler cloud upsert failed: %s", exc)
+                        summary["skipped"] += 1
+                        continue
+                    comp_row.observation_count = (comp_row.observation_count or 0) + 1
+                    db.add(ABOMObservation(
+                        tenant_id=row.tenant_id,
+                        component_id=comp_row.id,
+                        identity_key=ikey,
+                        collector="cloud-collector",
+                        collector_version="1.0",
+                        source_kind="cloud_resource",
+                        source_id=source_id,
+                        hostname=None,
+                        path=str(component.get("__path") or "")[:1024] or None,
+                        raw_properties=_encode_meta_for_db(component.get("properties") or {}),
+                        observed_at=now,
+                    ))
+                    summary["ingested"] += 1
+                db.commit()
+                total_obs += summary["ingested"]
+                per_region_summaries.append(summary)
+            cfg["last_synced_at"] = now.isoformat()
+            cfg["last_sync_summary"] = {
+                "regions": len(per_region_summaries),
+                "observations": total_obs,
+                "per_region": per_region_summaries,
+                "source": "scheduler",
+            }
+            row.config = _encode_meta_for_db(cfg)
+            row.updated_at = now
+            db.commit()
+            logger.info("cloud-sync scheduler tenant=%s provider=%s regions=%d observations=%d",
+                        row.tenant_id, provider, len(per_region_summaries), total_obs)
+
+
 def _start_repo_sync_scheduler() -> None:
     """Spawn the repo-sync daemon thread. Idempotent — repeat calls
     are no-ops so a reload-friendly process can re-trigger startup."""
@@ -1507,8 +1581,10 @@ def _run_repo_sync_pass() -> None:
     are slow, both want the same cadence, both produce A-BOM rows."""
     from repo_collector import sync_repos  # lazy import: same cold-start optimization as the inline handler
     from artifact_collector import sync_artifact_source
+    from cloud_collector import sync_cloud_source
 
     _run_artifact_sync_pass(sync_artifact_source)
+    _run_cloud_sync_pass(sync_cloud_source)
 
     with SessionLocal() as db:
         rows = (
@@ -5352,6 +5428,230 @@ def _resolve_repo_collector_token(tenant_id: str, cfg: Dict[str, Any]) -> str:
 
 
 # ── Artifact-repo collector (phase 4 — GHCR + JFrog) ──────────────────
+
+
+class CloudCollectorConfig(BaseModel):
+    """Tenant config for the cloud-inventory collector. AWS first;
+    GCP / Azure share the section with their own credential bag and
+    region/project list. Stored under TenantPortalConfig section
+    ``abom-cloud-collector``."""
+    provider: str = Field(default="aws", description="aws | gcp | azure")
+    # AWS credentials — write-only via the API (the GET handler
+    # redacts them). The non-secret pieces (regions, enabled flag) stay
+    # in the JSONB row alongside last_synced_at.
+    access_key_id: Optional[str] = None
+    secret_access_key: Optional[str] = None
+    session_token: Optional[str] = None
+    regions: List[str] = Field(default_factory=list)
+    enabled: bool = True
+
+
+def _cloud_collector_config(db: Session, tenant_id: str) -> Dict[str, Any]:
+    record = (
+        db.query(TenantPortalConfig)
+        .filter(
+            TenantPortalConfig.tenant_id == tenant_id,
+            TenantPortalConfig.section == "abom-cloud-collector",
+        )
+        .first()
+    )
+    if not record:
+        return {}
+    cfg = _coerce_meta(record.config) if hasattr(record, "config") else None
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def _save_cloud_collector_config(
+    db: Session, tenant_id: str, payload: Dict[str, Any], updated_by: str
+) -> Dict[str, Any]:
+    """Persist tenant cloud-collector config. The AWS access/secret/
+    session-token triplet is written to OpenBao as one JSON-encoded
+    secret (so a rotation only re-encrypts one path); falls back to
+    JSONB when vault is unreachable. The list of regions + enabled
+    flag stays in the JSONB row regardless."""
+    existing = _cloud_collector_config(db, tenant_id)
+    raw_access = payload.pop("access_key_id", None) if isinstance(payload, dict) else None
+    raw_secret = payload.pop("secret_access_key", None) if isinstance(payload, dict) else None
+    raw_session = payload.pop("session_token", None) if isinstance(payload, dict) else None
+    merged = {**existing, **{k: v for k, v in payload.items() if v is not None}}
+
+    # Treat any of the three triggering a secret update; missing fields
+    # preserve the prior secret bag rather than partial-zero-ing it.
+    if raw_access or raw_secret or raw_session:
+        secret_value = json.dumps({
+            "access_key_id": raw_access or "",
+            "secret_access_key": raw_secret or "",
+            "session_token": raw_session or "",
+        })
+        if _save_tenant_secret(tenant_id, "cloud-collector-aws", secret_value):
+            merged["creds_in_openbao"] = True
+            merged.pop("access_key_id", None)
+            merged.pop("secret_access_key", None)
+            merged.pop("session_token", None)
+        else:
+            merged["creds_in_openbao"] = False
+            if raw_access: merged["access_key_id"] = raw_access
+            if raw_secret: merged["secret_access_key"] = raw_secret
+            if raw_session: merged["session_token"] = raw_session
+    record = (
+        db.query(TenantPortalConfig)
+        .filter(
+            TenantPortalConfig.tenant_id == tenant_id,
+            TenantPortalConfig.section == "abom-cloud-collector",
+        )
+        .first()
+    )
+    now = datetime.now(timezone.utc)
+    if record:
+        record.config = _encode_meta_for_db(merged)
+        record.updated_by = updated_by
+        record.updated_at = now
+    else:
+        record = TenantPortalConfig(
+            tenant_id=tenant_id,
+            section="abom-cloud-collector",
+            config=_encode_meta_for_db(merged),
+            updated_by=updated_by,
+            updated_at=now,
+        )
+        db.add(record)
+    db.commit()
+    return merged
+
+
+def _resolve_cloud_creds(tenant_id: str, cfg: Dict[str, Any]) -> Dict[str, str]:
+    """Return {access_key_id, secret_access_key, session_token} from
+    OpenBao when ``creds_in_openbao`` is set; otherwise from the JSONB
+    row (dev fallback). Missing fields come back as empty strings so
+    sync_cloud_source can raise a clean error."""
+    if cfg.get("creds_in_openbao"):
+        raw = _load_tenant_secret(tenant_id, "cloud-collector-aws")
+        if raw:
+            try:
+                bag = json.loads(raw)
+                if isinstance(bag, dict):
+                    return {
+                        "access_key_id": str(bag.get("access_key_id") or ""),
+                        "secret_access_key": str(bag.get("secret_access_key") or ""),
+                        "session_token": str(bag.get("session_token") or ""),
+                    }
+            except (json.JSONDecodeError, ValueError):
+                logger.warning("cloud-collector openbao payload not JSON for tenant=%s", tenant_id)
+    return {
+        "access_key_id": str(cfg.get("access_key_id") or ""),
+        "secret_access_key": str(cfg.get("secret_access_key") or ""),
+        "session_token": str(cfg.get("session_token") or ""),
+    }
+
+
+@app.get("/customer/abom/cloud-config")
+def customer_abom_cloud_config_get(
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    db: Annotated[Session, Depends(get_db)],
+) -> Dict[str, Any]:
+    cfg = _cloud_collector_config(db, ctx.tenant_id)
+    creds_in_vault = bool(cfg.get("creds_in_openbao"))
+    has_local = bool(cfg.get("access_key_id"))
+    storage = "openbao" if creds_in_vault else ("postgres" if has_local else "unconfigured")
+    return {
+        "provider": cfg.get("provider", "aws"),
+        "regions": cfg.get("regions") or [],
+        "enabled": cfg.get("enabled", True),
+        "creds_configured": creds_in_vault or has_local,
+        "creds_storage": storage,
+        "last_synced_at": cfg.get("last_synced_at"),
+        "last_sync_summary": cfg.get("last_sync_summary"),
+    }
+
+
+@app.put("/customer/abom/cloud-config")
+def customer_abom_cloud_config_put(
+    payload: CloudCollectorConfig,
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> Dict[str, Any]:
+    merged = _save_cloud_collector_config(
+        db, ctx.tenant_id, payload.model_dump(), updated_by=ctx.email,
+    )
+    return {
+        "provider": merged.get("provider", "aws"),
+        "regions": merged.get("regions") or [],
+        "enabled": merged.get("enabled", True),
+        "creds_configured": bool(merged.get("creds_in_openbao") or merged.get("access_key_id")),
+    }
+
+
+@app.post("/customer/abom/cloud-sync")
+def customer_abom_cloud_sync(
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> Dict[str, Any]:
+    cfg = _cloud_collector_config(db, ctx.tenant_id)
+    if not cfg:
+        raise HTTPException(status_code=400, detail="cloud collector not configured")
+    if not cfg.get("enabled", True):
+        raise HTTPException(status_code=400, detail="cloud collector disabled")
+    regions = cfg.get("regions") or []
+    if not isinstance(regions, list) or not regions:
+        raise HTTPException(status_code=400, detail="no regions configured")
+    provider = str(cfg.get("provider") or "aws")
+    creds = _resolve_cloud_creds(ctx.tenant_id, cfg)
+    if not creds.get("access_key_id") or not creds.get("secret_access_key"):
+        raise HTTPException(status_code=400, detail="cloud credentials missing")
+
+    from cloud_collector import sync_cloud_source
+
+    now = datetime.now(timezone.utc)
+    try:
+        results = sync_cloud_source(provider, creds, regions)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("cloud-sync tenant=%s provider=%s", ctx.tenant_id, provider)
+        raise HTTPException(status_code=502, detail=f"{provider} sync failed: {exc.__class__.__name__}: {exc}")
+
+    summaries: List[Dict[str, Any]] = []
+    total_obs = 0
+    for source_id, components in results:
+        summary = {"source_id": source_id, "components": len(components), "ingested": 0, "skipped": 0}
+        for component in components:
+            if not isinstance(component, dict):
+                summary["skipped"] += 1
+                continue
+            try:
+                row, ikey = _abom_upsert_component(db, ctx.tenant_id, component, now)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("cloud-sync upsert failed: %s", exc)
+                summary["skipped"] += 1
+                continue
+            row.observation_count = (row.observation_count or 0) + 1
+            db.add(ABOMObservation(
+                tenant_id=ctx.tenant_id,
+                component_id=row.id,
+                identity_key=ikey,
+                collector="cloud-collector",
+                collector_version="1.0",
+                source_kind="cloud_resource",
+                source_id=source_id,
+                hostname=None,
+                path=str(component.get("__path") or "")[:1024] or None,
+                raw_properties=_encode_meta_for_db(component.get("properties") or {}),
+                observed_at=now,
+            ))
+            summary["ingested"] += 1
+        db.commit()
+        total_obs += summary["ingested"]
+        summaries.append(summary)
+
+    summary_payload = {
+        "regions": len(summaries),
+        "observations": total_obs,
+        "per_region": summaries,
+    }
+    cfg["last_synced_at"] = now.isoformat()
+    cfg["last_sync_summary"] = summary_payload
+    _save_cloud_collector_config(db, ctx.tenant_id, cfg, updated_by=ctx.email)
+    return {"status": "ok", "synced_at": now.isoformat(), "summary": summary_payload}
 
 
 class ArtifactCollectorConfig(BaseModel):

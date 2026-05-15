@@ -3043,6 +3043,19 @@ async function viewBillOfMaterials() {
   let artifactSyncMessage = null;
   let artifactSyncing = false;
   let artifactEdit = { provider: "ghcr", refsText: "", token: "", baseUrl: "", enabled: true };
+  // Cloud-collector state.
+  let cloudConfig = null;
+  let cloudSaveMessage = null;
+  let cloudSyncMessage = null;
+  let cloudSyncing = false;
+  let cloudEdit = {
+    provider: "aws",
+    regionsText: "us-east-1\nus-west-2",
+    accessKeyId: "",
+    secretAccessKey: "",
+    sessionToken: "",
+    enabled: true,
+  };
   let components = [];
   let total = 0;
   let coverage = [];
@@ -3143,6 +3156,66 @@ async function viewBillOfMaterials() {
       artifactEdit.token = "";
     } catch (err) {
       artifactConfig = { error: err.message || "fetch failed" };
+    }
+    try {
+      cloudConfig = await api("/api/customer/abom/cloud-config");
+      cloudEdit.provider = cloudConfig.provider || "aws";
+      cloudEdit.regionsText = (cloudConfig.regions || []).join("\n");
+      cloudEdit.enabled = cloudConfig.enabled !== false;
+      cloudEdit.accessKeyId = "";
+      cloudEdit.secretAccessKey = "";
+      cloudEdit.sessionToken = "";
+    } catch (err) {
+      cloudConfig = { error: err.message || "fetch failed" };
+    }
+  }
+
+  async function saveCloudConfig() {
+    cloudSaveMessage = null;
+    const regions = cloudEdit.regionsText
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const body = {
+      provider: cloudEdit.provider || "aws",
+      regions,
+      enabled: !!cloudEdit.enabled,
+      access_key_id: cloudEdit.accessKeyId || null,
+      secret_access_key: cloudEdit.secretAccessKey || null,
+      session_token: cloudEdit.sessionToken || null,
+    };
+    try {
+      await api("/api/customer/abom/cloud-config", { method: "PUT", body: JSON.stringify(body) });
+      cloudEdit.accessKeyId = "";
+      cloudEdit.secretAccessKey = "";
+      cloudEdit.sessionToken = "";
+      cloudSaveMessage = { kind: "ok", text: `Saved ${regions.length} region${regions.length === 1 ? "" : "s"}.` };
+      await loadRepoConfig();
+    } catch (err) {
+      cloudSaveMessage = { kind: "err", text: err.message || "save failed" };
+    }
+  }
+
+  async function runCloudSync() {
+    cloudSyncMessage = null;
+    cloudSyncing = true;
+    render();
+    try {
+      const resp = await api("/api/customer/abom/cloud-sync", { method: "POST" });
+      const summary = resp && resp.summary;
+      const regCount = summary && summary.regions || 0;
+      const obsCount = summary && summary.observations || 0;
+      cloudSyncMessage = {
+        kind: "ok",
+        text: `Synced ${regCount} region${regCount === 1 ? "" : "s"} — ${obsCount} resource${obsCount === 1 ? "" : "s"} ingested.`,
+      };
+      await loadRepoConfig();
+      await load();
+    } catch (err) {
+      cloudSyncMessage = { kind: "err", text: err.message || "sync failed" };
+    } finally {
+      cloudSyncing = false;
+      render();
     }
   }
 
@@ -3554,6 +3627,96 @@ async function viewBillOfMaterials() {
         </div>
       `) : ""}
       ${renderArtifactCard()}
+      ${renderCloudCard()}
+    `;
+  }
+
+  function renderCloudCard() {
+    const isAdmin = session.role === "tenant_admin";
+    if (!cloudConfig) {
+      return `<div class="rounded-2xl border border-slate-800 bg-slate-950 p-4 text-sm text-slate-400">Loading cloud sources…</div>`;
+    }
+    if (cloudConfig.error) {
+      return `<div class="rounded-2xl border border-rose-900 bg-rose-950/30 p-3 text-sm text-rose-200">${esc(cloudConfig.error)}</div>`;
+    }
+    const last = cloudConfig.last_synced_at
+      ? new Date(cloudConfig.last_synced_at).toLocaleString()
+      : "—";
+    const summary = cloudConfig.last_sync_summary || null;
+    const perRegion = summary && Array.isArray(summary.per_region) ? summary.per_region : [];
+
+    return `
+      ${card(`
+        <div class="flex flex-wrap items-baseline justify-between gap-2">
+          <div>
+            <div class="font-semibold">Cloud inventory</div>
+            <p class="mt-1 text-xs text-slate-500">Every resource AWS Resource Groups Tagging API knows about: EC2, EKS, S3, Lambda, RDS, etc. Components land with <span class="font-mono">source_kind=cloud_resource</span> and <span class="font-mono">manufacturer=Amazon Web Services</span>.</p>
+          </div>
+          <div class="flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+            <span>Last synced: ${esc(last)}</span>
+            ${summary ? `<span>· ${summary.regions} region${summary.regions === 1 ? "" : "s"} → ${summary.observations} ingested${summary.source ? ` (${esc(String(summary.source))})` : ""}</span>` : ""}
+            ${cloudConfig.creds_storage === "openbao"
+              ? `<span class="rounded-full bg-emerald-500/20 px-2 py-0.5 text-emerald-200">🔒 creds in OpenBao</span>`
+              : cloudConfig.creds_storage === "postgres"
+              ? `<span class="rounded-full bg-amber-500/20 px-2 py-0.5 text-amber-200">⚠ creds in Postgres (dev fallback)</span>`
+              : ""}
+          </div>
+        </div>
+        <div class="mt-3 grid gap-3 md:grid-cols-2">
+          <label class="text-xs text-slate-400">Provider
+            <select id="cloudProvider" class="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm" ${isAdmin ? "" : "disabled"}>
+              <option value="aws" ${cloudEdit.provider === "aws" ? "selected" : ""}>AWS</option>
+              <option value="gcp" disabled>GCP (next slice)</option>
+              <option value="azure" disabled>Azure (next slice)</option>
+            </select>
+          </label>
+          <label class="text-xs text-slate-400">AWS access key ID
+            <input id="cloudAccessKey" type="text" placeholder="${cloudConfig.creds_configured ? "•••••••• (configured — leave blank to keep)" : "AKIA…"}" class="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm font-mono" ${isAdmin ? "" : "disabled"} value="${esc(cloudEdit.accessKeyId)}" />
+          </label>
+          <label class="text-xs text-slate-400">AWS secret access key
+            <input id="cloudSecretKey" type="password" autocomplete="off" placeholder="${cloudConfig.creds_configured ? "•••••••• (configured)" : "secret"}" class="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm font-mono" ${isAdmin ? "" : "disabled"} value="${esc(cloudEdit.secretAccessKey)}" />
+          </label>
+          <label class="text-xs text-slate-400">AWS session token (optional, for STS-assumed roles)
+            <input id="cloudSessionToken" type="password" autocomplete="off" class="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm font-mono" ${isAdmin ? "" : "disabled"} value="${esc(cloudEdit.sessionToken)}" />
+          </label>
+          <label class="text-xs text-slate-400 md:col-span-2">Regions (one per line)
+            <textarea id="cloudRegions" rows="4" class="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-xs font-mono" ${isAdmin ? "" : "disabled"} placeholder="us-east-1\nus-west-2\neu-west-1">${esc(cloudEdit.regionsText)}</textarea>
+            <span class="block mt-1 text-[10px] text-slate-500">Each region is one Resource Groups Tagging API call. Required IAM permissions: <span class="font-mono">tag:GetResources</span> + <span class="font-mono">sts:GetCallerIdentity</span>.</span>
+          </label>
+          <label class="text-xs text-slate-400 flex items-center gap-2 md:col-span-2">
+            <input id="cloudEnabled" type="checkbox" ${cloudEdit.enabled ? "checked" : ""} ${isAdmin ? "" : "disabled"} /> Enabled
+          </label>
+        </div>
+        ${isAdmin ? `
+          <div class="mt-4 flex flex-wrap items-center gap-2">
+            <button id="cloudSave" type="button" class="rounded-xl bg-cyan-500 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-400">Save</button>
+            <button id="cloudSync" type="button" class="rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-200 hover:bg-slate-800 disabled:opacity-50" ${(!cloudConfig.creds_configured || cloudSyncing) ? "disabled" : ""}>${cloudSyncing ? "Syncing…" : "Sync now"}</button>
+            ${cloudSaveMessage ? `<span class="text-xs ${cloudSaveMessage.kind === "ok" ? "text-emerald-300" : "text-rose-300"}">${esc(cloudSaveMessage.text)}</span>` : ""}
+            ${cloudSyncMessage ? `<span class="text-xs ${cloudSyncMessage.kind === "ok" ? "text-emerald-300" : "text-rose-300"}">${esc(cloudSyncMessage.text)}</span>` : ""}
+          </div>
+        ` : ""}
+      `)}
+      ${perRegion.length > 0 ? card(`
+        <div class="font-semibold">Per-region summary (last cloud sync)</div>
+        <div class="mt-3 overflow-x-auto">
+          <table class="w-full text-left text-sm">
+            <thead class="text-[10px] uppercase tracking-wider text-slate-500"><tr>
+              <th class="px-3 py-2">Source ID</th>
+              <th class="px-3 py-2">Resources</th>
+              <th class="px-3 py-2">Observations</th>
+              <th class="px-3 py-2">Skipped</th>
+            </tr></thead>
+            <tbody>
+              ${perRegion.map((r) => `<tr class="border-t border-slate-800">
+                <td class="px-3 py-2 font-mono text-xs">${esc(r.source_id || "")}</td>
+                <td class="px-3 py-2 text-xs tabular-nums">${esc(String(r.components ?? 0))}</td>
+                <td class="px-3 py-2 text-xs tabular-nums">${esc(String(r.ingested ?? 0))}</td>
+                <td class="px-3 py-2 text-xs tabular-nums ${(r.skipped || 0) > 0 ? "text-amber-300" : ""}">${esc(String(r.skipped ?? 0))}</td>
+              </tr>`).join("")}
+            </tbody>
+          </table>
+        </div>
+      `) : ""}
     `;
   }
 
@@ -4042,6 +4205,22 @@ async function viewBillOfMaterials() {
     if (artEnabled) artEnabled.addEventListener("change", () => { artifactEdit.enabled = artEnabled.checked; });
     const artSave = $("#artifactSave"); if (artSave) artSave.addEventListener("click", async () => { await saveArtifactConfig(); render(); });
     const artSync = $("#artifactSync"); if (artSync) artSync.addEventListener("click", runArtifactSync);
+
+    // Cloud collector wiring.
+    const cldProv = $("#cloudProvider");
+    if (cldProv) cldProv.addEventListener("change", () => { cloudEdit.provider = cldProv.value; });
+    const cldAk = $("#cloudAccessKey");
+    if (cldAk) cldAk.addEventListener("input", () => { cloudEdit.accessKeyId = cldAk.value; });
+    const cldSk = $("#cloudSecretKey");
+    if (cldSk) cldSk.addEventListener("input", () => { cloudEdit.secretAccessKey = cldSk.value; });
+    const cldSt = $("#cloudSessionToken");
+    if (cldSt) cldSt.addEventListener("input", () => { cloudEdit.sessionToken = cldSt.value; });
+    const cldRegions = $("#cloudRegions");
+    if (cldRegions) cldRegions.addEventListener("input", () => { cloudEdit.regionsText = cldRegions.value; });
+    const cldEnabled = $("#cloudEnabled");
+    if (cldEnabled) cldEnabled.addEventListener("change", () => { cloudEdit.enabled = cldEnabled.checked; });
+    const cldSave = $("#cloudSave"); if (cldSave) cldSave.addEventListener("click", async () => { await saveCloudConfig(); render(); });
+    const cldSync = $("#cloudSync"); if (cldSync) cldSync.addEventListener("click", runCloudSync);
 
     // IOC tab: textarea writes into the local buffer; Scan POSTs to the
     // backend; Download / Clear are pure client-side.
