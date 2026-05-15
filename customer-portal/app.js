@@ -3420,7 +3420,12 @@ async function viewBillOfMaterials() {
           </div>
           <div class="flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
             <span>Last synced: ${esc(last)}</span>
-            ${lastSummary ? `<span>· ${lastSummary.repos} repo${lastSummary.repos === 1 ? "" : "s"} → ${lastSummary.observations} ingested</span>` : ""}
+            ${lastSummary ? `<span>· ${lastSummary.repos} repo${lastSummary.repos === 1 ? "" : "s"} → ${lastSummary.observations} ingested${lastSummary.source ? ` (${esc(String(lastSummary.source))})` : ""}</span>` : ""}
+            ${repoConfig.token_storage === "openbao"
+              ? `<span class="rounded-full bg-emerald-500/20 px-2 py-0.5 text-emerald-200">🔒 token in OpenBao</span>`
+              : repoConfig.token_storage === "postgres"
+              ? `<span class="rounded-full bg-amber-500/20 px-2 py-0.5 text-amber-200" title="OpenBao not reachable when this token was saved — set OPENBAO_ADDR + OPENBAO_TOKEN on control-plane and re-save to migrate.">⚠ token in Postgres (dev fallback)</span>`
+              : ``}
           </div>
         </div>
       `)}
@@ -3431,8 +3436,8 @@ async function viewBillOfMaterials() {
           <label class="text-xs text-slate-400">Provider
             <select id="repoProvider" class="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm" ${isAdmin ? "" : "disabled"}>
               <option value="github" ${repoEdit.provider === "github" ? "selected" : ""}>GitHub</option>
-              <option value="gitlab" disabled>GitLab (coming soon)</option>
-              <option value="azure_devops" disabled>Azure DevOps (coming soon)</option>
+              <option value="gitlab" ${repoEdit.provider === "gitlab" ? "selected" : ""}>GitLab</option>
+              <option value="azure_devops" ${repoEdit.provider === "azure_devops" ? "selected" : ""}>Azure DevOps</option>
             </select>
           </label>
           <label class="text-xs text-slate-400">Personal access token

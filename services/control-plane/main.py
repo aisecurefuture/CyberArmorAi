@@ -46,6 +46,7 @@ from uuid import uuid4
 
 import httpx
 from cyberarmor_core.crypto import build_auth_headers, get_public_key_info, resolve_api_key_header
+from cyberarmor_core.openbao import OpenBaoClient, OpenBaoConfig, OpenBaoError
 
 # In-memory incident store for demo traceability (tenant_id -> request_id -> incident dict)
 _INCIDENTS: Dict[str, Dict[str, Dict[str, Any]]] = {}
@@ -1374,6 +1375,134 @@ def on_startup():
     wait_for_db()
     init_db()
     _preflight_upstream_dns()
+    _start_repo_sync_scheduler()
+
+
+# ── Repo-collector background scheduler ───────────────────────────────
+#
+# Same pattern as the endpoint-agent's policy-sync loop: kick a daemon
+# thread on startup that walks every tenant with a configured
+# repo-collector and runs sync_repos every ``ABOM_REPO_SYNC_INTERVAL``
+# (default 6h). Errors per tenant log but don't kill the loop.
+#
+# Threading rather than asyncio because the underlying sync_repos uses
+# blocking httpx.Client calls and we don't want to block the FastAPI
+# event loop on a 200-manifest scan.
+
+ABOM_REPO_SYNC_INTERVAL_S = int(os.getenv("ABOM_REPO_SYNC_INTERVAL_S", str(6 * 60 * 60)))
+ABOM_REPO_SYNC_ENABLED = os.getenv("ABOM_REPO_SYNC_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
+_repo_sync_thread_started = False
+
+
+def _start_repo_sync_scheduler() -> None:
+    """Spawn the repo-sync daemon thread. Idempotent — repeat calls
+    are no-ops so a reload-friendly process can re-trigger startup."""
+    global _repo_sync_thread_started
+    if not ABOM_REPO_SYNC_ENABLED:
+        logger.info("repo-sync scheduler disabled via ABOM_REPO_SYNC_ENABLED")
+        return
+    if _repo_sync_thread_started:
+        return
+    _repo_sync_thread_started = True
+    import threading
+    threading.Thread(
+        target=_repo_sync_loop,
+        name="cyberarmor-abom-repo-sync",
+        daemon=True,
+    ).start()
+    logger.info("repo-sync scheduler started (interval=%ds)", ABOM_REPO_SYNC_INTERVAL_S)
+
+
+def _repo_sync_loop() -> None:
+    import time as _time
+    # Stagger the first run a bit so we don't pile on a cold-boot DB.
+    _time.sleep(30)
+    while True:
+        try:
+            _run_repo_sync_pass()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("repo-sync scheduler iteration failed: %s", exc)
+        _time.sleep(max(60, ABOM_REPO_SYNC_INTERVAL_S))
+
+
+def _run_repo_sync_pass() -> None:
+    """One pass: find every tenant with a configured + enabled
+    repo-collector and run sync_repos for each."""
+    from repo_collector import sync_repos  # lazy import: same cold-start optimization as the inline handler
+
+    with SessionLocal() as db:
+        rows = (
+            db.query(TenantPortalConfig)
+            .filter(TenantPortalConfig.section == "abom-repo-collector")
+            .all()
+        )
+        for row in rows:
+            cfg = _coerce_meta(row.config) or {}
+            if not isinstance(cfg, dict):
+                continue
+            if not cfg.get("enabled", True):
+                continue
+            repos = cfg.get("repos") or []
+            if not isinstance(repos, list) or not repos:
+                continue
+            provider = str(cfg.get("provider") or "github")
+            token = _resolve_repo_collector_token(row.tenant_id, cfg)
+            if not token:
+                continue
+            try:
+                results = sync_repos(provider, token, repos)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("repo-sync %s tenant=%s failed: %s", provider, row.tenant_id, exc)
+                continue
+            now = datetime.now(timezone.utc)
+            per_repo_summaries: List[Dict[str, Any]] = []
+            total_components = total_observations = 0
+            for source_id, components in results:
+                repo_summary = {"source_id": source_id, "components": len(components), "ingested": 0, "skipped": 0}
+                for component in components:
+                    if not isinstance(component, dict):
+                        repo_summary["skipped"] += 1
+                        continue
+                    try:
+                        comp_row, ikey = _abom_upsert_component(db, row.tenant_id, component, now)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("scheduler upsert failed: %s", exc)
+                        repo_summary["skipped"] += 1
+                        continue
+                    comp_row.observation_count = (comp_row.observation_count or 0) + 1
+                    db.add(ABOMObservation(
+                        tenant_id=row.tenant_id,
+                        component_id=comp_row.id,
+                        identity_key=ikey,
+                        collector="repo-collector",
+                        collector_version="1.0",
+                        source_kind="repo",
+                        source_id=source_id,
+                        hostname=None,
+                        path=str(component.get("__path") or "")[:1024] or None,
+                        raw_properties=_encode_meta_for_db(component.get("properties") or {}),
+                        observed_at=now,
+                    ))
+                    repo_summary["ingested"] += 1
+                db.commit()
+                total_components += repo_summary["components"]
+                total_observations += repo_summary["ingested"]
+                per_repo_summaries.append(repo_summary)
+            cfg["last_synced_at"] = now.isoformat()
+            cfg["last_sync_summary"] = {
+                "repos": len(per_repo_summaries),
+                "components": total_components,
+                "observations": total_observations,
+                "per_repo": per_repo_summaries,
+                "source": "scheduler",
+            }
+            row.config = _encode_meta_for_db(cfg)
+            row.updated_at = now
+            db.commit()
+            logger.info(
+                "repo-sync scheduler tenant=%s repos=%d observations=%d",
+                row.tenant_id, len(per_repo_summaries), total_observations,
+            )
 
 
 @app.middleware("http")
@@ -4959,6 +5088,91 @@ def agent_abom_ingest(
     )
 
 
+# ── OpenBao integration for tenant secrets ────────────────────────────
+#
+# Repo-collector PATs (and any future tenant secrets the control-plane
+# needs to handle directly) live in OpenBao at
+# ``cyberarmor-kv/data/tenants/{tenant_id}/abom/repo-collector``.
+#
+# We hit OpenBao straight rather than going through the secrets-service
+# to avoid an extra network hop on every repo-sync; the shared
+# OpenBaoClient owns transport / auth / retry. When OpenBao isn't
+# configured (dev / single-node demos) the helpers transparently fall
+# back to JSONB storage in TenantPortalConfig so the existing flow
+# keeps working. We log loudly when that happens.
+
+_OPENBAO_ADDR = os.getenv("OPENBAO_ADDR", "")
+_OPENBAO_TOKEN = os.getenv("OPENBAO_TOKEN", "")
+_OPENBAO_NAMESPACE = os.getenv("OPENBAO_NAMESPACE")
+_OPENBAO_KV_MOUNT = os.getenv("OPENBAO_KV_MOUNT", "cyberarmor-kv")
+_OPENBAO_TIMEOUT = float(os.getenv("OPENBAO_TIMEOUT_SECONDS", "5"))
+
+
+def _openbao_client_or_none() -> Optional[OpenBaoClient]:
+    """Return a configured OpenBaoClient, or None if OpenBao isn't
+    available. Callers must handle the None path."""
+    if not _OPENBAO_ADDR or not _OPENBAO_TOKEN:
+        return None
+    return OpenBaoClient(OpenBaoConfig(
+        addr=_OPENBAO_ADDR,
+        token=_OPENBAO_TOKEN,
+        namespace=_OPENBAO_NAMESPACE,
+        kv_mount=_OPENBAO_KV_MOUNT,
+        timeout_seconds=_OPENBAO_TIMEOUT,
+    ))
+
+
+def _tenant_secret_path(tenant_id: str, key: str) -> str:
+    return f"tenants/{tenant_id}/abom/{key}"
+
+
+def _save_tenant_secret(tenant_id: str, key: str, value: str) -> bool:
+    """Persist a tenant-scoped secret. Returns True if it went into
+    OpenBao, False if we fell back to in-band storage (caller should
+    handle by stashing in the JSONB config row)."""
+    client = _openbao_client_or_none()
+    if client is None:
+        logger.warning("OpenBao not configured — repo-collector token will be stored in Postgres (dev fallback)")
+        return False
+    try:
+        client.kv_write(
+            _tenant_secret_path(tenant_id, key),
+            {"value": value, "updated_at": datetime.now(timezone.utc).isoformat()},
+        )
+        return True
+    except OpenBaoError as exc:
+        logger.warning("OpenBao write failed for tenant=%s key=%s: %s — falling back to Postgres", tenant_id, key, exc)
+        return False
+
+
+def _load_tenant_secret(tenant_id: str, key: str) -> Optional[str]:
+    """Read a tenant-scoped secret from OpenBao. Returns None if
+    OpenBao is unconfigured or the path doesn't exist; callers fall
+    back to checking the JSONB config row."""
+    client = _openbao_client_or_none()
+    if client is None:
+        return None
+    try:
+        data = client.kv_read_secret(_tenant_secret_path(tenant_id, key))
+    except OpenBaoError as exc:
+        # 404s come back as 400-class errors; log at debug since "not
+        # found" is the common case before a tenant has configured.
+        logger.debug("OpenBao read miss for tenant=%s key=%s: %s", tenant_id, key, exc)
+        return None
+    val = data.get("value") if isinstance(data, dict) else None
+    return str(val) if val else None
+
+
+def _delete_tenant_secret(tenant_id: str, key: str) -> None:
+    client = _openbao_client_or_none()
+    if client is None:
+        return
+    try:
+        client.kv_delete_latest(_tenant_secret_path(tenant_id, key))
+    except OpenBaoError as exc:
+        logger.warning("OpenBao delete failed for tenant=%s key=%s: %s", tenant_id, key, exc)
+
+
 class RepoCollectorConfig(BaseModel):
     """Tenant config for the repo-collector. Stored under
     TenantPortalConfig section ``abom-repo-collector``."""
@@ -4988,18 +5202,38 @@ def _repo_collector_config(db: Session, tenant_id: str) -> Dict[str, Any]:
 def _save_repo_collector_config(
     db: Session, tenant_id: str, payload: Dict[str, Any], updated_by: str
 ) -> Dict[str, Any]:
-    """Upsert the tenant's repo-collector config. Token is preserved
-    when the caller omits it (the portal sends ``token: None`` after the
-    operator types it once and reloads)."""
+    """Upsert the tenant's repo-collector config.
+
+    PAT handling:
+      - When the caller supplies a token, write it to OpenBao under
+        ``tenants/{tenant_id}/abom/repo-collector-token`` and DROP it
+        from the JSONB row entirely.
+      - When the caller omits the token, keep whatever's already in
+        OpenBao (or JSONB on the fallback path).
+      - Track ``token_in_openbao`` on the JSONB row so the GET path
+        can answer ``token_configured`` without a Vault round-trip.
+    """
     existing = _repo_collector_config(db, tenant_id)
-    merged = {**existing, **{k: v for k, v in payload.items() if v is not None or k != "token"}}
-    # If the caller explicitly set token to "" or None, keep the prior
-    # value so a reload that re-PUTs the config doesn't clobber the PAT.
-    if not payload.get("token"):
-        if existing.get("token"):
-            merged["token"] = existing["token"]
-        else:
+    # Strip token before merging — it never belongs in the JSONB row
+    # when OpenBao is healthy.
+    raw_token = payload.pop("token", None) if isinstance(payload, dict) else None
+    merged = {**existing, **{k: v for k, v in payload.items() if v is not None}}
+
+    if raw_token:
+        if _save_tenant_secret(tenant_id, "repo-collector-token", raw_token):
+            merged["token_in_openbao"] = True
             merged.pop("token", None)
+        else:
+            # OpenBao unavailable — fall back so the demo single-node
+            # path still works.
+            merged["token_in_openbao"] = False
+            merged["token"] = raw_token
+    else:
+        # Caller didn't supply one — preserve prior state.
+        if "token" in existing:
+            merged["token"] = existing["token"]
+            merged.setdefault("token_in_openbao", False)
+
     record = (
         db.query(TenantPortalConfig)
         .filter(
@@ -5026,20 +5260,41 @@ def _save_repo_collector_config(
     return merged
 
 
+def _resolve_repo_collector_token(tenant_id: str, cfg: Dict[str, Any]) -> str:
+    """Get the PAT from OpenBao when ``token_in_openbao`` is set;
+    otherwise fall back to the JSONB ``token`` field (dev path)."""
+    if cfg.get("token_in_openbao"):
+        secret = _load_tenant_secret(tenant_id, "repo-collector-token")
+        if secret:
+            return secret
+        logger.warning("repo-collector token marked in_openbao but vault read returned empty for tenant=%s", tenant_id)
+    return str(cfg.get("token") or "")
+
+
 @app.get("/customer/abom/repo-config")
 def customer_abom_repo_config_get(
     ctx: Annotated[CustomerContext, Depends(get_customer_context)],
     db: Annotated[Session, Depends(get_db)],
 ) -> Dict[str, Any]:
     """Return the tenant repo-collector config with the PAT redacted.
-    A token-present hint lets the UI render "configured" without ever
-    handing the secret back."""
+
+    ``token_configured`` is true when *either* OpenBao holds the
+    secret or the JSONB row has one (dev fallback). ``token_storage``
+    tells the operator which path is in use so they can move secrets
+    out of Postgres before going to prod.
+    """
     cfg = _repo_collector_config(db, ctx.tenant_id)
+    token_in_vault = bool(cfg.get("token_in_openbao"))
+    has_local = bool(cfg.get("token"))
+    token_storage = (
+        "openbao" if token_in_vault else ("postgres" if has_local else "unconfigured")
+    )
     return {
         "provider": cfg.get("provider", "github"),
         "repos": cfg.get("repos") or [],
         "enabled": cfg.get("enabled", True),
-        "token_configured": bool(cfg.get("token")),
+        "token_configured": token_in_vault or has_local,
+        "token_storage": token_storage,
         "last_synced_at": cfg.get("last_synced_at"),
         "last_sync_summary": cfg.get("last_sync_summary"),
     }
@@ -5077,15 +5332,17 @@ def customer_abom_repo_sync(
     (FastAPI background task or a dedicated worker).
     """
     cfg = _repo_collector_config(db, ctx.tenant_id)
-    if not cfg or not cfg.get("token"):
-        raise HTTPException(status_code=400, detail="repo collector not configured (token required)")
+    if not cfg:
+        raise HTTPException(status_code=400, detail="repo collector not configured")
     if not cfg.get("enabled", True):
         raise HTTPException(status_code=400, detail="repo collector disabled")
     repos = cfg.get("repos") or []
     if not isinstance(repos, list) or not repos:
         raise HTTPException(status_code=400, detail="no repos configured")
     provider = str(cfg.get("provider") or "github")
-    token = str(cfg.get("token") or "")
+    token = _resolve_repo_collector_token(ctx.tenant_id, cfg)
+    if not token:
+        raise HTTPException(status_code=400, detail="repo collector token missing")
 
     from repo_collector import sync_repos, GitHubError  # lazy: keeps cold-start fast
 

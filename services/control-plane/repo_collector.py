@@ -373,19 +373,238 @@ def sync_repos(provider: str, token: str, repos: List[str]) -> List[Tuple[str, L
     """Sync every configured repo for one provider. Returns a list of
     (source_id, components) tuples so the caller can persist with the
     standard A-BOM upsert path."""
-    if provider != "github":
+    if provider not in ("github", "gitlab", "azure_devops"):
         raise ValueError(f"unsupported provider: {provider}")
     if not token:
         raise ValueError("missing token")
+    sync_fn = {
+        "github": sync_github_repo,
+        "gitlab": sync_gitlab_repo,
+        "azure_devops": sync_azure_repo,
+    }[provider]
     out: List[Tuple[str, List[Dict[str, Any]]]] = []
     for repo in repos:
         repo = repo.strip()
         if not repo or "/" not in repo:
             continue
         try:
-            source_id, components = sync_github_repo(token, repo)
-        except GitHubError as exc:
+            source_id, components = sync_fn(token, repo)
+        except (GitHubError, GitLabError, AzureRepoError) as exc:
             logger.warning("repo sync %s failed: %s", repo, exc)
             continue
         out.append((source_id, components))
     return out
+
+
+# ── GitLab client ──────────────────────────────────────────────────────
+
+
+class GitLabError(Exception):
+    pass
+
+
+def _gitlab_headers(token: str) -> Dict[str, str]:
+    return {
+        "PRIVATE-TOKEN": token,
+        "Accept": "application/json",
+        "User-Agent": "CyberArmor-A-BOM/1.0",
+    }
+
+
+def _gitlab_project_id(token: str, project_path: str, *, api_base: str = "https://gitlab.com/api/v4") -> str:
+    """GitLab keys most APIs on numeric project ID *or* URL-encoded
+    path. URL-encoded is fine for everything we need so we just
+    quote-plus the slash."""
+    return project_path.replace("/", "%2F")
+
+
+def sync_gitlab_repo(token: str, project_path: str, *, api_base: str = "https://gitlab.com/api/v4") -> Tuple[str, List[Dict[str, Any]]]:
+    """Sync one GitLab project. ``project_path`` is ``group/subgroup/project``
+    (URL-encoded for the API). Uses the repository tree endpoint with
+    ``recursive=true`` and pagination."""
+    pid = _gitlab_project_id(token, project_path)
+    # Pull project info for the default branch.
+    info_url = f"{api_base.rstrip('/')}/projects/{pid}"
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            resp = client.get(info_url, headers=_gitlab_headers(token))
+            if resp.status_code == 404:
+                raise GitLabError(f"gitlab project not found or token lacks access: {project_path}")
+            if resp.status_code == 401:
+                raise GitLabError("gitlab token unauthorized")
+            resp.raise_for_status()
+            branch = str(resp.json().get("default_branch") or DEFAULT_BRANCH_FALLBACK)
+    except httpx.HTTPError as exc:
+        raise GitLabError(f"gitlab project lookup failed: {exc}") from exc
+
+    source_id = f"gitlab:{project_path}@{branch}"
+
+    # Walk the tree. GitLab paginates at 100 per page; budget cap kicks in.
+    tree_url = f"{api_base.rstrip('/')}/projects/{pid}/repository/tree"
+    targets: List[Tuple[str, str]] = []
+    page = 1
+    try:
+        with httpx.Client(timeout=20.0) as client:
+            while page < 50:  # hard ceiling
+                resp = client.get(
+                    tree_url,
+                    headers=_gitlab_headers(token),
+                    params={"recursive": "true", "per_page": "100", "page": str(page), "ref": branch},
+                )
+                if resp.status_code == 404:
+                    break
+                resp.raise_for_status()
+                entries = resp.json() or []
+                if not isinstance(entries, list) or not entries:
+                    break
+                for entry in entries:
+                    if not isinstance(entry, dict) or entry.get("type") != "blob":
+                        continue
+                    path = str(entry.get("path") or "")
+                    base = path.rsplit("/", 1)[-1]
+                    if base in _MANIFEST_PARSERS:
+                        targets.append((path, base))
+                        if len(targets) >= GITHUB_API_BUDGET:
+                            break
+                if len(targets) >= GITHUB_API_BUDGET or len(entries) < 100:
+                    break
+                page += 1
+    except httpx.HTTPError as exc:
+        raise GitLabError(f"gitlab tree fetch failed for {project_path}@{branch}: {exc}") from exc
+
+    # Fetch + parse each manifest.
+    components: List[Dict[str, Any]] = []
+    file_url = f"{api_base.rstrip('/')}/projects/{pid}/repository/files"
+    for path, base in targets:
+        url = f"{file_url}/{path.replace('/', '%2F')}/raw"
+        try:
+            with httpx.Client(timeout=15.0) as client:
+                resp = client.get(url, headers=_gitlab_headers(token), params={"ref": branch})
+                if resp.status_code == 404:
+                    continue
+                resp.raise_for_status()
+                text = resp.text or ""
+        except httpx.HTTPError as exc:
+            logger.warning("skip gitlab %s:%s — %s", project_path, path, exc)
+            continue
+        try:
+            parsed = _MANIFEST_PARSERS[base](text, repo_label=source_id) or []
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("manifest parse failed %s:%s — %s", project_path, path, exc)
+            continue
+        for component in parsed:
+            component["__path"] = f"{project_path}:{path}"
+            component.setdefault("properties", []).append(
+                {"name": "cyberarmor:manifest_path", "value": path}
+            )
+        components.extend(parsed)
+
+    logger.info("gitlab sync %s@%s → manifests=%d components=%d",
+                project_path, branch, len(targets), len(components))
+    return source_id, components
+
+
+# ── Azure DevOps client ────────────────────────────────────────────────
+
+
+class AzureRepoError(Exception):
+    pass
+
+
+def _azure_auth(token: str) -> httpx.BasicAuth:
+    """Azure DevOps PAT is sent as Basic auth with the PAT as the
+    password and an empty username. httpx handles the encoding."""
+    return httpx.BasicAuth("", token)
+
+
+def sync_azure_repo(token: str, project_path: str, *, api_base: str = "https://dev.azure.com") -> Tuple[str, List[Dict[str, Any]]]:
+    """Sync one Azure DevOps repo. ``project_path`` shape:
+    ``org/project/repo``. Walks the default-branch items endpoint."""
+    parts = project_path.split("/")
+    if len(parts) != 3:
+        raise AzureRepoError(
+            f"azure repo path must be org/project/repo (got: {project_path})"
+        )
+    org, project, repo = parts
+    auth = _azure_auth(token)
+    base = f"{api_base.rstrip('/')}/{org}/{project}/_apis/git/repositories/{repo}"
+
+    # Default branch (drop the refs/heads/ prefix).
+    try:
+        with httpx.Client(timeout=15.0, auth=auth) as client:
+            resp = client.get(f"{base}?api-version=7.1")
+            if resp.status_code == 404:
+                raise AzureRepoError(f"azure repo not found or token lacks access: {project_path}")
+            if resp.status_code in (401, 203):
+                raise AzureRepoError("azure devops token unauthorized")
+            resp.raise_for_status()
+            default_ref = str(resp.json().get("defaultBranch") or "")
+            branch = default_ref.removeprefix("refs/heads/") or DEFAULT_BRANCH_FALLBACK
+    except httpx.HTTPError as exc:
+        raise AzureRepoError(f"azure default-branch lookup failed: {exc}") from exc
+
+    source_id = f"azure:{project_path}@{branch}"
+
+    # Recursive items list. ``recursionLevel=Full`` gives us every file.
+    items_url = f"{base}/items"
+    try:
+        with httpx.Client(timeout=30.0, auth=auth) as client:
+            resp = client.get(items_url, params={
+                "scopePath": "/",
+                "recursionLevel": "Full",
+                "versionDescriptor.version": branch,
+                "api-version": "7.1",
+            })
+            if resp.status_code == 404:
+                return source_id, []
+            resp.raise_for_status()
+            items = resp.json().get("value") or []
+    except httpx.HTTPError as exc:
+        raise AzureRepoError(f"azure tree fetch failed for {project_path}@{branch}: {exc}") from exc
+
+    targets: List[Tuple[str, str]] = []
+    for item in items:
+        if not isinstance(item, dict) or item.get("isFolder"):
+            continue
+        path = str(item.get("path") or "").lstrip("/")
+        if not path:
+            continue
+        basename = path.rsplit("/", 1)[-1]
+        if basename in _MANIFEST_PARSERS:
+            targets.append((path, basename))
+            if len(targets) >= GITHUB_API_BUDGET:
+                break
+
+    components: List[Dict[str, Any]] = []
+    for path, basename in targets:
+        try:
+            with httpx.Client(timeout=15.0, auth=auth) as client:
+                resp = client.get(items_url, params={
+                    "path": "/" + path,
+                    "$format": "octetStream",
+                    "versionDescriptor.version": branch,
+                    "api-version": "7.1",
+                    "includeContent": "true",
+                })
+                if resp.status_code == 404:
+                    continue
+                resp.raise_for_status()
+                text = resp.text or ""
+        except httpx.HTTPError as exc:
+            logger.warning("skip azure %s:%s — %s", project_path, path, exc)
+            continue
+        try:
+            parsed = _MANIFEST_PARSERS[basename](text, repo_label=source_id) or []
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("manifest parse failed %s:%s — %s", project_path, path, exc)
+            continue
+        for component in parsed:
+            component["__path"] = f"{project_path}:{path}"
+            component.setdefault("properties", []).append(
+                {"name": "cyberarmor:manifest_path", "value": path}
+            )
+        components.extend(parsed)
+
+    logger.info("azure sync %s@%s → manifests=%d components=%d",
+                project_path, branch, len(targets), len(components))
+    return source_id, components

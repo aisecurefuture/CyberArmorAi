@@ -7,12 +7,15 @@ import * as vscode from 'vscode';
 import { AIMonitor } from './ai-monitor';
 import { DLPScanner } from './dlp-scanner';
 import { PolicyClient } from './policy-client';
+import { runWorkspaceSweep, startPeriodicSweep } from './abom-scanner';
 
 let aiMonitor: AIMonitor;
 let dlpScanner: DLPScanner;
 let policyClient: PolicyClient;
 let statusBarItem: vscode.StatusBarItem;
 let authLogChannel: vscode.OutputChannel;
+let abomSweepTimer: NodeJS.Timeout | undefined;
+let abomLogChannel: vscode.OutputChannel | undefined;
 
 function getCyberArmorConfig(): vscode.WorkspaceConfiguration {
   return vscode.workspace.getConfiguration('cyberarmor');
@@ -84,6 +87,13 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('cyberarmor.showStatus', () => showStatusPanel()),
     vscode.commands.registerCommand('cyberarmor.scanFile', () => scanCurrentFile()),
     vscode.commands.registerCommand('cyberarmor.scanWorkspace', () => scanWorkspace()),
+    vscode.commands.registerCommand('cyberarmor.abomSweep', async () => {
+      abomLogChannel = abomLogChannel || vscode.window.createOutputChannel('CyberArmor — A-BOM');
+      abomLogChannel.show(true);
+      abomLogChannel.appendLine(`[${new Date().toISOString()}] manual A-BOM sweep requested`);
+      await runWorkspaceSweep(abomLogChannel);
+      vscode.window.showInformationMessage('CyberArmor: workspace A-BOM sweep complete');
+    }),
     vscode.commands.registerCommand('cyberarmor.redactFindings', () => redactCurrentFile()),
     vscode.commands.registerCommand('cyberarmor.toggleMonitoring', () => toggleMonitoring()),
     vscode.commands.registerCommand('cyberarmor.redeemBootstrapToken', async () => {
@@ -157,11 +167,23 @@ export async function activate(context: vscode.ExtensionContext) {
   // Policy sync
   policyClient.startSync(config.get('syncIntervalSeconds', 60));
 
+  // A-BOM workspace sweep — sends installed manifests to the
+  // control-plane so the BOM picks up "what dev is working on" with
+  // source_kind=ide_workspace. Skipped when no apiKey is configured.
+  if (config.get('abomEnabled', true)) {
+    abomLogChannel = vscode.window.createOutputChannel('CyberArmor — A-BOM');
+    abomSweepTimer = startPeriodicSweep(abomLogChannel);
+  }
+
   vscode.window.showInformationMessage('CyberArmor activated');
 }
 
 export function deactivate() {
   policyClient?.stopSync();
+  if (abomSweepTimer) {
+    clearInterval(abomSweepTimer);
+    abomSweepTimer = undefined;
+  }
   console.log('CyberArmor deactivated');
 }
 

@@ -57,6 +57,10 @@
       {
         "command": "cyberarmor.redeemBootstrapToken",
         "title": "CyberArmor: Redeem Bootstrap Token"
+      },
+      {
+        "command": "cyberarmor.abomSweep",
+        "title": "CyberArmor: Send Workspace A-BOM to Control Plane"
       }
     ],
     "configuration": {
@@ -128,6 +132,16 @@
           "type": "boolean",
           "default": true,
           "description": "Scan clipboard content for sensitive data on paste"
+        },
+        "cyberarmor.abomEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Periodically scan the workspace for manifest files (package.json / requirements.txt / Cargo.toml / go.mod) and ship a CycloneDX A-BOM to the control plane"
+        },
+        "cyberarmor.abomSweepIntervalMs": {
+          "type": "number",
+          "default": 1800000,
+          "description": "Milliseconds between automatic A-BOM workspace sweeps (default 30 min, minimum 60 s)"
         },
         "cyberarmor.gitPreCommitHook": {
           "type": "boolean",
