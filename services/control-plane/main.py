@@ -1394,6 +1394,81 @@ ABOM_REPO_SYNC_ENABLED = os.getenv("ABOM_REPO_SYNC_ENABLED", "true").strip().low
 _repo_sync_thread_started = False
 
 
+def _run_artifact_sync_pass(sync_fn) -> None:
+    """Walk every tenant with an enabled artifact-collector and run
+    sync_artifact_source. Mirrors the repo path; broken out so the
+    same scheduler thread can drive both sections without nesting."""
+    with SessionLocal() as db:
+        rows = (
+            db.query(TenantPortalConfig)
+            .filter(TenantPortalConfig.section == "abom-artifact-collector")
+            .all()
+        )
+        for row in rows:
+            cfg = _coerce_meta(row.config) or {}
+            if not isinstance(cfg, dict) or not cfg.get("enabled", True):
+                continue
+            refs = cfg.get("refs") or []
+            if not isinstance(refs, list) or not refs:
+                continue
+            provider = str(cfg.get("provider") or "ghcr")
+            base_url = str(cfg.get("base_url") or "")
+            token = _resolve_artifact_collector_token(row.tenant_id, cfg)
+            if not token:
+                continue
+            try:
+                results = sync_fn(provider, token, refs, base_url=base_url)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("artifact-sync scheduler tenant=%s provider=%s failed: %s",
+                               row.tenant_id, provider, exc)
+                continue
+            now = datetime.now(timezone.utc)
+            per_ref_summaries = []
+            total_obs = 0
+            for source_id, components in results:
+                repo_summary = {"source_id": source_id, "components": len(components), "ingested": 0, "skipped": 0}
+                for component in components:
+                    if not isinstance(component, dict):
+                        repo_summary["skipped"] += 1
+                        continue
+                    try:
+                        comp_row, ikey = _abom_upsert_component(db, row.tenant_id, component, now)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("scheduler artifact upsert failed: %s", exc)
+                        repo_summary["skipped"] += 1
+                        continue
+                    comp_row.observation_count = (comp_row.observation_count or 0) + 1
+                    db.add(ABOMObservation(
+                        tenant_id=row.tenant_id,
+                        component_id=comp_row.id,
+                        identity_key=ikey,
+                        collector="artifact-collector",
+                        collector_version="1.0",
+                        source_kind="container",
+                        source_id=source_id,
+                        hostname=None,
+                        path=str(component.get("__path") or "")[:1024] or None,
+                        raw_properties=_encode_meta_for_db(component.get("properties") or {}),
+                        observed_at=now,
+                    ))
+                    repo_summary["ingested"] += 1
+                db.commit()
+                total_obs += repo_summary["ingested"]
+                per_ref_summaries.append(repo_summary)
+            cfg["last_synced_at"] = now.isoformat()
+            cfg["last_sync_summary"] = {
+                "refs": len(per_ref_summaries),
+                "observations": total_obs,
+                "per_ref": per_ref_summaries,
+                "source": "scheduler",
+            }
+            row.config = _encode_meta_for_db(cfg)
+            row.updated_at = now
+            db.commit()
+            logger.info("artifact-sync scheduler tenant=%s provider=%s refs=%d observations=%d",
+                        row.tenant_id, provider, len(per_ref_summaries), total_obs)
+
+
 def _start_repo_sync_scheduler() -> None:
     """Spawn the repo-sync daemon thread. Idempotent — repeat calls
     are no-ops so a reload-friendly process can re-trigger startup."""
@@ -1427,8 +1502,13 @@ def _repo_sync_loop() -> None:
 
 def _run_repo_sync_pass() -> None:
     """One pass: find every tenant with a configured + enabled
-    repo-collector and run sync_repos for each."""
+    repo-collector OR artifact-collector and run the appropriate sync.
+    Two sections in one pass to keep the scheduler thread simple — both
+    are slow, both want the same cadence, both produce A-BOM rows."""
     from repo_collector import sync_repos  # lazy import: same cold-start optimization as the inline handler
+    from artifact_collector import sync_artifact_source
+
+    _run_artifact_sync_pass(sync_artifact_source)
 
     with SessionLocal() as db:
         rows = (
@@ -5269,6 +5349,213 @@ def _resolve_repo_collector_token(tenant_id: str, cfg: Dict[str, Any]) -> str:
             return secret
         logger.warning("repo-collector token marked in_openbao but vault read returned empty for tenant=%s", tenant_id)
     return str(cfg.get("token") or "")
+
+
+# ── Artifact-repo collector (phase 4 — GHCR + JFrog) ──────────────────
+
+
+class ArtifactCollectorConfig(BaseModel):
+    """Tenant config for an artifact-repo collector (GHCR / JFrog).
+    Stored under TenantPortalConfig section ``abom-artifact-collector``."""
+    provider: str = Field(default="ghcr", description="ghcr | jfrog")
+    token: Optional[str] = Field(default=None, description="PAT / API token (write-only)")
+    base_url: Optional[str] = Field(default=None, description="JFrog only — Artifactory host URL")
+    refs: List[str] = Field(default_factory=list, description="ghcr:org/img, jfrog:repo_name, etc.")
+    enabled: bool = True
+
+
+def _artifact_collector_config(db: Session, tenant_id: str) -> Dict[str, Any]:
+    record = (
+        db.query(TenantPortalConfig)
+        .filter(
+            TenantPortalConfig.tenant_id == tenant_id,
+            TenantPortalConfig.section == "abom-artifact-collector",
+        )
+        .first()
+    )
+    if not record:
+        return {}
+    cfg = _coerce_meta(record.config) if hasattr(record, "config") else None
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def _save_artifact_collector_config(
+    db: Session, tenant_id: str, payload: Dict[str, Any], updated_by: str
+) -> Dict[str, Any]:
+    existing = _artifact_collector_config(db, tenant_id)
+    raw_token = payload.pop("token", None) if isinstance(payload, dict) else None
+    merged = {**existing, **{k: v for k, v in payload.items() if v is not None}}
+
+    if raw_token:
+        if _save_tenant_secret(tenant_id, "artifact-collector-token", raw_token):
+            merged["token_in_openbao"] = True
+            merged.pop("token", None)
+        else:
+            merged["token_in_openbao"] = False
+            merged["token"] = raw_token
+    else:
+        if "token" in existing:
+            merged["token"] = existing["token"]
+            merged.setdefault("token_in_openbao", False)
+
+    record = (
+        db.query(TenantPortalConfig)
+        .filter(
+            TenantPortalConfig.tenant_id == tenant_id,
+            TenantPortalConfig.section == "abom-artifact-collector",
+        )
+        .first()
+    )
+    now = datetime.now(timezone.utc)
+    if record:
+        record.config = _encode_meta_for_db(merged)
+        record.updated_by = updated_by
+        record.updated_at = now
+    else:
+        record = TenantPortalConfig(
+            tenant_id=tenant_id,
+            section="abom-artifact-collector",
+            config=_encode_meta_for_db(merged),
+            updated_by=updated_by,
+            updated_at=now,
+        )
+        db.add(record)
+    db.commit()
+    return merged
+
+
+def _resolve_artifact_collector_token(tenant_id: str, cfg: Dict[str, Any]) -> str:
+    if cfg.get("token_in_openbao"):
+        secret = _load_tenant_secret(tenant_id, "artifact-collector-token")
+        if secret:
+            return secret
+        logger.warning("artifact-collector token marked in_openbao but vault read empty for tenant=%s", tenant_id)
+    return str(cfg.get("token") or "")
+
+
+@app.get("/customer/abom/artifact-config")
+def customer_abom_artifact_config_get(
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    db: Annotated[Session, Depends(get_db)],
+) -> Dict[str, Any]:
+    cfg = _artifact_collector_config(db, ctx.tenant_id)
+    token_in_vault = bool(cfg.get("token_in_openbao"))
+    has_local = bool(cfg.get("token"))
+    token_storage = (
+        "openbao" if token_in_vault else ("postgres" if has_local else "unconfigured")
+    )
+    return {
+        "provider": cfg.get("provider", "ghcr"),
+        "base_url": cfg.get("base_url", ""),
+        "refs": cfg.get("refs") or [],
+        "enabled": cfg.get("enabled", True),
+        "token_configured": token_in_vault or has_local,
+        "token_storage": token_storage,
+        "last_synced_at": cfg.get("last_synced_at"),
+        "last_sync_summary": cfg.get("last_sync_summary"),
+    }
+
+
+@app.put("/customer/abom/artifact-config")
+def customer_abom_artifact_config_put(
+    payload: ArtifactCollectorConfig,
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> Dict[str, Any]:
+    merged = _save_artifact_collector_config(
+        db, ctx.tenant_id, payload.model_dump(), updated_by=ctx.email,
+    )
+    return {
+        "provider": merged.get("provider", "ghcr"),
+        "base_url": merged.get("base_url", ""),
+        "refs": merged.get("refs") or [],
+        "enabled": merged.get("enabled", True),
+        "token_configured": bool(merged.get("token_in_openbao") or merged.get("token")),
+    }
+
+
+@app.post("/customer/abom/artifact-sync")
+def customer_abom_artifact_sync(
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> Dict[str, Any]:
+    """Trigger a one-shot artifact-repo sweep using the stored config."""
+    cfg = _artifact_collector_config(db, ctx.tenant_id)
+    if not cfg:
+        raise HTTPException(status_code=400, detail="artifact collector not configured")
+    if not cfg.get("enabled", True):
+        raise HTTPException(status_code=400, detail="artifact collector disabled")
+    refs = cfg.get("refs") or []
+    if not isinstance(refs, list) or not refs:
+        raise HTTPException(status_code=400, detail="no refs configured")
+    provider = str(cfg.get("provider") or "ghcr")
+    base_url = str(cfg.get("base_url") or "")
+    token = _resolve_artifact_collector_token(ctx.tenant_id, cfg)
+    if not token:
+        raise HTTPException(status_code=400, detail="artifact collector token missing")
+
+    from artifact_collector import sync_artifact_source
+
+    now = datetime.now(timezone.utc)
+    try:
+        results = sync_artifact_source(provider, token, refs, base_url=base_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("artifact-sync tenant=%s provider=%s", ctx.tenant_id, provider)
+        raise HTTPException(status_code=502, detail=f"{provider} sync failed: {exc.__class__.__name__}: {exc}")
+
+    summaries: List[Dict[str, Any]] = []
+    total_obs = 0
+    for source_id, components in results:
+        repo_summary = {
+            "source_id": source_id,
+            "components": len(components),
+            "ingested": 0,
+            "skipped": 0,
+        }
+        for component in components:
+            if not isinstance(component, dict):
+                repo_summary["skipped"] += 1
+                continue
+            try:
+                row, ikey = _abom_upsert_component(db, ctx.tenant_id, component, now)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("artifact-sync upsert failed: %s", exc)
+                repo_summary["skipped"] += 1
+                continue
+            row.observation_count = (row.observation_count or 0) + 1
+            db.add(ABOMObservation(
+                tenant_id=ctx.tenant_id,
+                component_id=row.id,
+                identity_key=ikey,
+                collector="artifact-collector",
+                collector_version="1.0",
+                source_kind="container",
+                source_id=source_id,
+                hostname=None,
+                path=str(component.get("__path") or "")[:1024] or None,
+                raw_properties=_encode_meta_for_db(component.get("properties") or {}),
+                observed_at=now,
+            ))
+            repo_summary["ingested"] += 1
+        db.commit()
+        total_obs += repo_summary["ingested"]
+        summaries.append(repo_summary)
+
+    summary_payload = {
+        "refs": len(summaries),
+        "observations": total_obs,
+        "per_ref": summaries,
+    }
+    cfg["last_synced_at"] = now.isoformat()
+    cfg["last_sync_summary"] = summary_payload
+    _save_artifact_collector_config(db, ctx.tenant_id, cfg, updated_by=ctx.email)
+    return {
+        "status": "ok",
+        "synced_at": now.isoformat(),
+        "summary": summary_payload,
+    }
 
 
 @app.get("/customer/abom/repo-config")

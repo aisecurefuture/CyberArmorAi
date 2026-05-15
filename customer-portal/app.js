@@ -3035,6 +3035,14 @@ async function viewBillOfMaterials() {
   let iocResult = null;
   let iocBusy = false;
   let iocError = null;
+  // Artifact-collector state — same shape as the repo collector,
+  // separate buffer so the operator can configure GHCR + GitHub repos
+  // independently.
+  let artifactConfig = null;
+  let artifactSaveMessage = null;
+  let artifactSyncMessage = null;
+  let artifactSyncing = false;
+  let artifactEdit = { provider: "ghcr", refsText: "", token: "", baseUrl: "", enabled: true };
   let components = [];
   let total = 0;
   let coverage = [];
@@ -3123,6 +3131,64 @@ async function viewBillOfMaterials() {
       repoEdit.token = ""; // empty means "keep prior server-side"
     } catch (err) {
       repoConfig = { error: err.message || "fetch failed" };
+    }
+    // Pull the artifact config in parallel so the Sources tab shows
+    // both cards at once.
+    try {
+      artifactConfig = await api("/api/customer/abom/artifact-config");
+      artifactEdit.provider = artifactConfig.provider || "ghcr";
+      artifactEdit.refsText = (artifactConfig.refs || []).join("\n");
+      artifactEdit.baseUrl = artifactConfig.base_url || "";
+      artifactEdit.enabled = artifactConfig.enabled !== false;
+      artifactEdit.token = "";
+    } catch (err) {
+      artifactConfig = { error: err.message || "fetch failed" };
+    }
+  }
+
+  async function saveArtifactConfig() {
+    artifactSaveMessage = null;
+    const refs = artifactEdit.refsText
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const body = {
+      provider: artifactEdit.provider || "ghcr",
+      refs,
+      base_url: artifactEdit.baseUrl || null,
+      enabled: !!artifactEdit.enabled,
+      token: artifactEdit.token ? artifactEdit.token : null,
+    };
+    try {
+      await api("/api/customer/abom/artifact-config", { method: "PUT", body: JSON.stringify(body) });
+      artifactEdit.token = "";
+      artifactSaveMessage = { kind: "ok", text: `Saved ${refs.length} ref${refs.length === 1 ? "" : "s"}.` };
+      await loadRepoConfig();
+    } catch (err) {
+      artifactSaveMessage = { kind: "err", text: err.message || "save failed" };
+    }
+  }
+
+  async function runArtifactSync() {
+    artifactSyncMessage = null;
+    artifactSyncing = true;
+    render();
+    try {
+      const resp = await api("/api/customer/abom/artifact-sync", { method: "POST" });
+      const summary = resp && resp.summary;
+      const refCount = summary && summary.refs || 0;
+      const obsCount = summary && summary.observations || 0;
+      artifactSyncMessage = {
+        kind: "ok",
+        text: `Synced ${refCount} ref${refCount === 1 ? "" : "s"} — ${obsCount} observation${obsCount === 1 ? "" : "s"} ingested. (Dedup may roll these up into fewer distinct components.)`,
+      };
+      await loadRepoConfig();
+      await load();
+    } catch (err) {
+      artifactSyncMessage = { kind: "err", text: err.message || "sync failed" };
+    } finally {
+      artifactSyncing = false;
+      render();
     }
   }
 
@@ -3478,6 +3544,100 @@ async function viewBillOfMaterials() {
             </tr></thead>
             <tbody>
               ${perRepo.map((r) => `<tr class="border-t border-slate-800">
+                <td class="px-3 py-2 font-mono text-xs">${esc(r.source_id || "")}</td>
+                <td class="px-3 py-2 text-xs tabular-nums">${esc(String(r.components ?? 0))}</td>
+                <td class="px-3 py-2 text-xs tabular-nums">${esc(String(r.ingested ?? 0))}</td>
+                <td class="px-3 py-2 text-xs tabular-nums ${(r.skipped || 0) > 0 ? "text-amber-300" : ""}">${esc(String(r.skipped ?? 0))}</td>
+              </tr>`).join("")}
+            </tbody>
+          </table>
+        </div>
+      `) : ""}
+      ${renderArtifactCard()}
+    `;
+  }
+
+  function renderArtifactCard() {
+    const isAdmin = session.role === "tenant_admin";
+    if (!artifactConfig) {
+      return `<div class="rounded-2xl border border-slate-800 bg-slate-950 p-4 text-sm text-slate-400">Loading artifact sources…</div>`;
+    }
+    if (artifactConfig.error) {
+      return `<div class="rounded-2xl border border-rose-900 bg-rose-950/30 p-3 text-sm text-rose-200">${esc(artifactConfig.error)}</div>`;
+    }
+    const last = artifactConfig.last_synced_at
+      ? new Date(artifactConfig.last_synced_at).toLocaleString()
+      : "—";
+    const summary = artifactConfig.last_sync_summary || null;
+    const perRef = summary && Array.isArray(summary.per_ref) ? summary.per_ref : [];
+    const provider = artifactEdit.provider || "ghcr";
+    const refPlaceholder = provider === "ghcr"
+      ? "ghcr:my-org/api-server\nghcr:my-org/*\nghcr:my-user/cli:type=user"
+      : provider === "jfrog"
+      ? "jfrog:docker-local\njfrog:npm-prod"
+      : "";
+
+    return `
+      ${card(`
+        <div class="flex flex-wrap items-baseline justify-between gap-2">
+          <div>
+            <div class="font-semibold">Artifact registries</div>
+            <p class="mt-1 text-xs text-slate-500">Container images and binary artifacts land in the BOM with <span class="font-mono">source_kind=container</span>. Same library that's in a repo manifest, an endpoint install, and an image layer collapses to one component with three observations.</p>
+          </div>
+          <div class="flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+            <span>Last synced: ${esc(last)}</span>
+            ${summary ? `<span>· ${summary.refs} ref${summary.refs === 1 ? "" : "s"} → ${summary.observations} ingested${summary.source ? ` (${esc(String(summary.source))})` : ""}</span>` : ""}
+            ${artifactConfig.token_storage === "openbao"
+              ? `<span class="rounded-full bg-emerald-500/20 px-2 py-0.5 text-emerald-200">🔒 token in OpenBao</span>`
+              : artifactConfig.token_storage === "postgres"
+              ? `<span class="rounded-full bg-amber-500/20 px-2 py-0.5 text-amber-200">⚠ token in Postgres (dev fallback)</span>`
+              : ""}
+          </div>
+        </div>
+        <div class="mt-3 grid gap-3 md:grid-cols-2">
+          <label class="text-xs text-slate-400">Provider
+            <select id="artifactProvider" class="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm" ${isAdmin ? "" : "disabled"}>
+              <option value="ghcr" ${provider === "ghcr" ? "selected" : ""}>GitHub Container Registry</option>
+              <option value="jfrog" ${provider === "jfrog" ? "selected" : ""}>JFrog Artifactory</option>
+            </select>
+          </label>
+          <label class="text-xs text-slate-400">${provider === "ghcr" ? "GitHub PAT (read:packages)" : "JFrog access token"}
+            <input id="artifactToken" type="password" autocomplete="off" placeholder="${artifactConfig.token_configured ? "•••••••• (configured — leave blank to keep)" : "token"}" class="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm font-mono" ${isAdmin ? "" : "disabled"} value="${esc(artifactEdit.token)}" />
+          </label>
+          ${provider === "jfrog" ? `
+            <label class="text-xs text-slate-400 md:col-span-2">Artifactory base URL
+              <input id="artifactBaseUrl" type="text" placeholder="https://acme.jfrog.io/artifactory" class="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm font-mono" ${isAdmin ? "" : "disabled"} value="${esc(artifactEdit.baseUrl || "")}" />
+            </label>
+          ` : ""}
+          <label class="text-xs text-slate-400 md:col-span-2">Refs (one per line)
+            <textarea id="artifactRefs" rows="6" class="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-xs font-mono" ${isAdmin ? "" : "disabled"} placeholder="${esc(refPlaceholder)}">${esc(artifactEdit.refsText)}</textarea>
+            <span class="block mt-1 text-[10px] text-slate-500">${provider === "ghcr" ? "Use <span class=\"font-mono\">ghcr:owner/*</span> to fan out to every package the owner publishes." : "Each entry is one Artifactory repo name. Layout is auto-detected."}</span>
+          </label>
+          <label class="text-xs text-slate-400 flex items-center gap-2 md:col-span-2">
+            <input id="artifactEnabled" type="checkbox" ${artifactEdit.enabled ? "checked" : ""} ${isAdmin ? "" : "disabled"} /> Enabled
+          </label>
+        </div>
+        ${isAdmin ? `
+          <div class="mt-4 flex flex-wrap items-center gap-2">
+            <button id="artifactSave" type="button" class="rounded-xl bg-cyan-500 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-400">Save</button>
+            <button id="artifactSync" type="button" class="rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-200 hover:bg-slate-800 disabled:opacity-50" ${(!artifactConfig.token_configured || artifactSyncing) ? "disabled" : ""}>${artifactSyncing ? "Syncing…" : "Sync now"}</button>
+            ${artifactSaveMessage ? `<span class="text-xs ${artifactSaveMessage.kind === "ok" ? "text-emerald-300" : "text-rose-300"}">${esc(artifactSaveMessage.text)}</span>` : ""}
+            ${artifactSyncMessage ? `<span class="text-xs ${artifactSyncMessage.kind === "ok" ? "text-emerald-300" : "text-rose-300"}">${esc(artifactSyncMessage.text)}</span>` : ""}
+          </div>
+        ` : ""}
+      `)}
+      ${perRef.length > 0 ? card(`
+        <div class="font-semibold">Per-ref summary (last artifact sync)</div>
+        <div class="mt-3 overflow-x-auto">
+          <table class="w-full text-left text-sm">
+            <thead class="text-[10px] uppercase tracking-wider text-slate-500"><tr>
+              <th class="px-3 py-2">Source ID</th>
+              <th class="px-3 py-2">Artifacts</th>
+              <th class="px-3 py-2">Observations</th>
+              <th class="px-3 py-2">Skipped</th>
+            </tr></thead>
+            <tbody>
+              ${perRef.map((r) => `<tr class="border-t border-slate-800">
                 <td class="px-3 py-2 font-mono text-xs">${esc(r.source_id || "")}</td>
                 <td class="px-3 py-2 text-xs tabular-nums">${esc(String(r.components ?? 0))}</td>
                 <td class="px-3 py-2 text-xs tabular-nums">${esc(String(r.ingested ?? 0))}</td>
@@ -3863,6 +4023,25 @@ async function viewBillOfMaterials() {
     if (enabledChk) enabledChk.addEventListener("change", () => { repoEdit.enabled = enabledChk.checked; });
     const saveBtn = $("#repoSave"); if (saveBtn) saveBtn.addEventListener("click", async () => { await saveRepoConfig(); render(); });
     const syncBtn = $("#repoSync"); if (syncBtn) syncBtn.addEventListener("click", runRepoSync);
+
+    // Artifact-collector form wiring — same pattern as repo collector.
+    const artProv = $("#artifactProvider");
+    if (artProv) artProv.addEventListener("change", () => {
+      artifactEdit.provider = artProv.value;
+      // Switching to/from jfrog changes the form layout (base URL),
+      // so re-render rather than patching in place.
+      render();
+    });
+    const artToken = $("#artifactToken");
+    if (artToken) artToken.addEventListener("input", () => { artifactEdit.token = artToken.value; });
+    const artBase = $("#artifactBaseUrl");
+    if (artBase) artBase.addEventListener("input", () => { artifactEdit.baseUrl = artBase.value; });
+    const artRefs = $("#artifactRefs");
+    if (artRefs) artRefs.addEventListener("input", () => { artifactEdit.refsText = artRefs.value; });
+    const artEnabled = $("#artifactEnabled");
+    if (artEnabled) artEnabled.addEventListener("change", () => { artifactEdit.enabled = artEnabled.checked; });
+    const artSave = $("#artifactSave"); if (artSave) artSave.addEventListener("click", async () => { await saveArtifactConfig(); render(); });
+    const artSync = $("#artifactSync"); if (artSync) artSync.addEventListener("click", runArtifactSync);
 
     // IOC tab: textarea writes into the local buffer; Scan POSTs to the
     // backend; Download / Clear are pure client-side.
