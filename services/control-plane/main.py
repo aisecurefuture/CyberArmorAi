@@ -5355,6 +5355,14 @@ def customer_abom_repo_sync(
         results = sync_repos(provider, token, repos)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001 — convert provider crashes to a
+        # 502 so the portal shows "sync failed" instead of a generic 500.
+        # The provider clients (GitHubError / GitLabError / AzureRepoError)
+        # are already caught per-repo inside sync_repos; this catch is for
+        # anything more exotic — JSON decode, unexpected transport,
+        # OpenBao reaching out of scope, etc.
+        logger.exception("repo-sync provider call failed tenant=%s provider=%s", ctx.tenant_id, provider)
+        raise HTTPException(status_code=502, detail=f"{provider} sync failed: {exc.__class__.__name__}: {exc}")
 
     for source_id, components in results:
         repo_summary = {
