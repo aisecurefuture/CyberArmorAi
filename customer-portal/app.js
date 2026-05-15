@@ -3158,10 +3158,16 @@ async function viewBillOfMaterials() {
       const resp = await api("/api/customer/abom/repo-sync", { method: "POST" });
       const summary = resp && resp.summary;
       const repoCount = summary && summary.repos || 0;
-      const compCount = summary && summary.components || 0;
+      // "observations" is per-manifest sightings; "components" upstream
+      // tracks the same number pre-upsert. The visible Components count
+      // dedupes on identity_key so two manifests declaring the same
+      // library roll up to one row. Be honest about both numbers in the
+      // banner so an operator who notices the gap doesn't think
+      // something dropped.
+      const observations = summary && summary.observations || 0;
       repoSyncMessage = {
         kind: "ok",
-        text: `Synced ${repoCount} repo${repoCount === 1 ? "" : "s"} — ${compCount} components ingested.`,
+        text: `Synced ${repoCount} repo${repoCount === 1 ? "" : "s"} — ${observations} observation${observations === 1 ? "" : "s"} ingested. (Dedup may roll these up into fewer distinct components in the BOM.)`,
         summary,
       };
       await loadRepoConfig();
@@ -3466,8 +3472,8 @@ async function viewBillOfMaterials() {
           <table class="w-full text-left text-sm">
             <thead class="text-[10px] uppercase tracking-wider text-slate-500"><tr>
               <th class="px-3 py-2">Source ID</th>
-              <th class="px-3 py-2">Components found</th>
-              <th class="px-3 py-2">Ingested</th>
+              <th class="px-3 py-2" title="Manifest entries discovered in this repo (pre-dedup)">Manifest entries</th>
+              <th class="px-3 py-2" title="Observations written; same identity_key collapses to one component in the BOM">Observations</th>
               <th class="px-3 py-2">Skipped</th>
             </tr></thead>
             <tbody>
