@@ -7,9 +7,11 @@ RUN pip install --no-cache-dir fastapi uvicorn[standard] pydantic sqlalchemy psy
 COPY libs/cyberarmor-core /app/libs/cyberarmor-core
 ENV PYTHONPATH="/app/libs/cyberarmor-core:${PYTHONPATH:-}"
 
-COPY services/control-plane/main.py ./main.py
-COPY services/control-plane/db.py ./db.py
-COPY services/control-plane/models.py ./models.py
+# Copy every Python module in services/control-plane/ so new helpers
+# (repo_collector.py, future provider clients, etc.) ship without
+# needing to hand-touch this file. The .dockerignore in the repo root
+# keeps __pycache__ and tests out of the image.
+COPY services/control-plane/*.py ./
 COPY scripts/security/run_uvicorn_tls.py ./run_uvicorn_tls.py
 
 RUN useradd --create-home --shell /usr/sbin/nologin appuser && \
