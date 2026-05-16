@@ -1,8 +1,8 @@
 # A-BOM (Adaptive Bill of Materials) — Design
 
-**Status**: draft · 2026-05-13
+**Status**: phases 1–5 shipped · last updated 2026-05-16
 **Owner**: CyberArmor platform
-**Implementation phase**: 0 (design) → 1 (endpoint-agent collector) → 2+ (additional collectors)
+**Implementation phase**: 0 (design) ✅ · 1 (endpoint collector) ✅ · 2 (RASP) ✅ · 3 (repos + IDE) ✅ · 4 (artifact + cloud) ✅ · 5 (CVE + VEX) ✅ · 6 (hardening / coverage) — see §10
 
 ## 1. Goal
 
@@ -292,45 +292,100 @@ yesterday.
 
 ## 7. Phasing
 
-| Phase | Scope                                                                  | Demo value                                                |
-|-------|------------------------------------------------------------------------|-----------------------------------------------------------|
-| 0     | This doc, schema migrations, ingest endpoint stub                     | Architectural sign-off                                    |
-| 1     | Endpoint-agent collector (Linux/macOS first, Windows next) + portal Components view + CycloneDX export | "Here's our Mac's installed software + hardware in seconds; click 'Export' and you get a signed CycloneDX doc." |
-| 2     | RASP runtime collector + Drift view                                   | "RASP confirms log4j-core is actually loaded in PID 4231, not just installed." |
-| 3     | IDE plugin (VS Code first) + GitHub/GitLab worker                     | "Same component appears from endpoint, repo, and IDE workspace — we see it across the SDLC." |
-| 4     | Artifact-repo + cloud-inventory collectors                            | "We see the container in JFrog, the same container running in EKS, and the same agent watching it." |
-| 5     | CVE / OSV / GHSA overlay + VEX management + Drift policy hooks        | "log4j 2.14.1 + CVE-2021-44228 → policy 'block_upload_on_vulnerable_dep' fires."  |
+| # | Scope | Demo value | Status |
+|---|---|---|---|
+| 0 | This doc, schema migrations, ingest endpoint stub | Architectural sign-off | ✅ shipped (`3ca0e9d`) |
+| 1 | Endpoint-agent collector (Linux/macOS/Windows) + portal Components view + CycloneDX export (signed envelope opt-in) + Drift / Stale filters + Mission Control tile | "Here's our Mac's installed software + hardware in seconds; click 'Export' and you get a signed CycloneDX doc." | ✅ shipped (`2a1a769`, `e033fb6`, `3103f13`, `383e38f`, `8c14f23`, `2d223f5`) |
+| 2 | RASP runtime collector (Python; sys.modules + /proc/self/maps + interpreter) + Loaded-vs-Installed overlay | "RASP confirms log4j-core is actually loaded in PID 4231, not just installed." | ✅ shipped — `/rasp/abom/ingest`, source_kind=workload, `/customer/abom/loaded-vs-installed` |
+| 3 | Repo workers (GitHub + GitLab + Azure DevOps) + VS Code workspace plugin + Sources sub-tab + OpenBao secret storage + 6h scheduler | "Same component appears from endpoint, repo, and IDE workspace — we see it across the SDLC." | ✅ shipped (`9daac25`, `43be4af`, `bfb30ca`, `02c3088`, `6cfdfd8`) |
+| 4 | Artifact registries (GHCR + JFrog) + cloud inventory (AWS Resource Groups Tagging + GCP Cloud Asset Inventory + Azure Resource Graph) | "We see the container in JFrog, the same container running in EKS, and the same agent watching it." | ✅ shipped (`2bf7c02`, `7b7fb4a`, `f021d42`) |
+| 5 | OSV-backed vulnerability scanner + Vulnerabilities tab + per-component Inspector enrichment + VEX management (CycloneDX taxonomy) + vuln-aware policy hook (`content.has_critical_vuln`, `content.max_cvss_score`) + risk-policy banner on BOM view | "log4j 2.14.1 + CVE-2021-44228 → policy 'block_upload_on_critical_dep' matches → admin VEXes one finding as not_affected/code_not_reachable → banner count drops." | ✅ shipped (`2018f3f`, `c8bdfc5`) |
+| 6 | Hardening, coverage, distribution — see §10 | "Operationally ready for non-demo customer." | 🚧 next |
 
-Each phase ships a usable demo.
+Each shipped phase has a corresponding portal demo flow that works end-to-end on the prod compose stack.
 
-## 8. Open questions
+## 8. Open questions — resolved
 
-1. **Storage backend**: SQLAlchemy + JSONB scales to ~10M observations
-   per-tenant; past that we want time-series partitioning. Punting until
-   real numbers; ship phase 1 on the existing Postgres.
-2. **Signing**: CycloneDX export should be CMS or in-toto signed (existing
-   audit-log signing infra). Pick one before phase 1 ships.
-3. **PURL coverage for AI models**: Hugging Face has a `pkg:huggingface/...`
-   PURL spec proposal but it's not finalized; we'll use it provisionally
-   and adjust if the spec lands differently.
-4. **Hardware identity for ephemeral workloads** (containers, lambdas):
-   `manufacturer = "aws"` / `cloud_resource_arn` as the dedup key, since
-   serial numbers don't apply.
-5. **Telemetry overlap with current /telemetry/ingest**: A-BOM ingest is
-   high-volume but rare; keep it on its own endpoint so it doesn't crowd
-   the existing realtime path.
+| Question | Resolution |
+|---|---|
+| Storage backend | Stayed on the existing Postgres + JSONB. No partitioning yet; ABOMObservation row counts in the demo are well under the partition threshold. |
+| Signing | Shipped as the `?sign=true` HMAC envelope on `/abom/export` (per-tenant key derived from `ABOM_SIGNING_KEY` or `CUSTOMER_PORTAL_SESSION_SECRET`). CMS / Sigstore swap-in is a phase-6 candidate now that the envelope shape is in place. |
+| PURL coverage for AI models | `pkg:huggingface/<org>/<name>` and `pkg:ollama/<model>@<tag>` shipped pragmatically; will track the upstream PURL spec when it finalizes. |
+| Hardware identity for ephemeral workloads | `identity_key` formula uses `manufacturer` ("Amazon Web Services" / "Google Cloud" / "Microsoft Azure") + the ARN/resource_id as the dedup anchor. Works in practice — same cloud resource collides on repeat sweeps. |
+| Telemetry path separation | A-BOM ingest is on its own endpoints (`/agents/{id}/abom/ingest`, `/rasp/abom/ingest`, `/customer/abom/...`). Never crosses `/telemetry/ingest`. |
 
-## 9. What's next
+## 9. Phase 6 — hardening and coverage (next)
 
-Phase 1 implementation, in order:
+The five-phase arc covers the **feature surface**. Phase 6 is what turns it into something a customer can run in production without us holding the rollout's hand.
 
-1. **DB migration** — `abom_components` and `abom_observations` tables.
-2. **Ingest endpoint** — `POST /agent/abom/ingest` with the auth flow the
-   agent already uses; idempotent on identity_key.
-3. **Endpoint-agent collector module** — `agents/endpoint-agent/collectors/abom.py`,
-   wired into the existing periodic-task runner.
-4. **CycloneDX exporter** — `services/control-plane/abom_export.py`.
-5. **Portal components view** — `customer-portal/app.js` viewBillOfMaterials.
-6. **Wire into Mission Control** — single tile.
+### 9.1 Signing & evidence integrity
 
-Ready to start on phase 1 when this doc is approved.
+- **Replace HMAC envelope with CMS or Sigstore signatures** on `/abom/export`. The current envelope satisfies the per-tenant verifiability requirement but isn't cryptographically rooted in any external trust anchor. Customer security teams will want one of:
+  - **CMS via OpenBao Transit** — reuse the audit-signing infra (`cyberarmor-transit/sign/...`).
+  - **Sigstore + Fulcio** — short-lived keys, OIDC-anchored.
+  Decide before any customer asks for an attestation.
+- **In-toto attestations for repo + artifact sources** so the BOM carries provenance proof that ties a component back to its build event (CI workflow + Git commit).
+
+### 9.2 Scheduler robustness
+
+- The 6h cron thread is per-replica. Move to a single-writer scheduler (Redis lock / DB row lock) so a multi-replica control-plane doesn't double-run repo + cloud sweeps.
+- Per-source-kind back-off when a provider 429s (GitHub does this on PAT-limited orgs).
+- Expose the next-sync timestamp in the Sources card so an operator knows when to expect the next refresh.
+
+### 9.3 Vulnerability ingestion
+
+- **OSV is the floor, not the ceiling.** Add NVD and GitHub Advisory direct pulls for CVE records OSV hasn't ingested yet (lag is typically <24h but real).
+- **KEV (Known Exploited Vulnerabilities) overlay** — CISA's catalog. A `content.is_kev` field on the policy evaluator unlocks "block anything KEV'd, regardless of CVSS."
+- **EPSS** scores for risk-rank prioritisation. The Vulnerabilities tab currently sorts by component count; EPSS lets us sort by "actually-being-exploited likelihood."
+- **Background vuln scan scheduling** — currently admin-triggered; add a 24h cadence with a "skip if no BOM delta" optimization so we don't hammer OSV on a quiet tenant.
+
+### 9.4 VEX export + import
+
+- **CycloneDX VEX export endpoint** — same envelope as the BOM export but only the `vex` document, for handoff to upstream consumers (GitHub Dependency Graph, Dependency-Track, etc.).
+- **Bulk VEX import** — operators often run VEX outside our portal first (in their own GRC tool). Accept a pasted VEX document and apply it to matching `(component, vuln)` pairs.
+- **VEX-based suppression on re-scan** — currently a re-scan re-creates findings the operator already VEX'd. Honor `false_positive` to actually suppress on next sweep.
+
+### 9.5 Additional collectors
+
+- **Artifact registries**: ECR, GCR, Docker Hub, Nexus. Same parser layer as GHCR + JFrog; just different API clients.
+- **Container image layer scan**: pull manifests via the OCI distribution spec and emit one component per layer's installed packages (apt-get / pip / npm baked into the image). Today we only catch the image as a single component; layered scan turns "this image contains log4j 2.14.1" into a fact.
+- **SaaS inventory**: Microsoft 365, Google Workspace, Salesforce — connector pattern already exists in `services/integration-control`. Components emit as `type=application` with `manufacturer=<vendor>` and a SaaS-BOM-flavor PURL.
+- **Kubernetes cluster admission**: a webhook that emits a component per pod image as it's admitted to a cluster, giving real-time-of-deploy provenance.
+
+### 9.6 SBOM evidence flow
+
+- **Compliance pack integration** — the existing `/customer/evidence/export` pulls audit + telemetry + policies; add a `/customer/evidence/export?include=abom` flag so a SOC 2 / FedRAMP / NIST AI RMF evidence drop carries a current signed BOM + VEX alongside everything else.
+- **Diff report on demand** — given two CycloneDX docs, render the added/removed/version-changed table from the Drift view as a downloadable HTML report.
+
+### 9.7 Observability and limits
+
+- **Per-tenant rate limits and quotas** on the ingest endpoints. Today there are budget caps inside individual collectors but no per-tenant cumulative cap.
+- **Per-component observation cap** — a misbehaving agent could spam observations for one identity_key; cap at N per day and emit a warning.
+- **Mission Control: time-series chart** — components added/removed per week so the operator can spot a sudden surge.
+
+### 9.8 SDK / agent parity
+
+- **Windows endpoint-agent collector** ships in phase 1 but is untested at scale. Validate on real Windows hosts and add the AppX-streaming path for Microsoft Store apps.
+- **RASP collectors for Node.js / Java / .NET** — same pattern as the Python one, different introspection (`require.cache`, JVM MBeans, AppDomain assemblies).
+- **Linux endpoint-agent**: validate the dpkg/rpm paths on real distros (Ubuntu 22.04, RHEL 9, Amazon Linux 2023).
+
+### 9.9 Documentation & onboarding
+
+- **Runbook**: `docs/runbooks/abom-customer-onboarding.md` covering the typical sequence (install agent → connect first repo → wire OpenBao → kick off vuln scan → set VEX policy).
+- **Permissions matrix**: per-collector list of every cloud / repo / vault permission required, formatted so an SRE can paste it into a Terraform module.
+
+## 10. Phase 6 plan
+
+Phase 6 doesn't ship as one commit. Each subsection in §9 is its own slice — the order below reflects estimated customer-asked-for-it weight:
+
+1. **9.3** — KEV + EPSS + background vuln scan cron (biggest demo lift; biggest customer ask)
+2. **9.1** — Signing upgrade (CMS via OpenBao Transit; required for any GRC/audit conversation)
+3. **9.4** — VEX export + bulk import + re-scan suppression
+4. **9.2** — Multi-replica scheduler
+5. **9.6** — Evidence-pack integration
+6. **9.5** — ECR + Docker Hub + Nexus (artifact); Kubernetes admission webhook
+7. **9.8** — RASP Node/Java/.NET parity
+8. **9.7** — Rate limits, quotas, time-series Mission Control chart
+9. **9.9** — Onboarding runbook + permissions matrix
+
+Phase 6 implementation can start any time. No order is locked — picking by customer pull is the right approach.
