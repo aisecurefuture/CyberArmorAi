@@ -6839,6 +6839,7 @@ def customer_abom_vulnerabilities(
     offset: int = 0,
     severity: Optional[str] = None,
     q: Optional[str] = None,
+    vex_status: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Paginated list of advisories that hit at least one tenant
     component. Group-by ``vuln_id`` on the junction table; counts of
@@ -6853,6 +6854,14 @@ def customer_abom_vulnerabilities(
     )
     if severity:
         base = base.filter(ABOMComponentVulnerability.severity == severity)
+    # ``vex_status=open`` is the synthetic value that maps to "no VEX
+    # decision yet" — the most common admin workflow filter. The
+    # taxonomy values pass through unchanged.
+    if vex_status:
+        if vex_status == "open":
+            base = base.filter(ABOMComponentVulnerability.vex_status.is_(None))
+        else:
+            base = base.filter(ABOMComponentVulnerability.vex_status == vex_status)
 
     # Group counts per advisory.
     grouped = (
@@ -6866,6 +6875,11 @@ def customer_abom_vulnerabilities(
     )
     if severity:
         grouped = grouped.filter(ABOMComponentVulnerability.severity == severity)
+    if vex_status:
+        if vex_status == "open":
+            grouped = grouped.filter(ABOMComponentVulnerability.vex_status.is_(None))
+        else:
+            grouped = grouped.filter(ABOMComponentVulnerability.vex_status == vex_status)
     grouped = grouped.group_by(
         ABOMComponentVulnerability.vuln_id,
         ABOMComponentVulnerability.severity,
@@ -6911,6 +6925,21 @@ def customer_abom_vulnerabilities(
         .filter(ABOMComponentVulnerability.tenant_id == ctx.tenant_id)
         .scalar() or 0
     )
+    # VEX coverage rollup: each (component, vuln) pair counted once.
+    # ``open`` is the no-VEX-yet bucket — the ones the operator still
+    # owes a decision on, the demo-visible workflow signal.
+    vex_counts_raw = dict(
+        db.query(
+            ABOMComponentVulnerability.vex_status,
+            func.count(ABOMComponentVulnerability.id),
+        )
+        .filter(ABOMComponentVulnerability.tenant_id == ctx.tenant_id)
+        .group_by(ABOMComponentVulnerability.vex_status)
+        .all()
+    )
+    vex_counts = {"open": 0}
+    for k, v in vex_counts_raw.items():
+        vex_counts[k or "open"] = int(v)
 
     return {
         "advisories": items,
@@ -6918,6 +6947,7 @@ def customer_abom_vulnerabilities(
         "limit": limit,
         "offset": offset,
         "severity_counts": {k or "unknown": int(v) for k, v in severity_counts.items()},
+        "vex_counts": vex_counts,
     }
 
 
@@ -6963,9 +6993,113 @@ def customer_abom_vulnerability_detail(
                 "first_seen_at": j.first_seen_at.isoformat() if j.first_seen_at else None,
                 "last_seen_at": j.last_seen_at.isoformat() if j.last_seen_at else None,
                 "vex_status": j.vex_status,
+                "vex_justification": j.vex_justification,
+                "vex_updated_by": j.vex_updated_by,
+                "vex_updated_at": j.vex_updated_at.isoformat() if j.vex_updated_at else None,
             }
             for j, comp in findings
         ],
+    }
+
+
+# VEX status values follow the CycloneDX VEX taxonomy:
+#   not_affected         — explicit "we're safe" with a justification
+#   affected             — confirmed exposed (the default if no VEX set)
+#   under_investigation  — admin triaging
+#   fixed                — upgrade landed and the finding is no longer present
+#   false_positive       — OSV match was incorrect (tells the scanner to
+#                          suppress on future runs for this specific pair)
+_VEX_STATUS_VALUES = {"not_affected", "affected", "under_investigation", "fixed", "false_positive"}
+
+# CycloneDX VEX justification codes for ``not_affected`` findings.
+# The portal renders these as the picklist when an admin picks
+# "not_affected"; we accept any string but warn unknowns so a typo
+# doesn't silently corrupt a compliance export.
+_VEX_JUSTIFICATIONS = {
+    "code_not_present", "code_not_reachable",
+    "requires_configuration", "requires_dependency", "requires_environment",
+    "protected_by_compiler", "protected_at_runtime",
+    "protected_at_perimeter", "protected_by_mitigating_control",
+}
+
+
+class VEXUpdate(BaseModel):
+    """Per-(component, vuln) VEX annotation. Status is required;
+    justification is required when status=not_affected (per CycloneDX
+    VEX rules) and optional otherwise. Response carries free-form
+    operator notes for the auditor."""
+    component_id: str
+    vuln_id: str
+    status: str
+    justification: Optional[str] = None
+    response: Optional[str] = None
+
+
+@app.put("/customer/abom/vex")
+def customer_abom_vex_put(
+    payload: VEXUpdate,
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> Dict[str, Any]:
+    """Admin-only: annotate one (component, vuln) finding with VEX
+    metadata. Validates status against the CycloneDX taxonomy; warns
+    on non-standard justifications but accepts them so a customer can
+    extend the picklist for internal taxonomy without us blocking the
+    save."""
+    status = payload.status.strip().lower()
+    if status not in _VEX_STATUS_VALUES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"status must be one of {sorted(_VEX_STATUS_VALUES)}",
+        )
+    if status == "not_affected" and not (payload.justification and payload.justification.strip()):
+        raise HTTPException(
+            status_code=400,
+            detail="justification is required when status=not_affected",
+        )
+    if payload.justification and payload.justification.strip() not in _VEX_JUSTIFICATIONS:
+        # Non-fatal: log so an audit catches the deviation but don't
+        # block the save. Some customers carry an internal taxonomy.
+        logger.info(
+            "vex non-standard justification tenant=%s component=%s vuln=%s justification=%s",
+            ctx.tenant_id, payload.component_id, payload.vuln_id, payload.justification,
+        )
+
+    row = (
+        db.query(ABOMComponentVulnerability)
+        .filter(
+            ABOMComponentVulnerability.tenant_id == ctx.tenant_id,
+            ABOMComponentVulnerability.component_id == payload.component_id,
+            ABOMComponentVulnerability.vuln_id == payload.vuln_id,
+        )
+        .first()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="finding not found")
+
+    row.vex_status = status
+    # Free-form fields: justification picklist + operator response.
+    # Both are stored as-is so the export carries the original text.
+    row.vex_justification = (payload.justification or "").strip() or None
+    # ``response`` is stored alongside justification using a sentinel
+    # prefix so we don't need a new column. Pragmatic for the demo;
+    # phase 6 can split into its own column if customers want.
+    if payload.response and payload.response.strip():
+        prefix = row.vex_justification or ""
+        sep = " | " if prefix else ""
+        row.vex_justification = f"{prefix}{sep}response: {payload.response.strip()}"
+    row.vex_updated_by = ctx.email
+    row.vex_updated_at = datetime.now(timezone.utc)
+    db.commit()
+
+    return {
+        "status": "ok",
+        "component_id": row.component_id,
+        "vuln_id": row.vuln_id,
+        "vex_status": row.vex_status,
+        "vex_justification": row.vex_justification,
+        "vex_updated_by": row.vex_updated_by,
+        "vex_updated_at": row.vex_updated_at.isoformat() if row.vex_updated_at else None,
     }
 
 
@@ -6996,6 +7130,9 @@ def customer_abom_component_vulnerabilities(
                 "severity": j.severity,
                 "cvss_score": j.cvss_score,
                 "vex_status": j.vex_status,
+                "vex_justification": j.vex_justification,
+                "vex_updated_by": j.vex_updated_by,
+                "vex_updated_at": j.vex_updated_at.isoformat() if j.vex_updated_at else None,
                 "summary": (adv.summary or "")[:240],
                 "aliases": _coerce_meta(adv.aliases) or [],
                 "published_at": adv.published_at.isoformat() if adv.published_at else None,
@@ -7003,6 +7140,238 @@ def customer_abom_component_vulnerabilities(
             for j, adv in rows
         ],
     }
+
+
+@app.get("/customer/abom/risk-policy")
+def customer_abom_risk_policy(
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    db: Annotated[Session, Depends(get_db)],
+) -> Dict[str, Any]:
+    """Evaluate tenant policies against the BOM's current vuln state.
+
+    Returns a list of "policy verdicts" — for each enabled tenant
+    policy with a vulnerability-aware condition, we surface the
+    matched components, the worst severity, and the action the policy
+    would take. The portal renders these as actionable banners on the
+    BOM tab; downstream surfaces (block_upload DNR, repo-promotion
+    gates) consume the same verdicts.
+
+    Supported condition fields (any-of):
+      - ``content.has_critical_vuln`` (bool)
+      - ``content.has_high_or_critical_vuln`` (bool)
+      - ``content.max_cvss_score`` (numeric; comparison ops via
+        ``operator: gte`` / ``gt`` / ``equals``)
+
+    All other policy condition fields fall through unchanged so the
+    existing block / redact / warn evaluator is unaffected.
+    """
+    # Pull active VEX-aware findings per component. Anything VEX'd as
+    # ``not_affected`` or ``fixed`` is excluded — that's the whole
+    # point of VEX, and skipping it here means the operator can
+    # silence false positives that policies would otherwise fire on.
+    findings = (
+        db.query(ABOMComponentVulnerability)
+        .filter(ABOMComponentVulnerability.tenant_id == ctx.tenant_id)
+        .filter(
+            (ABOMComponentVulnerability.vex_status.is_(None))
+            | (ABOMComponentVulnerability.vex_status.notin_(["not_affected", "fixed"]))
+        )
+        .all()
+    )
+    by_component: Dict[str, Dict[str, Any]] = {}
+    for f in findings:
+        agg = by_component.setdefault(f.component_id, {
+            "component_id": f.component_id,
+            "vuln_count": 0,
+            "max_severity": "unknown",
+            "max_cvss_score": 0.0,
+            "vuln_ids": [],
+        })
+        agg["vuln_count"] += 1
+        agg["vuln_ids"].append(f.vuln_id)
+        rank = {"critical": 4, "high": 3, "medium": 2, "low": 1, "unknown": 0}
+        if rank.get((f.severity or "unknown").lower(), 0) > rank.get(agg["max_severity"], 0):
+            agg["max_severity"] = (f.severity or "unknown").lower()
+        if (f.cvss_score or 0) > agg["max_cvss_score"]:
+            agg["max_cvss_score"] = float(f.cvss_score or 0)
+
+    # Annotate each affected component with its name/version so the
+    # portal banner can render something useful without a second hop.
+    component_ids = list(by_component.keys())
+    if component_ids:
+        comp_rows = (
+            db.query(ABOMComponent)
+            .filter(ABOMComponent.tenant_id == ctx.tenant_id)
+            .filter(ABOMComponent.id.in_(component_ids))
+            .all()
+        )
+        for r in comp_rows:
+            agg = by_component.get(r.id)
+            if not agg:
+                continue
+            agg["name"] = r.name
+            agg["version"] = r.version
+            agg["purl"] = r.purl
+            agg["type"] = r.type
+
+    # Pull tenant policies via the existing policy service proxy.
+    try:
+        policies = _fetch_policy_service(f"/policies/{ctx.tenant_id}", ctx.tenant_id)
+    except Exception:  # noqa: BLE001 — degraded path returns no verdicts
+        policies = []
+    policy_list = policies if isinstance(policies, list) else []
+
+    verdicts: List[Dict[str, Any]] = []
+    summary = {
+        "policies_evaluated": 0,
+        "policies_matched": 0,
+        "components_affected": len(by_component),
+        "max_severity_seen": "unknown",
+    }
+    rank_summary = {"critical": 4, "high": 3, "medium": 2, "low": 1, "unknown": 0}
+    for c in by_component.values():
+        if rank_summary.get(c["max_severity"], 0) > rank_summary.get(summary["max_severity_seen"], 0):
+            summary["max_severity_seen"] = c["max_severity"]
+
+    for policy in policy_list:
+        if not isinstance(policy, dict) or policy.get("enabled") is False:
+            continue
+        conditions = policy.get("conditions") or {}
+        if not _policy_has_vuln_condition(conditions):
+            continue
+        summary["policies_evaluated"] += 1
+        matched_components: List[Dict[str, Any]] = []
+        for c in by_component.values():
+            if _eval_vuln_conditions(conditions, c):
+                matched_components.append({
+                    "component_id": c["component_id"],
+                    "name": c.get("name") or "",
+                    "version": c.get("version") or "",
+                    "purl": c.get("purl") or "",
+                    "max_severity": c["max_severity"],
+                    "max_cvss_score": c["max_cvss_score"],
+                    "vuln_ids": c["vuln_ids"][:5],
+                })
+        if matched_components:
+            summary["policies_matched"] += 1
+            verdicts.append({
+                "policy_id": policy.get("id"),
+                "policy_name": policy.get("name") or "",
+                "action": policy.get("action") or "monitor",
+                "redact_classes": policy.get("redact_classes") or [],
+                "components": matched_components,
+                "component_count": len(matched_components),
+            })
+
+    return {
+        "summary": summary,
+        "verdicts": verdicts,
+        "evaluated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _policy_has_vuln_condition(conditions: Any) -> bool:
+    """Return True when the policy references any vuln-aware field.
+    Walks the conditions tree so nested groups still trigger."""
+    if not isinstance(conditions, dict):
+        return False
+    for rule in conditions.get("rules") or []:
+        if not isinstance(rule, dict):
+            continue
+        if "rules" in rule:
+            if _policy_has_vuln_condition(rule):
+                return True
+        field = str(rule.get("field") or "")
+        if field in (
+            "content.has_vuln",
+            "content.has_critical_vuln",
+            "content.has_high_or_critical_vuln",
+            "content.max_cvss_score",
+            "content.max_severity",
+            "content.vuln_count",
+        ):
+            return True
+    return False
+
+
+def _eval_vuln_conditions(conditions: Any, component_vuln: Dict[str, Any]) -> bool:
+    """Tiny evaluator scoped to the vuln-aware fields. Mirrors the
+    extension's policy_engine for shape compatibility — operators
+    can write the same conditions block once and have it run
+    consistently in both places.
+    """
+    if not isinstance(conditions, dict):
+        return True
+    op = (conditions.get("operator") or "AND").upper()
+    rules = conditions.get("rules") or []
+    if not rules:
+        return True
+    results: List[bool] = []
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        if "rules" in rule:
+            results.append(_eval_vuln_conditions(rule, component_vuln))
+            continue
+        field = str(rule.get("field") or "")
+        expected = rule.get("value")
+        operator = str(rule.get("operator") or "").lower()
+        actual: Any
+        if field == "content.has_vuln":
+            actual = component_vuln.get("vuln_count", 0) > 0
+        elif field == "content.has_critical_vuln":
+            actual = component_vuln.get("max_severity") == "critical"
+        elif field == "content.has_high_or_critical_vuln":
+            actual = component_vuln.get("max_severity") in ("critical", "high")
+        elif field == "content.max_cvss_score":
+            actual = float(component_vuln.get("max_cvss_score", 0) or 0)
+        elif field == "content.max_severity":
+            actual = component_vuln.get("max_severity") or "unknown"
+        elif field == "content.vuln_count":
+            actual = int(component_vuln.get("vuln_count", 0))
+        else:
+            # Non-vuln field — neutral pass so a policy can mix
+            # vuln rules with non-vuln rules without short-circuiting.
+            results.append(True)
+            continue
+        # Op semantics: equals / not_equals / gt / gte / lt / lte / in.
+        if operator == "equals":
+            results.append(_loose_eq(actual, expected))
+        elif operator == "not_equals":
+            results.append(not _loose_eq(actual, expected))
+        elif operator in ("gt", "gte", "lt", "lte"):
+            try:
+                a, e = float(actual), float(expected)
+            except (TypeError, ValueError):
+                results.append(False)
+                continue
+            if operator == "gt":  results.append(a > e)
+            if operator == "gte": results.append(a >= e)
+            if operator == "lt":  results.append(a < e)
+            if operator == "lte": results.append(a <= e)
+        elif operator == "in":
+            try:
+                results.append(actual in (expected or []))
+            except TypeError:
+                results.append(False)
+        else:
+            results.append(False)
+    if not results:
+        return True
+    return any(results) if op == "OR" else all(results)
+
+
+def _loose_eq(actual: Any, expected: Any) -> bool:
+    """Same shape as the clipboard-helper evaluator — string-coerce
+    booleans so a policy author can write
+    ``content.has_vuln equals true`` without quoting."""
+    if actual is None or expected is None:
+        return actual == expected
+    if isinstance(actual, bool) or isinstance(expected, bool):
+        a = "true" if bool(actual) else "false"
+        e = str(expected).strip().lower()
+        return a == e
+    return str(actual) == str(expected)
 
 
 @app.get("/customer/abom/coverage")

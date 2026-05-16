@@ -3032,6 +3032,15 @@ async function viewBillOfMaterials() {
   let vulnSelectedDetail = null;
   let vulnScanBusy = false;
   let vulnScanMessage = null;
+  let vulnVexFilter = "all"; // all | open | not_affected | under_investigation | affected | fixed | false_positive
+  // Per-(component,vuln) VEX edit buffer — keyed by `${component_id}::${vuln_id}`
+  // so multiple advisories on one component don't share state.
+  let vexEdit = {};        // {key: {status, justification, response}}
+  let vexBusy = {};        // {key: bool}
+  let vexMessage = null;   // {kind, text}
+  // Risk-policy verdicts (vuln-aware policy hooks). Loaded once when
+  // the BOM view renders; cached so a vuln-scan run can refresh it.
+  let riskPolicy = null;
   const vulnPager = { page: 1, pageSize: 50 };
   // Per-component vuln list shown in the Inspector when a component is selected.
   let inspectorVulns = null;
@@ -3154,11 +3163,59 @@ async function viewBillOfMaterials() {
       params.set("offset", String(vulnPager.pageSize === "all" ? 0 : (vulnPager.page - 1) * vulnPager.pageSize));
       if (vulnSeverityFilter !== "all") params.set("severity", vulnSeverityFilter);
       if (vulnSearch.trim()) params.set("q", vulnSearch.trim());
+      if (vulnVexFilter !== "all") params.set("vex_status", vulnVexFilter);
       vulnList = await api(`/api/customer/abom/vulnerabilities?${params.toString()}`);
       vulnLoadError = null;
     } catch (err) {
       vulnList = null;
       vulnLoadError = err.message || "fetch failed";
+    }
+  }
+
+  async function loadRiskPolicy() {
+    try {
+      riskPolicy = await api("/api/customer/abom/risk-policy");
+    } catch (err) {
+      riskPolicy = { error: err.message || "fetch failed" };
+    }
+  }
+
+  async function submitVex(componentId, vulnId) {
+    const key = `${componentId}::${vulnId}`;
+    const buf = vexEdit[key] || {};
+    const status = (buf.status || "").trim();
+    if (!status) { vexMessage = { kind: "err", text: "Pick a status." }; render(); return; }
+    if (status === "not_affected" && !(buf.justification || "").trim()) {
+      vexMessage = { kind: "err", text: "Justification required for not_affected." };
+      render();
+      return;
+    }
+    vexBusy[key] = true;
+    vexMessage = null;
+    render();
+    try {
+      await api("/api/customer/abom/vex", {
+        method: "PUT",
+        body: JSON.stringify({
+          component_id: componentId,
+          vuln_id: vulnId,
+          status,
+          justification: buf.justification || null,
+          response: buf.response || null,
+        }),
+      });
+      vexMessage = { kind: "ok", text: `Set ${vulnId} → ${status}.` };
+      // Refresh whichever view is open: advisory detail, inspector
+      // panel, and the list (so the vex_counts strip stays honest).
+      if (vulnSelectedId) await loadVulnDetail(vulnSelectedId);
+      if (selected) await loadInspectorVulns(selected);
+      await loadVulns();
+      await loadRiskPolicy();
+    } catch (err) {
+      vexMessage = { kind: "err", text: err.message || "VEX save failed" };
+    } finally {
+      vexBusy[key] = false;
+      render();
     }
   }
 
@@ -3181,6 +3238,7 @@ async function viewBillOfMaterials() {
         text: `Scanned ${resp.components_scanned} components — ${resp.findings} findings across ${resp.advisories_seen} advisories.`,
       };
       await loadVulns();
+      await loadRiskPolicy();
     } catch (err) {
       vulnScanMessage = { kind: "err", text: err.message || "scan failed" };
     } finally {
@@ -3534,6 +3592,45 @@ async function viewBillOfMaterials() {
     </tr>`;
   }
 
+  function renderRiskPolicyBanner() {
+    if (!riskPolicy || riskPolicy.error) return "";
+    const verdicts = Array.isArray(riskPolicy.verdicts) ? riskPolicy.verdicts : [];
+    if (verdicts.length === 0) return "";
+    // Worst-action wins for the banner colour. block_upload / block /
+    // warn each surface differently so the operator can see at a
+    // glance which gate is firing without expanding the panel.
+    const actionTone = (a) =>
+      ({ block: "rose", block_upload: "rose", warn: "amber", monitor: "slate", redact: "amber" })[a] || "slate";
+    let worst = "monitor";
+    const rank = { block: 4, block_upload: 4, warn: 3, redact: 3, monitor: 1, allow: 0 };
+    for (const v of verdicts) {
+      if ((rank[v.action] || 0) > (rank[worst] || 0)) worst = v.action || "monitor";
+    }
+    const tone = actionTone(worst);
+    const cls = tone === "rose" ? "border-rose-900 bg-rose-950/30 text-rose-200"
+              : tone === "amber" ? "border-amber-900 bg-amber-950/20 text-amber-200"
+              : "border-slate-800 bg-slate-950 text-slate-300";
+
+    return `
+      <div class="rounded-2xl border ${cls} p-3 text-sm">
+        <div class="flex flex-wrap items-baseline justify-between gap-2">
+          <div class="font-semibold">${esc(verdicts.length)} risk polic${verdicts.length === 1 ? "y" : "ies"} matched the current BOM</div>
+          <span class="text-[10px] uppercase tracking-wider opacity-70">Worst action: ${esc(worst)}</span>
+        </div>
+        <ul class="mt-2 space-y-1 text-xs">
+          ${verdicts.map((v) => `
+            <li>
+              <span class="font-mono">${esc(v.policy_name || v.policy_id || "(unnamed)")}</span>
+              → <span class="font-mono">${esc(v.action || "monitor")}</span>
+              · ${esc(v.component_count)} component${v.component_count === 1 ? "" : "s"}
+              ${v.components && v.components[0] ? `<span class="opacity-80"> (worst ${esc(v.components.sort((a, b) => (b.max_cvss_score || 0) - (a.max_cvss_score || 0))[0].max_severity)}: ${esc(v.components[0].name)}${v.components[0].version ? `@${esc(v.components[0].version)}` : ""})</span>` : ""}
+            </li>
+          `).join("")}
+        </ul>
+      </div>
+    `;
+  }
+
   function abomSeverityPill(sev) {
     const s = String(sev || "unknown").toLowerCase();
     const cls = s === "critical" ? "bg-rose-500/30 text-rose-100"
@@ -3583,15 +3680,51 @@ async function viewBillOfMaterials() {
           ${d.published_at ? `<div class="mt-2 text-[10px] text-slate-500">Published ${esc(new Date(d.published_at).toLocaleDateString())}${d.modified_at ? ` · modified ${esc(new Date(d.modified_at).toLocaleDateString())}` : ""}</div>` : ""}
           <div class="mt-3">
             <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-2">Affected components (${components.length})</div>
-            <div class="space-y-1 max-h-72 overflow-y-auto">${components.map((c) => `
+            ${vexMessage ? `<div class="mb-2 text-[11px] ${vexMessage.kind === "ok" ? "text-emerald-300" : "text-rose-300"}">${esc(vexMessage.text)}</div>` : ""}
+            <div class="space-y-2 max-h-96 overflow-y-auto">${components.map((c) => {
+              const key = `${c.id}::${d.vuln_id}`;
+              const buf = vexEdit[key] || {};
+              const status = buf.status ?? (c.vex_status || "");
+              const justification = buf.justification ?? (c.vex_justification || "");
+              const response = buf.response ?? "";
+              const isAdmin = session.role === "tenant_admin";
+              const busy = !!vexBusy[key];
+              return `
               <div class="rounded-lg bg-slate-900 px-2 py-1.5">
                 <div class="flex items-center justify-between gap-2">
                   <span class="font-mono text-xs text-slate-200 truncate">${esc(c.name)}${c.version ? `<span class="ml-2 text-[10px] text-slate-500">${esc(c.version)}</span>` : ""}</span>
                   ${c.vex_status ? `<span class="rounded-full bg-cyan-500/15 px-1.5 py-0.5 text-[10px] uppercase text-cyan-200">${esc(c.vex_status)}</span>` : ""}
                 </div>
                 ${c.purl ? `<div class="mt-0.5 font-mono text-[10px] text-slate-500 break-all">${esc(c.purl)}</div>` : ""}
+                ${c.vex_updated_by ? `<div class="mt-0.5 text-[10px] text-slate-500">Last VEX by ${esc(c.vex_updated_by)}${c.vex_updated_at ? ` · ${esc(new Date(c.vex_updated_at).toLocaleString())}` : ""}</div>` : ""}
+                ${isAdmin ? `
+                  <div class="mt-2 grid grid-cols-2 gap-1">
+                    <select data-vex-key="${esc(key)}" data-vex-field="status" class="rounded-md bg-slate-950 border border-slate-800 px-2 py-1 text-[11px]">
+                      <option value="" ${!status ? "selected" : ""}>(unset)</option>
+                      <option value="not_affected" ${status === "not_affected" ? "selected" : ""}>not_affected</option>
+                      <option value="affected" ${status === "affected" ? "selected" : ""}>affected</option>
+                      <option value="under_investigation" ${status === "under_investigation" ? "selected" : ""}>under_investigation</option>
+                      <option value="fixed" ${status === "fixed" ? "selected" : ""}>fixed</option>
+                      <option value="false_positive" ${status === "false_positive" ? "selected" : ""}>false_positive</option>
+                    </select>
+                    <select data-vex-key="${esc(key)}" data-vex-field="justification" class="rounded-md bg-slate-950 border border-slate-800 px-2 py-1 text-[11px]" ${status === "not_affected" ? "" : "disabled"}>
+                      <option value="" ${!justification ? "selected" : ""}>(no justification)</option>
+                      <option value="code_not_present" ${justification === "code_not_present" ? "selected" : ""}>code_not_present</option>
+                      <option value="code_not_reachable" ${justification === "code_not_reachable" ? "selected" : ""}>code_not_reachable</option>
+                      <option value="requires_configuration" ${justification === "requires_configuration" ? "selected" : ""}>requires_configuration</option>
+                      <option value="requires_dependency" ${justification === "requires_dependency" ? "selected" : ""}>requires_dependency</option>
+                      <option value="requires_environment" ${justification === "requires_environment" ? "selected" : ""}>requires_environment</option>
+                      <option value="protected_by_compiler" ${justification === "protected_by_compiler" ? "selected" : ""}>protected_by_compiler</option>
+                      <option value="protected_at_runtime" ${justification === "protected_at_runtime" ? "selected" : ""}>protected_at_runtime</option>
+                      <option value="protected_at_perimeter" ${justification === "protected_at_perimeter" ? "selected" : ""}>protected_at_perimeter</option>
+                      <option value="protected_by_mitigating_control" ${justification === "protected_by_mitigating_control" ? "selected" : ""}>protected_by_mitigating_control</option>
+                    </select>
+                    <input data-vex-key="${esc(key)}" data-vex-field="response" type="text" placeholder="Response notes (optional)" class="col-span-2 rounded-md bg-slate-950 border border-slate-800 px-2 py-1 text-[11px]" value="${esc(response)}" />
+                    <button data-vex-submit="${esc(c.id)}::${esc(d.vuln_id)}" type="button" class="col-span-2 rounded-md bg-cyan-500 px-2 py-1 text-[11px] font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-50" ${busy ? "disabled" : ""}>${busy ? "Saving…" : "Save VEX"}</button>
+                  </div>
+                ` : ""}
               </div>
-            `).join("")}</div>
+            `; }).join("")}</div>
           </div>
           ${refs.length ? `<div class="mt-3"><div class="text-[10px] uppercase tracking-wider text-slate-500 mb-2">References</div><ul class="space-y-1 text-[11px] text-cyan-300 break-all">${refs.map((r) => `<li>· <a href="${esc(r.url || '')}" target="_blank" rel="noopener noreferrer" class="hover:underline">${esc(r.url || '')}</a></li>`).join("")}</ul></div>` : ""}
         </div>
@@ -3629,6 +3762,14 @@ async function viewBillOfMaterials() {
           ${sevOptions.map((s) => `
             <button type="button" data-vuln-sev="${esc(s)}" class="rounded-full px-2 py-1 text-[11px] ${vulnSeverityFilter === s ? "bg-cyan-500 text-slate-950 font-semibold" : "bg-slate-900 border border-slate-700 text-slate-300 hover:bg-slate-800"}">${esc(s === "all" ? "All" : s)}${s !== "all" && sevCounts[s] ? ` <span class="text-slate-500">·${sevCounts[s]}</span>` : ""}</button>
           `).join("")}
+        </div>
+        <div class="mt-2 flex flex-wrap items-center gap-2">
+          <span class="text-[10px] uppercase tracking-wider text-slate-500">VEX</span>
+          ${["all", "open", "not_affected", "under_investigation", "affected", "fixed", "false_positive"].map((s) => {
+            const counts = (vulnList && vulnList.vex_counts) || {};
+            const n = s === "all" ? null : counts[s];
+            return `<button type="button" data-vuln-vex="${esc(s)}" class="rounded-full px-2 py-1 text-[11px] ${vulnVexFilter === s ? "bg-cyan-500 text-slate-950 font-semibold" : "bg-slate-900 border border-slate-700 text-slate-300 hover:bg-slate-800"}">${esc(s === "all" ? "All" : s)}${n ? ` <span class="text-slate-500">·${n}</span>` : ""}</button>`;
+          }).join("")}
         </div>
         <div class="mt-2 flex flex-wrap items-center gap-2">
           <input id="vulnSearch" type="search" placeholder="Search advisory id or summary…" class="flex-1 min-w-[280px] rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm" value="${esc(vulnSearch)}" />
@@ -4268,6 +4409,7 @@ async function viewBillOfMaterials() {
     $("#app").innerHTML = `
       <div class="space-y-4">
         ${loadError ? `<div class="rounded-2xl border border-rose-900 bg-rose-950/30 p-3 text-sm text-rose-200">Could not load BOM: ${esc(loadError)}.</div>` : ""}
+        ${renderRiskPolicyBanner()}
         ${tabsHtml}
         ${card(`
           <div class="flex flex-wrap items-center gap-4">
@@ -4449,6 +4591,36 @@ async function viewBillOfMaterials() {
         render();
       });
     });
+    document.querySelectorAll("[data-vuln-vex]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const next = btn.dataset.vulnVex;
+        if (next === vulnVexFilter) return;
+        vulnVexFilter = next;
+        vulnPager.page = 1;
+        await loadVulns();
+        render();
+      });
+    });
+    // VEX editor wiring — one set of handlers covers every row in the
+    // advisory inspector since the form fields share data-* keys.
+    document.querySelectorAll("[data-vex-key]").forEach((el) => {
+      const key = el.dataset.vexKey;
+      const field = el.dataset.vexField;
+      const evt = (el.tagName === "SELECT") ? "change" : "input";
+      el.addEventListener(evt, () => {
+        const buf = vexEdit[key] || (vexEdit[key] = {});
+        buf[field] = el.value;
+        // Re-render so the justification dropdown enable/disable flips
+        // when status switches to/from not_affected.
+        if (field === "status") render();
+      });
+    });
+    document.querySelectorAll("[data-vex-submit]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const [componentId, vulnId] = (btn.dataset.vexSubmit || "").split("::");
+        if (componentId && vulnId) submitVex(componentId, vulnId);
+      });
+    });
     const vulnSearchInput = $("#vulnSearch");
     if (vulnSearchInput) {
       vulnSearchInput.addEventListener("change", async () => {
@@ -4605,6 +4777,11 @@ async function viewBillOfMaterials() {
   }
 
   await load();
+  // Risk-policy verdicts surface as a banner above the BOM view —
+  // load in parallel with the first render so a tenant with critical
+  // vulns sees the alert immediately. Errors are silent (banner just
+  // doesn't render).
+  loadRiskPolicy().then(() => render());
   render();
 }
 
