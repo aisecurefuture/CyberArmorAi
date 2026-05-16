@@ -150,3 +150,33 @@ class OpenBaoClient:
     def transit_key_rotate(self, key_name: str) -> Dict[str, Any]:
         response = self._request("POST", f"{self.config.transit_mount}/keys/{key_name}/rotate")
         return response.get("data", {})
+
+    def transit_key_create(self, key_name: str, key_type: str = "ed25519", exportable: bool = False) -> Dict[str, Any]:
+        """Create a Transit signing key. Default to ed25519 — small
+        signatures, modern crypto, the right pick for SBOM/BOM
+        attestations. Idempotent: a 400 "already exists" from OpenBao
+        is swallowed by the caller so a service can call this on
+        startup without coordinating."""
+        return self._request(
+            "POST",
+            f"{self.config.transit_mount}/keys/{key_name}",
+            {"type": key_type, "exportable": exportable, "allow_plaintext_backup": False},
+        )
+
+    def transit_verify(
+        self,
+        key_name: str,
+        input_b64: str,
+        signature: str,
+        hash_algorithm: str = "sha2-256",
+    ) -> Dict[str, Any]:
+        """Verify a Transit signature. ``signature`` is the
+        ``vault:v<n>:...`` string Transit emits. Returns
+        ``{"valid": bool}``."""
+        payload = {"input": input_b64, "signature": signature}
+        response = self._request(
+            "POST",
+            f"{self.config.transit_mount}/verify/{key_name}/{hash_algorithm}",
+            payload,
+        )
+        return response.get("data", {})

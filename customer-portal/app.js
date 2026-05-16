@@ -4459,7 +4459,7 @@ async function viewBillOfMaterials() {
             ${riskMetricCard("Collectors", coverage.length, coverage.length === 0 ? "rose" : "emerald")}
             <div class="ml-auto flex flex-wrap gap-2">
               <button id="bomExport" type="button" class="rounded-2xl bg-cyan-500 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-400">Export CycloneDX</button>
-              <button id="bomExportSigned" type="button" class="rounded-2xl border border-cyan-700 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-200 hover:bg-cyan-500/20" title="Wraps the BOM in an HMAC-SHA256 envelope for evidence-grade exports.">Export Signed</button>
+              <button id="bomExportSigned" type="button" class="rounded-2xl border border-cyan-700 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-200 hover:bg-cyan-500/20" title="Wraps the BOM in a signature envelope — OpenBao Transit ed25519 when configured, HMAC-SHA256 fallback otherwise. Verify with POST /customer/abom/export/verify.">Export Signed</button>
               <button id="bomRefresh" type="button" class="rounded-2xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-200 hover:bg-slate-800">Refresh</button>
             </div>
           </div>

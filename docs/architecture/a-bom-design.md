@@ -309,7 +309,7 @@ Each shipped phase has a corresponding portal demo flow that works end-to-end on
 | Question | Resolution |
 |---|---|
 | Storage backend | Stayed on the existing Postgres + JSONB. No partitioning yet; ABOMObservation row counts in the demo are well under the partition threshold. |
-| Signing | Shipped as the `?sign=true` HMAC envelope on `/abom/export` (per-tenant key derived from `ABOM_SIGNING_KEY` or `CUSTOMER_PORTAL_SESSION_SECRET`). CMS / Sigstore swap-in is a phase-6 candidate now that the envelope shape is in place. |
+| Signing | Shipped as the `?sign=true` envelope on `/abom/export`. Prefers OpenBao Transit ed25519 (lazy-created at `cyberarmor-transit/keys/abom-export`); HMAC-SHA256 fallback when OpenBao is unconfigured. Envelope stamps `key_provider` so consumers can tell which path produced the signature. Verify via `POST /customer/abom/export/verify`, fetch public-key metadata via `GET /customer/abom/signing-key`. |
 | PURL coverage for AI models | `pkg:huggingface/<org>/<name>` and `pkg:ollama/<model>@<tag>` shipped pragmatically; will track the upstream PURL spec when it finalizes. |
 | Hardware identity for ephemeral workloads | `identity_key` formula uses `manufacturer` ("Amazon Web Services" / "Google Cloud" / "Microsoft Azure") + the ARN/resource_id as the dedup anchor. Works in practice — same cloud resource collides on repeat sweeps. |
 | Telemetry path separation | A-BOM ingest is on its own endpoints (`/agents/{id}/abom/ingest`, `/rasp/abom/ingest`, `/customer/abom/...`). Never crosses `/telemetry/ingest`. |
@@ -320,10 +320,7 @@ The five-phase arc covers the **feature surface**. Phase 6 is what turns it into
 
 ### 9.1 Signing & evidence integrity
 
-- **Replace HMAC envelope with CMS or Sigstore signatures** on `/abom/export`. The current envelope satisfies the per-tenant verifiability requirement but isn't cryptographically rooted in any external trust anchor. Customer security teams will want one of:
-  - **CMS via OpenBao Transit** — reuse the audit-signing infra (`cyberarmor-transit/sign/...`).
-  - **Sigstore + Fulcio** — short-lived keys, OIDC-anchored.
-  Decide before any customer asks for an attestation.
+- ~~**Replace HMAC envelope with CMS or Sigstore signatures** on `/abom/export`.~~ **Shipped.** OpenBao Transit ed25519 is now the default signer. The signing key (`cyberarmor-transit/keys/abom-export`) is lazy-created on first export, never leaves the vault, and is exposed for offline verification via `GET /customer/abom/signing-key`. HMAC-SHA256 stays as the dev/demo fallback when OpenBao isn't configured; the envelope carries `key_provider` so consumers can tell. `POST /customer/abom/export/verify` round-trips both envelope flavors. Sigstore + Fulcio remains a future option for OIDC-anchored attestations but is no longer blocking.
 - **In-toto attestations for repo + artifact sources** so the BOM carries provenance proof that ties a component back to its build event (CI workflow + Git commit).
 
 ### 9.2 Scheduler robustness
@@ -378,8 +375,8 @@ The five-phase arc covers the **feature surface**. Phase 6 is what turns it into
 
 Phase 6 doesn't ship as one commit. Each subsection in §9 is its own slice — the order below reflects estimated customer-asked-for-it weight:
 
-1. **9.3** — KEV + EPSS + background vuln scan cron (biggest demo lift; biggest customer ask)
-2. **9.1** — Signing upgrade (CMS via OpenBao Transit; required for any GRC/audit conversation)
+1. ~~**9.3** — KEV + EPSS + background vuln scan cron~~ **Shipped.** (KEV + EPSS overlay landed; background scan cron still open.)
+2. ~~**9.1** — Signing upgrade (CMS via OpenBao Transit)~~ **Shipped.** OpenBao Transit ed25519 with HMAC fallback.
 3. **9.4** — VEX export + bulk import + re-scan suppression
 4. **9.2** — Multi-replica scheduler
 5. **9.6** — Evidence-pack integration

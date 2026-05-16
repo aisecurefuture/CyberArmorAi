@@ -7544,6 +7544,195 @@ def _abom_canonical_bytes(bom: Dict[str, Any]) -> bytes:
     return json.dumps(bom, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
+# ---------------------------------------------------------------------------
+# A-BOM signing via OpenBao Transit
+# ---------------------------------------------------------------------------
+#
+# Phase 6 §9.1 — the original HMAC envelope was per-tenant-verifiable but
+# rooted only in our own session secret; customer security teams want a
+# signature anchored in something they can pin externally. OpenBao Transit
+# gives us ed25519 sign/verify against a key that never leaves the vault.
+# When OpenBao isn't reachable (dev, single-node demos) we fall back to
+# the HMAC envelope and stamp ``key_provider`` so a consumer can tell
+# which path produced the signature.
+
+_ABOM_TRANSIT_KEY = os.getenv("ABOM_TRANSIT_KEY", "abom-export")
+_ABOM_TRANSIT_HASH = "sha2-256"
+
+
+def _ensure_abom_transit_key(client: OpenBaoClient) -> None:
+    """Lazy-create the ed25519 signing key. Idempotent: a 400 from
+    OpenBao on a name that already exists is swallowed so services can
+    call this on every export without coordinating."""
+    try:
+        client.transit_key_read(_ABOM_TRANSIT_KEY)
+        return
+    except OpenBaoError:
+        pass
+    try:
+        client.transit_key_create(_ABOM_TRANSIT_KEY, key_type="ed25519", exportable=False)
+    except OpenBaoError as exc:
+        # If the key was created concurrently, transit_key_read will now
+        # succeed; re-check before giving up so we don't false-fail.
+        try:
+            client.transit_key_read(_ABOM_TRANSIT_KEY)
+            return
+        except OpenBaoError:
+            raise exc
+
+
+def _transit_sign_abom_bytes(canonical: bytes) -> Optional[Dict[str, Any]]:
+    """Sign canonical BOM bytes with the tenant-wide Transit ed25519
+    key. Returns the signature envelope or None if OpenBao isn't
+    reachable / configured — caller is expected to fall back to HMAC.
+    """
+    client = _openbao_client_or_none()
+    if client is None:
+        return None
+    try:
+        _ensure_abom_transit_key(client)
+        input_b64 = base64.b64encode(canonical).decode("ascii")
+        result = client.transit_sign(_ABOM_TRANSIT_KEY, input_b64, hash_algorithm=_ABOM_TRANSIT_HASH)
+    except OpenBaoError as exc:
+        logger.warning("Transit sign failed for abom export, falling back to HMAC: %s", exc)
+        return None
+    signature = result.get("signature") or ""
+    # Transit returns ``vault:v<n>:<base64-sig>``; pull the version out so
+    # consumers can pin a key generation.
+    key_version: Optional[int] = None
+    if signature.startswith("vault:v"):
+        try:
+            key_version = int(signature.split(":", 2)[1][1:])
+        except (ValueError, IndexError):
+            key_version = None
+    return {
+        "alg": "ed25519",
+        "key_name": _ABOM_TRANSIT_KEY,
+        "key_id": f"{_ABOM_TRANSIT_KEY}:v{key_version}" if key_version is not None else _ABOM_TRANSIT_KEY,
+        "key_version": key_version,
+        "value": signature,
+        "hash": _ABOM_TRANSIT_HASH,
+        "signed_at": datetime.now(timezone.utc).isoformat(),
+        "canonical_bytes_len": len(canonical),
+        "key_provider": "openbao-transit",
+    }
+
+
+def _hmac_sign_abom_bytes(tenant_id: str, canonical: bytes) -> Dict[str, Any]:
+    """Legacy HMAC-SHA256 envelope. Used as the dev-mode fallback when
+    OpenBao isn't configured or returns an error."""
+    key = _abom_signing_key(tenant_id)
+    sig = hmac.new(key, canonical, hashlib.sha256).hexdigest()
+    return {
+        "alg": "HMAC-SHA256",
+        "key_id": f"tenant:{tenant_id}:abom-v1",
+        "value": sig,
+        "signed_at": datetime.now(timezone.utc).isoformat(),
+        "canonical_bytes_len": len(canonical),
+        "key_provider": "hmac-fallback",
+    }
+
+
+@app.get("/customer/abom/signing-key")
+def customer_abom_signing_key(
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+) -> Dict[str, Any]:
+    """Expose the Transit signing key metadata + public key so external
+    consumers can verify an exported BOM offline. Falls back to a
+    descriptor of the HMAC fallback when OpenBao isn't configured —
+    HMAC has no public half, so the caller has to use the
+    ``/abom/export/verify`` endpoint round-trip instead.
+    """
+    _ = ctx  # tenant context guards the route; the signing key itself is platform-wide
+    client = _openbao_client_or_none()
+    if client is None:
+        return {
+            "key_provider": "hmac-fallback",
+            "alg": "HMAC-SHA256",
+            "note": "OpenBao Transit not configured; verify via POST /customer/abom/export/verify",
+        }
+    try:
+        _ensure_abom_transit_key(client)
+        info = client.transit_key_read(_ABOM_TRANSIT_KEY)
+    except OpenBaoError as exc:
+        logger.warning("Transit key read failed: %s", exc)
+        return {
+            "key_provider": "hmac-fallback",
+            "alg": "HMAC-SHA256",
+            "error": str(exc),
+        }
+    keys = info.get("keys") or {}
+    # ``keys`` is a dict {version: {creation_time, public_key, ...}}.
+    versions: List[Dict[str, Any]] = []
+    for ver, meta in sorted(keys.items(), key=lambda kv: int(kv[0]) if str(kv[0]).isdigit() else 0):
+        if isinstance(meta, dict):
+            versions.append({
+                "version": int(ver) if str(ver).isdigit() else ver,
+                "public_key": meta.get("public_key"),
+                "creation_time": meta.get("creation_time"),
+            })
+        else:
+            versions.append({"version": ver, "public_key": str(meta)})
+    return {
+        "key_provider": "openbao-transit",
+        "alg": "ed25519",
+        "key_name": _ABOM_TRANSIT_KEY,
+        "latest_version": info.get("latest_version"),
+        "min_decryption_version": info.get("min_decryption_version"),
+        "min_encryption_version": info.get("min_encryption_version"),
+        "versions": versions,
+    }
+
+
+@app.post("/customer/abom/export/verify")
+def customer_abom_export_verify(
+    payload: Dict[str, Any],
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+) -> Dict[str, Any]:
+    """Verify a previously-exported signed BOM envelope. Accepts the
+    full ``{bom, signature}`` document the export endpoint returns and
+    confirms the signature matches the canonical bytes of the embedded
+    BOM. Transit and HMAC envelopes both supported.
+    """
+    bom = payload.get("bom")
+    sig = payload.get("signature")
+    if not isinstance(bom, dict) or not isinstance(sig, dict):
+        raise HTTPException(status_code=400, detail="payload must be {bom, signature}")
+    canonical = _abom_canonical_bytes(bom)
+    alg = (sig.get("alg") or "").lower()
+    provider = sig.get("key_provider") or ("openbao-transit" if alg == "ed25519" else "hmac-fallback")
+    value = sig.get("value") or ""
+    if provider == "openbao-transit" or alg == "ed25519":
+        client = _openbao_client_or_none()
+        if client is None:
+            return {"valid": False, "reason": "OpenBao Transit not configured on this control-plane", "key_provider": provider}
+        try:
+            input_b64 = base64.b64encode(canonical).decode("ascii")
+            key_name = sig.get("key_name") or _ABOM_TRANSIT_KEY
+            hash_alg = sig.get("hash") or _ABOM_TRANSIT_HASH
+            result = client.transit_verify(key_name, input_b64, value, hash_algorithm=hash_alg)
+        except OpenBaoError as exc:
+            return {"valid": False, "reason": str(exc), "key_provider": provider}
+        return {
+            "valid": bool(result.get("valid")),
+            "key_provider": "openbao-transit",
+            "alg": "ed25519",
+            "key_id": sig.get("key_id"),
+            "canonical_bytes_len": len(canonical),
+        }
+    # HMAC fallback path — recompute and constant-time compare.
+    key = _abom_signing_key(ctx.tenant_id)
+    expected = hmac.new(key, canonical, hashlib.sha256).hexdigest()
+    valid = hmac.compare_digest(expected, str(value))
+    return {
+        "valid": valid,
+        "key_provider": "hmac-fallback",
+        "alg": "HMAC-SHA256",
+        "key_id": sig.get("key_id"),
+        "canonical_bytes_len": len(canonical),
+    }
+
+
 @app.get("/customer/abom/export")
 def customer_abom_export(
     ctx: Annotated[CustomerContext, Depends(get_customer_context)],
@@ -7599,24 +7788,16 @@ def customer_abom_export(
     }
     if not sign:
         return bom
-    # Signed envelope: HMAC-SHA256 over the canonical (sort_keys + compact)
-    # bytes of the BOM. Verifiers reconstruct the same canonical bytes and
-    # match. CMS / Sigstore swap-in is a follow-up — the envelope shape
-    # already carries alg and key_id so we can extend later without breaking
-    # consumers.
-    key = _abom_signing_key(ctx.tenant_id)
+    # Signed envelope: prefer OpenBao Transit ed25519 over the canonical
+    # (sort_keys + compact) bytes of the BOM. Falls back to HMAC-SHA256
+    # when OpenBao isn't reachable so dev / demo flows still work. The
+    # envelope carries ``key_provider`` so a consumer can tell which path
+    # produced it.
     canonical = _abom_canonical_bytes(bom)
-    sig = hmac.new(key, canonical, hashlib.sha256).hexdigest()
-    return {
-        "bom": bom,
-        "signature": {
-            "alg": "HMAC-SHA256",
-            "key_id": f"tenant:{ctx.tenant_id}:abom-v1",
-            "value": sig,
-            "signed_at": datetime.now(timezone.utc).isoformat(),
-            "canonical_bytes_len": len(canonical),
-        },
-    }
+    signature = _transit_sign_abom_bytes(canonical)
+    if signature is None:
+        signature = _hmac_sign_abom_bytes(ctx.tenant_id, canonical)
+    return {"bom": bom, "signature": signature}
 
 
 @app.post("/agents/{agent_id}/telemetry")
