@@ -203,6 +203,12 @@ class ABOMVulnerability(Base):
 
     Identity is the canonical advisory id (CVE-… or GHSA-…). Aliases
     are stored so a portal lookup by either form hits the same row.
+
+    Threat-intel fields (``is_kev``, ``kev_*``, ``epss_score``,
+    ``epss_percentile``) overlay CISA's Known Exploited Vulnerabilities
+    catalog and FIRST.org's Exploit Prediction Scoring System on top
+    of the raw advisory. They're refreshed by the threat_intel module
+    on a daily cadence and inform the vuln-aware policy evaluator.
     """
     __tablename__ = "abom_vulnerabilities"
 
@@ -218,7 +224,17 @@ class ABOMVulnerability(Base):
     published_at  = Column(DateTime(timezone=True), nullable=True)
     modified_at   = Column(DateTime(timezone=True), nullable=True)
     raw           = Column(JSONB().with_variant(Text, "sqlite"), nullable=True)
-    created_at    = Column(DateTime(timezone=True), default=now_utc)
+    # KEV — CISA Known Exploited Vulnerabilities catalog.
+    is_kev          = Column(Boolean, nullable=False, default=False, index=True)
+    kev_added_at    = Column(DateTime(timezone=True), nullable=True)
+    kev_due_date    = Column(DateTime(timezone=True), nullable=True)
+    kev_action      = Column(Text, nullable=True)
+    kev_ransomware  = Column(String, nullable=True)  # "Known" | "Unknown" per CISA
+    # EPSS — FIRST.org Exploit Prediction Scoring System.
+    epss_score      = Column(Float, nullable=True, index=True)
+    epss_percentile = Column(Float, nullable=True)
+    epss_updated_at = Column(DateTime(timezone=True), nullable=True)
+    created_at      = Column(DateTime(timezone=True), default=now_utc)
 
 
 class ABOMComponentVulnerability(Base):

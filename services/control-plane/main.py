@@ -6695,6 +6695,12 @@ def _upsert_advisory(db: Session, row: Dict[str, Any], raw: Dict[str, Any]) -> O
         "modified_at":  row.get("modified_at"),
         "raw":          _encode_meta_for_db(raw or {}),
     }
+    # KEV overlay fields — only set when the caller provided them so an
+    # OSV-only pass doesn't clobber prior KEV state. The vuln-scan
+    # handler always passes them when running with threat intel enabled.
+    for kev_key in ("is_kev", "kev_added_at", "kev_due_date", "kev_action", "kev_ransomware"):
+        if kev_key in row:
+            payload[kev_key] = row[kev_key]
     if existing is None:
         # Use kwargs-with-column-name (references_ → references on disk).
         existing = ABOMVulnerability(**payload)
@@ -6758,6 +6764,7 @@ def customer_abom_vuln_scan(
     from vulnerability_scanner import (
         osv_batch_query, osv_fetch_vuln, shape_advisory_row,
     )
+    from threat_intel import fetch_kev_catalog, fetch_epss_scores, collect_cve_ids
 
     purl_to_component: Dict[str, ABOMComponent] = {}
     rows = (
@@ -6785,6 +6792,11 @@ def customer_abom_vuln_scan(
     now = datetime.now(timezone.utc)
     batch_results = osv_batch_query(purls)
 
+    # Pull the KEV catalog once per scan — it's a small file that we
+    # full-replace overlay. EPSS is queried lazily per CVE batch
+    # after we know which advisories actually matched.
+    kev_catalog = fetch_kev_catalog()
+
     # OSV's batch endpoint returns IDs + modified timestamps only; we
     # need to fetch the full advisory per id to extract severity /
     # references / etc. Cache by id so duplicate findings across
@@ -6792,6 +6804,12 @@ def customer_abom_vuln_scan(
     advisory_cache: Dict[str, Optional[Dict[str, Any]]] = {}
     findings = 0
     seen_ids: set = set()
+    kev_hits = 0
+    # Collect CVE ids we'll EPSS-score later. We can't query EPSS for
+    # every CVE in the world; only the ones that matched a tenant
+    # component get scored.
+    cves_to_score: set = set()
+    advisory_to_cves: Dict[str, List[str]] = {}
 
     for purl, vuln_briefs in batch_results.items():
         component = purl_to_component.get(purl)
@@ -6811,6 +6829,25 @@ def customer_abom_vuln_scan(
             if not advisory:
                 continue
             shaped = shape_advisory_row(advisory, purl=purl)
+            # Enrich with KEV before the upsert so the row carries
+            # is_kev / kev_added_at on first insert.
+            aliases = advisory.get("aliases") or []
+            cve_ids = collect_cve_ids(vuln_id, aliases if isinstance(aliases, list) else [])
+            for cve in cve_ids:
+                cves_to_score.add(cve)
+            advisory_to_cves[vuln_id] = cve_ids
+            kev_entry = None
+            for cve in cve_ids:
+                if cve in kev_catalog:
+                    kev_entry = kev_catalog[cve]
+                    break
+            if kev_entry:
+                shaped["is_kev"] = True
+                shaped["kev_added_at"] = kev_entry.get("kev_added_at")
+                shaped["kev_due_date"] = kev_entry.get("kev_due_date")
+                shaped["kev_action"] = kev_entry.get("kev_action") or ""
+                shaped["kev_ransomware"] = kev_entry.get("kev_ransomware") or ""
+                kev_hits += 1
             advisory_row = _upsert_advisory(db, shaped, advisory)
             if advisory_row is None:
                 continue
@@ -6818,9 +6855,36 @@ def customer_abom_vuln_scan(
             findings += 1
     db.commit()
 
+    # EPSS pass — query in batches for every CVE the scan turned up,
+    # then patch the score onto the corresponding ABOMVulnerability
+    # rows. Doing this after the upsert keeps the OSV path
+    # uncoupled — an EPSS API hiccup leaves the rest of the scan intact.
+    epss_scores = fetch_epss_scores(cves_to_score) if cves_to_score else {}
+    epss_updates = 0
+    if epss_scores:
+        for vuln_id, cves in advisory_to_cves.items():
+            # Highest score across this advisory's aliases wins.
+            best = None
+            for cve in cves:
+                entry = epss_scores.get(cve)
+                if not entry:
+                    continue
+                if best is None or (entry.get("epss_score") or 0) > (best.get("epss_score") or 0):
+                    best = entry
+            if not best:
+                continue
+            adv_row = db.query(ABOMVulnerability).filter(ABOMVulnerability.vuln_id == vuln_id).first()
+            if adv_row is None:
+                continue
+            adv_row.epss_score = best.get("epss_score")
+            adv_row.epss_percentile = best.get("epss_percentile")
+            adv_row.epss_updated_at = best.get("epss_updated_at") or now
+            epss_updates += 1
+        db.commit()
+
     logger.info(
-        "abom_vuln_scan tenant=%s purls=%d findings=%d advisories=%d",
-        ctx.tenant_id, len(purls), findings, len(seen_ids),
+        "abom_vuln_scan tenant=%s purls=%d findings=%d advisories=%d kev=%d epss=%d",
+        ctx.tenant_id, len(purls), findings, len(seen_ids), kev_hits, epss_updates,
     )
     return {
         "status": "ok",
@@ -6828,6 +6892,8 @@ def customer_abom_vuln_scan(
         "components_scanned": len(purls),
         "findings": findings,
         "advisories_seen": len(seen_ids),
+        "kev_matches": kev_hits,
+        "epss_scored": epss_updates,
     }
 
 
@@ -6840,11 +6906,13 @@ def customer_abom_vulnerabilities(
     severity: Optional[str] = None,
     q: Optional[str] = None,
     vex_status: Optional[str] = None,
+    only_kev: bool = False,
 ) -> Dict[str, Any]:
     """Paginated list of advisories that hit at least one tenant
     component. Group-by ``vuln_id`` on the junction table; counts of
     affected components surface in each row so an operator can sort by
-    blast radius."""
+    blast radius. ``only_kev=true`` filters to CISA-listed exploited
+    vulns — typically the operator's first triage stop."""
     limit = max(1, min(limit, 500))
     offset = max(0, offset)
 
@@ -6894,6 +6962,8 @@ def customer_abom_vulnerabilities(
     items: List[Dict[str, Any]] = []
     for r in rows:
         advisory = advisories.get(r.vuln_id)
+        if only_kev and not (advisory and advisory.is_kev):
+            continue
         if q:
             haystack = f"{r.vuln_id} {advisory.summary if advisory else ''}".lower()
             if q.lower() not in haystack:
@@ -6908,6 +6978,11 @@ def customer_abom_vulnerabilities(
             "aliases": _coerce_meta(advisory.aliases) if advisory and advisory.aliases else [],
             "ecosystem": advisory.ecosystem if advisory else "",
             "published_at": advisory.published_at.isoformat() if advisory and advisory.published_at else None,
+            "is_kev": bool(advisory.is_kev) if advisory else False,
+            "kev_due_date": advisory.kev_due_date.isoformat() if advisory and advisory.kev_due_date else None,
+            "kev_ransomware": advisory.kev_ransomware if advisory else None,
+            "epss_score": advisory.epss_score if advisory else None,
+            "epss_percentile": advisory.epss_percentile if advisory else None,
         })
 
     # Severity tile counts — one query so the metric strip stays cheap.
@@ -6941,6 +7016,16 @@ def customer_abom_vulnerabilities(
     for k, v in vex_counts_raw.items():
         vex_counts[k or "open"] = int(v)
 
+    # KEV roll-up: distinct advisories the tenant has that are in
+    # the catalog. Single query, scoped to advisories that hit
+    # at least one tenant component.
+    kev_total = (
+        db.query(func.count(func.distinct(ABOMComponentVulnerability.vuln_id)))
+        .join(ABOMVulnerability, ABOMVulnerability.vuln_id == ABOMComponentVulnerability.vuln_id)
+        .filter(ABOMComponentVulnerability.tenant_id == ctx.tenant_id)
+        .filter(ABOMVulnerability.is_kev.is_(True))
+        .scalar() or 0
+    )
     return {
         "advisories": items,
         "total": int(total),
@@ -6948,6 +7033,7 @@ def customer_abom_vulnerabilities(
         "offset": offset,
         "severity_counts": {k or "unknown": int(v) for k, v in severity_counts.items()},
         "vex_counts": vex_counts,
+        "kev_total": int(kev_total),
     }
 
 
@@ -6982,6 +7068,14 @@ def customer_abom_vulnerability_detail(
         "ecosystem": advisory.ecosystem or "",
         "published_at": advisory.published_at.isoformat() if advisory.published_at else None,
         "modified_at": advisory.modified_at.isoformat() if advisory.modified_at else None,
+        "is_kev": bool(advisory.is_kev),
+        "kev_added_at": advisory.kev_added_at.isoformat() if advisory.kev_added_at else None,
+        "kev_due_date": advisory.kev_due_date.isoformat() if advisory.kev_due_date else None,
+        "kev_action": advisory.kev_action or "",
+        "kev_ransomware": advisory.kev_ransomware or "",
+        "epss_score": advisory.epss_score,
+        "epss_percentile": advisory.epss_percentile,
+        "epss_updated_at": advisory.epss_updated_at.isoformat() if advisory.epss_updated_at else None,
         "components": [
             {
                 "id": comp.id,
@@ -7136,6 +7230,10 @@ def customer_abom_component_vulnerabilities(
                 "summary": (adv.summary or "")[:240],
                 "aliases": _coerce_meta(adv.aliases) or [],
                 "published_at": adv.published_at.isoformat() if adv.published_at else None,
+                "is_kev": bool(adv.is_kev),
+                "kev_due_date": adv.kev_due_date.isoformat() if adv.kev_due_date else None,
+                "epss_score": adv.epss_score,
+                "epss_percentile": adv.epss_percentile,
             }
             for j, adv in rows
         ],
@@ -7169,8 +7267,11 @@ def customer_abom_risk_policy(
     # ``not_affected`` or ``fixed`` is excluded — that's the whole
     # point of VEX, and skipping it here means the operator can
     # silence false positives that policies would otherwise fire on.
+    # Join the junction to ABOMVulnerability so we can roll up KEV +
+    # EPSS facts per component without a second pass.
     findings = (
-        db.query(ABOMComponentVulnerability)
+        db.query(ABOMComponentVulnerability, ABOMVulnerability)
+        .join(ABOMVulnerability, ABOMVulnerability.vuln_id == ABOMComponentVulnerability.vuln_id)
         .filter(ABOMComponentVulnerability.tenant_id == ctx.tenant_id)
         .filter(
             (ABOMComponentVulnerability.vex_status.is_(None))
@@ -7179,21 +7280,29 @@ def customer_abom_risk_policy(
         .all()
     )
     by_component: Dict[str, Dict[str, Any]] = {}
-    for f in findings:
+    rank = {"critical": 4, "high": 3, "medium": 2, "low": 1, "unknown": 0}
+    for f, adv in findings:
         agg = by_component.setdefault(f.component_id, {
             "component_id": f.component_id,
             "vuln_count": 0,
             "max_severity": "unknown",
             "max_cvss_score": 0.0,
+            "max_epss_score": 0.0,
+            "is_kev": False,
+            "kev_vuln_ids": [],
             "vuln_ids": [],
         })
         agg["vuln_count"] += 1
         agg["vuln_ids"].append(f.vuln_id)
-        rank = {"critical": 4, "high": 3, "medium": 2, "low": 1, "unknown": 0}
         if rank.get((f.severity or "unknown").lower(), 0) > rank.get(agg["max_severity"], 0):
             agg["max_severity"] = (f.severity or "unknown").lower()
         if (f.cvss_score or 0) > agg["max_cvss_score"]:
             agg["max_cvss_score"] = float(f.cvss_score or 0)
+        if adv and adv.is_kev:
+            agg["is_kev"] = True
+            agg["kev_vuln_ids"].append(f.vuln_id)
+        if adv and (adv.epss_score or 0) > agg["max_epss_score"]:
+            agg["max_epss_score"] = float(adv.epss_score or 0)
 
     # Annotate each affected component with its name/version so the
     # portal banner can render something useful without a second hop.
@@ -7250,6 +7359,9 @@ def customer_abom_risk_policy(
                     "purl": c.get("purl") or "",
                     "max_severity": c["max_severity"],
                     "max_cvss_score": c["max_cvss_score"],
+                    "max_epss_score": c.get("max_epss_score", 0.0),
+                    "is_kev": c.get("is_kev", False),
+                    "kev_vuln_ids": c.get("kev_vuln_ids", [])[:5],
                     "vuln_ids": c["vuln_ids"][:5],
                 })
         if matched_components:
@@ -7289,6 +7401,8 @@ def _policy_has_vuln_condition(conditions: Any) -> bool:
             "content.max_cvss_score",
             "content.max_severity",
             "content.vuln_count",
+            "content.is_kev",
+            "content.max_epss_score",
         ):
             return True
     return False
@@ -7329,6 +7443,10 @@ def _eval_vuln_conditions(conditions: Any, component_vuln: Dict[str, Any]) -> bo
             actual = component_vuln.get("max_severity") or "unknown"
         elif field == "content.vuln_count":
             actual = int(component_vuln.get("vuln_count", 0))
+        elif field == "content.is_kev":
+            actual = bool(component_vuln.get("is_kev", False))
+        elif field == "content.max_epss_score":
+            actual = float(component_vuln.get("max_epss_score", 0) or 0)
         else:
             # Non-vuln field — neutral pass so a policy can mix
             # vuln rules with non-vuln rules without short-circuiting.

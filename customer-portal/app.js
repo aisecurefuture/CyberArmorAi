@@ -3033,6 +3033,7 @@ async function viewBillOfMaterials() {
   let vulnScanBusy = false;
   let vulnScanMessage = null;
   let vulnVexFilter = "all"; // all | open | not_affected | under_investigation | affected | fixed | false_positive
+  let vulnKevOnly = false;   // when true, only show CISA-KEV-listed advisories
   // Per-(component,vuln) VEX edit buffer — keyed by `${component_id}::${vuln_id}`
   // so multiple advisories on one component don't share state.
   let vexEdit = {};        // {key: {status, justification, response}}
@@ -3164,6 +3165,7 @@ async function viewBillOfMaterials() {
       if (vulnSeverityFilter !== "all") params.set("severity", vulnSeverityFilter);
       if (vulnSearch.trim()) params.set("q", vulnSearch.trim());
       if (vulnVexFilter !== "all") params.set("vex_status", vulnVexFilter);
+      if (vulnKevOnly) params.set("only_kev", "true");
       vulnList = await api(`/api/customer/abom/vulnerabilities?${params.toString()}`);
       vulnLoadError = null;
     } catch (err) {
@@ -3233,9 +3235,11 @@ async function viewBillOfMaterials() {
     render();
     try {
       const resp = await api("/api/customer/abom/vuln-scan", { method: "POST" });
+      const kev = resp.kev_matches || 0;
+      const epss = resp.epss_scored || 0;
       vulnScanMessage = {
         kind: "ok",
-        text: `Scanned ${resp.components_scanned} components — ${resp.findings} findings across ${resp.advisories_seen} advisories.`,
+        text: `Scanned ${resp.components_scanned} components — ${resp.findings} findings across ${resp.advisories_seen} advisories${kev ? `, ${kev} on the CISA KEV catalog` : ""}${epss ? `, EPSS scored ${epss}` : ""}.`,
       };
       await loadVulns();
       await loadRiskPolicy();
@@ -3536,11 +3540,11 @@ async function viewBillOfMaterials() {
               ${inspectorVulns.slice(0, 25).map((v) => `
                 <div class="rounded-lg bg-slate-900 px-2 py-1.5">
                   <div class="flex items-center justify-between gap-2">
-                    <span class="font-mono text-xs text-slate-200 truncate">${esc(v.vuln_id)}</span>
+                    <span class="font-mono text-xs text-slate-200 truncate">${esc(v.vuln_id)}${v.is_kev ? ` <span class="ml-1 inline-flex items-center rounded-full bg-rose-500/30 px-1 py-0.5 text-[9px] font-semibold uppercase text-rose-100" title="${esc(v.kev_due_date ? `KEV due ${v.kev_due_date}` : "On CISA KEV catalog")}">KEV</span>` : ""}</span>
                     ${abomSeverityPill(v.severity)}
                   </div>
                   <div class="mt-0.5 text-[10px] text-slate-400 break-words">${esc((v.summary || "").slice(0, 160))}${(v.summary || "").length > 160 ? "…" : ""}</div>
-                  ${v.cvss_score != null ? `<div class="mt-0.5 text-[10px] text-slate-500">CVSS ${esc(String(v.cvss_score))}${v.vex_status ? ` · vex=${esc(v.vex_status)}` : ""}</div>` : ""}
+                  ${v.cvss_score != null || v.epss_score != null ? `<div class="mt-0.5 text-[10px] text-slate-500">${v.cvss_score != null ? `CVSS ${esc(String(v.cvss_score))}` : ""}${v.epss_score != null ? `${v.cvss_score != null ? " · " : ""}EPSS ${(Number(v.epss_score) * 100).toFixed(1)}%` : ""}${v.vex_status ? ` · vex=${esc(v.vex_status)}` : ""}</div>` : ""}
                 </div>
               `).join("")}
             </div>
@@ -3675,6 +3679,18 @@ async function viewBillOfMaterials() {
             </div>
             <button id="vulnClearSelection" type="button" class="text-xs text-slate-400 hover:text-slate-200">Clear</button>
           </div>
+          ${d.is_kev ? `<div class="mt-2 rounded-lg bg-rose-500/15 border border-rose-900/60 px-2 py-1.5 text-[11px] text-rose-100">
+            <span class="font-semibold">CISA KEV</span> — actively exploited.
+            ${d.kev_added_at ? `Added ${esc(new Date(d.kev_added_at).toLocaleDateString())}. ` : ""}
+            ${d.kev_due_date ? `Federal remediation due ${esc(new Date(d.kev_due_date).toLocaleDateString())}. ` : ""}
+            ${d.kev_ransomware && d.kev_ransomware.toLowerCase() === "known" ? `<span class="font-semibold">Known ransomware use.</span> ` : ""}
+            ${d.kev_action ? `<div class="mt-1 text-[10px] opacity-90">${esc(d.kev_action)}</div>` : ""}
+          </div>` : ""}
+          ${d.epss_score != null ? `<div class="mt-2 text-[11px] text-slate-300">
+            <span class="font-semibold">EPSS</span> ${(Number(d.epss_score) * 100).toFixed(1)}% predicted 30-day exploit probability
+            ${d.epss_percentile != null ? ` <span class="text-slate-500">(p${(Number(d.epss_percentile) * 100).toFixed(0)})</span>` : ""}
+            ${d.epss_updated_at ? `<span class="text-slate-500"> · scored ${esc(new Date(d.epss_updated_at).toLocaleDateString())}</span>` : ""}
+          </div>` : ""}
           ${d.summary ? `<p class="mt-3 text-xs text-slate-300">${esc(d.summary)}</p>` : ""}
           ${aliases.length ? `<div class="mt-2 flex flex-wrap gap-1">${aliases.map((a) => `<span class="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-300">${esc(String(a))}</span>`).join("")}</div>` : ""}
           ${d.published_at ? `<div class="mt-2 text-[10px] text-slate-500">Published ${esc(new Date(d.published_at).toLocaleDateString())}${d.modified_at ? ` · modified ${esc(new Date(d.modified_at).toLocaleDateString())}` : ""}</div>` : ""}
@@ -3731,11 +3747,28 @@ async function viewBillOfMaterials() {
       `;
     })();
 
+    const kevBadge = (a) => a.is_kev
+      ? `<span class="ml-1 inline-flex items-center rounded-full bg-rose-500/30 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-rose-100" title="${esc(a.kev_due_date ? `KEV remediation due ${a.kev_due_date}` : "On CISA Known Exploited Vulnerabilities catalog")}">KEV</span>`
+      : "";
+    const epssCell = (a) => {
+      if (a.epss_score == null) return "—";
+      // EPSS scores cluster near zero; format as percent and tag the
+      // worst ones so an operator can sort by likelihood.
+      const pct = (Number(a.epss_score) * 100).toFixed(1);
+      const tone = a.epss_score >= 0.5 ? "text-rose-200"
+                 : a.epss_score >= 0.1 ? "text-amber-200"
+                 : "text-slate-400";
+      const percentile = a.epss_percentile != null
+        ? ` <span class="text-[9px] text-slate-500">p${(Number(a.epss_percentile) * 100).toFixed(0)}</span>`
+        : "";
+      return `<span class="${tone}">${pct}%</span>${percentile}`;
+    };
     const rows = (list.advisories || []).map((a) => `<tr data-vuln-id="${esc(a.vuln_id)}" class="border-t border-slate-800 cursor-pointer ${vulnSelectedId === a.vuln_id ? "bg-cyan-500/5" : "hover:bg-slate-900/60"}">
       <td class="px-3 py-2">${abomSeverityPill(a.severity)}</td>
-      <td class="px-3 py-2 font-mono text-xs text-slate-100 break-all">${esc(a.vuln_id)}${(a.aliases || []).length ? `<div class="mt-0.5 flex flex-wrap gap-1">${a.aliases.slice(0,3).map((al) => `<span class="rounded bg-slate-800 px-1 text-[9px] text-slate-400">${esc(al)}</span>`).join("")}</div>` : ""}</td>
+      <td class="px-3 py-2 font-mono text-xs text-slate-100 break-all">${esc(a.vuln_id)}${kevBadge(a)}${(a.aliases || []).length ? `<div class="mt-0.5 flex flex-wrap gap-1">${a.aliases.slice(0,3).map((al) => `<span class="rounded bg-slate-800 px-1 text-[9px] text-slate-400">${esc(al)}</span>`).join("")}</div>` : ""}</td>
       <td class="px-3 py-2 text-xs text-slate-300">${esc((a.summary || "").slice(0, 140))}${(a.summary || "").length > 140 ? "…" : ""}</td>
       <td class="px-3 py-2 text-xs tabular-nums">${a.cvss_score != null ? esc(String(a.cvss_score)) : "—"}</td>
+      <td class="px-3 py-2 text-xs tabular-nums">${epssCell(a)}</td>
       <td class="px-3 py-2 text-xs tabular-nums">${esc(String(a.component_count || 0))}</td>
       <td class="px-3 py-2 text-xs text-slate-400">${esc(a.last_seen_at ? new Date(a.last_seen_at).toLocaleString() : "—")}</td>
     </tr>`).join("");
@@ -3750,8 +3783,9 @@ async function viewBillOfMaterials() {
           ${riskMetricCard("High", sevCounts.high || 0, (sevCounts.high || 0) > 0 ? "rose" : "slate")}
           ${riskMetricCard("Medium", sevCounts.medium || 0, (sevCounts.medium || 0) > 0 ? "amber" : "slate")}
           ${riskMetricCard("Low", sevCounts.low || 0, "slate")}
+          ${riskMetricCard("CISA KEV", list.kev_total || 0, (list.kev_total || 0) > 0 ? "rose" : "slate")}
           <div class="ml-auto flex flex-wrap items-center gap-2">
-            <button id="vulnScan" type="button" class="rounded-2xl bg-rose-500 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-rose-400 disabled:opacity-50" ${vulnScanBusy ? "disabled" : ""}>${vulnScanBusy ? "Scanning…" : "Scan now (OSV)"}</button>
+            <button id="vulnScan" type="button" class="rounded-2xl bg-rose-500 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-rose-400 disabled:opacity-50" ${vulnScanBusy ? "disabled" : ""}>${vulnScanBusy ? "Scanning…" : "Scan now (OSV + KEV + EPSS)"}</button>
             ${vulnScanMessage ? `<span class="text-xs ${vulnScanMessage.kind === "ok" ? "text-emerald-300" : "text-rose-300"}">${esc(vulnScanMessage.text)}</span>` : ""}
           </div>
         </div>
@@ -3772,6 +3806,10 @@ async function viewBillOfMaterials() {
           }).join("")}
         </div>
         <div class="mt-2 flex flex-wrap items-center gap-2">
+          <span class="text-[10px] uppercase tracking-wider text-slate-500">Threat intel</span>
+          <button type="button" id="vulnKevToggle" class="rounded-full px-2 py-1 text-[11px] ${vulnKevOnly ? "bg-rose-500 text-slate-950 font-semibold" : "bg-slate-900 border border-slate-700 text-slate-300 hover:bg-slate-800"}">CISA KEV only${list.kev_total ? ` <span class="${vulnKevOnly ? 'text-slate-900' : 'text-slate-500'}">·${list.kev_total}</span>` : ""}</button>
+        </div>
+        <div class="mt-2 flex flex-wrap items-center gap-2">
           <input id="vulnSearch" type="search" placeholder="Search advisory id or summary…" class="flex-1 min-w-[280px] rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm" value="${esc(vulnSearch)}" />
         </div>
       `)}
@@ -3783,12 +3821,13 @@ async function viewBillOfMaterials() {
                 <th class="px-3 py-2">Severity</th>
                 <th class="px-3 py-2">Advisory</th>
                 <th class="px-3 py-2">Summary</th>
-                <th class="px-3 py-2">CVSS</th>
+                <th class="px-3 py-2" title="CVSS base score">CVSS</th>
+                <th class="px-3 py-2" title="EPSS — predicted 30-day exploit probability">EPSS</th>
                 <th class="px-3 py-2">Components</th>
                 <th class="px-3 py-2">Last seen</th>
               </tr></thead>
               <tbody id="vulnRows">
-                ${rows || `<tr><td colspan="6" class="px-3 py-8 text-center text-sm text-slate-500">No advisories matched yet. Click "Scan now (OSV)" to check the tenant against the public vulnerability database.</td></tr>`}
+                ${rows || `<tr><td colspan="7" class="px-3 py-8 text-center text-sm text-slate-500">No advisories matched yet. Click "Scan now (OSV + KEV + EPSS)" to check the tenant against the public vuln database and the CISA exploited catalog.</td></tr>`}
               </tbody>
             </table>
           </div>
@@ -4600,6 +4639,13 @@ async function viewBillOfMaterials() {
         await loadVulns();
         render();
       });
+    });
+    const kevToggle = $("#vulnKevToggle");
+    if (kevToggle) kevToggle.addEventListener("click", async () => {
+      vulnKevOnly = !vulnKevOnly;
+      vulnPager.page = 1;
+      await loadVulns();
+      render();
     });
     // VEX editor wiring — one set of handlers covers every row in the
     // advisory inspector since the form fields share data-* keys.
