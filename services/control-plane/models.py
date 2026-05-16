@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 
 from db import Base
@@ -193,6 +193,64 @@ class ABOMComponent(Base):
     observation_count = Column(Integer, nullable=False, default=0)
     first_seen_at = Column(DateTime(timezone=True), default=now_utc, nullable=False)
     last_seen_at  = Column(DateTime(timezone=True), default=now_utc, nullable=False, index=True)
+
+
+class ABOMVulnerability(Base):
+    """Vulnerability advisory pulled from OSV (which aggregates GHSA,
+    PyPA, RustSec, OSS-Fuzz, etc.). Tenant-agnostic — one row per
+    CVE/GHSA ID; the per-tenant impact lives on
+    ABOMComponentVulnerability.
+
+    Identity is the canonical advisory id (CVE-… or GHSA-…). Aliases
+    are stored so a portal lookup by either form hits the same row.
+    """
+    __tablename__ = "abom_vulnerabilities"
+
+    id            = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    vuln_id       = Column(String, nullable=False, unique=True, index=True)
+    aliases       = Column(JSONB().with_variant(Text, "sqlite"), nullable=True)  # list[str]
+    summary       = Column(Text, nullable=True)
+    severity      = Column(String, nullable=True, index=True)   # critical | high | medium | low | unknown
+    cvss_score    = Column(Float, nullable=True)
+    cvss_vector   = Column(String, nullable=True)
+    references_   = Column("references", JSONB().with_variant(Text, "sqlite"), nullable=True)
+    ecosystem     = Column(String, nullable=True, index=True)
+    published_at  = Column(DateTime(timezone=True), nullable=True)
+    modified_at   = Column(DateTime(timezone=True), nullable=True)
+    raw           = Column(JSONB().with_variant(Text, "sqlite"), nullable=True)
+    created_at    = Column(DateTime(timezone=True), default=now_utc)
+
+
+class ABOMComponentVulnerability(Base):
+    """Per-tenant junction between a component and an advisory.
+
+    VEX fields (status / justification / updated_by) let an admin
+    annotate a particular finding as "not_affected" / "under_investigation"
+    / "fixed" with a reason. Stays nullable until VEX management lands
+    in phase 5 part 2.
+    """
+    __tablename__ = "abom_component_vulnerabilities"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "component_id", "vuln_id",
+            name="uq_abom_comp_vuln_tenant_component_vuln",
+        ),
+    )
+
+    id                = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    tenant_id         = Column(String, nullable=False, index=True)
+    component_id      = Column(String, nullable=False, index=True)
+    identity_key      = Column(String, nullable=False, index=True)  # denormalized for fast filter
+    vuln_id           = Column(String, nullable=False, index=True)
+    severity          = Column(String, nullable=True, index=True)
+    cvss_score        = Column(Float, nullable=True)
+    first_seen_at     = Column(DateTime(timezone=True), default=now_utc, nullable=False)
+    last_seen_at      = Column(DateTime(timezone=True), default=now_utc, nullable=False, index=True)
+    # VEX surface (phase 5 part 2 will write to these via the portal).
+    vex_status        = Column(String, nullable=True, index=True)   # not_affected | affected | under_investigation | fixed
+    vex_justification = Column(Text, nullable=True)
+    vex_updated_by    = Column(String, nullable=True)
+    vex_updated_at    = Column(DateTime(timezone=True), nullable=True)
 
 
 class ABOMObservation(Base):

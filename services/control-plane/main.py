@@ -28,7 +28,9 @@ from sqlalchemy.orm import Session
 from db import Base, SessionLocal, engine
 from models import (
     ABOMComponent,
+    ABOMComponentVulnerability,
     ABOMObservation,
+    ABOMVulnerability,
     ApiKey,
     AuditLog,
     BootstrapInstall,
@@ -6666,6 +6668,340 @@ def customer_abom_loaded_vs_installed(
             "installed_only": len(installed_only),
             "both": len(both),
         },
+    }
+
+
+# ── A-BOM vulnerability surface (phase 5 part 1) ──────────────────────
+
+
+def _upsert_advisory(db: Session, row: Dict[str, Any], raw: Dict[str, Any]) -> Optional[ABOMVulnerability]:
+    """Idempotent upsert keyed on ``vuln_id``. Returns the persisted
+    row so the caller can use its fields when stamping the junction
+    table."""
+    vuln_id = str(row.get("vuln_id") or "")
+    if not vuln_id:
+        return None
+    existing = db.query(ABOMVulnerability).filter(ABOMVulnerability.vuln_id == vuln_id).first()
+    payload = {
+        "vuln_id":      vuln_id,
+        "aliases":      _encode_meta_for_db(row.get("aliases") or []),
+        "summary":      row.get("summary") or "",
+        "severity":     row.get("severity") or "unknown",
+        "cvss_score":   row.get("cvss_score"),
+        "cvss_vector":  row.get("cvss_vector"),
+        "references_":  _encode_meta_for_db(row.get("references") or []),
+        "ecosystem":    row.get("ecosystem") or "",
+        "published_at": row.get("published_at"),
+        "modified_at":  row.get("modified_at"),
+        "raw":          _encode_meta_for_db(raw or {}),
+    }
+    if existing is None:
+        # Use kwargs-with-column-name (references_ → references on disk).
+        existing = ABOMVulnerability(**payload)
+        db.add(existing)
+        db.flush()
+    else:
+        for k, v in payload.items():
+            setattr(existing, k, v)
+    return existing
+
+
+def _upsert_component_vuln(
+    db: Session,
+    tenant_id: str,
+    component: ABOMComponent,
+    advisory: ABOMVulnerability,
+    now: datetime,
+) -> ABOMComponentVulnerability:
+    """Idempotent junction-row upsert. Severity / cvss are denormalized
+    so the Vulnerabilities filter can sort and chip without joining
+    every query."""
+    existing = (
+        db.query(ABOMComponentVulnerability)
+        .filter(
+            ABOMComponentVulnerability.tenant_id == tenant_id,
+            ABOMComponentVulnerability.component_id == component.id,
+            ABOMComponentVulnerability.vuln_id == advisory.vuln_id,
+        )
+        .first()
+    )
+    if existing is None:
+        existing = ABOMComponentVulnerability(
+            tenant_id=tenant_id,
+            component_id=component.id,
+            identity_key=component.identity_key,
+            vuln_id=advisory.vuln_id,
+            severity=advisory.severity,
+            cvss_score=advisory.cvss_score,
+            first_seen_at=now,
+            last_seen_at=now,
+        )
+        db.add(existing)
+    else:
+        existing.last_seen_at = now
+        # Severity may have been upgraded after a re-scan.
+        existing.severity = advisory.severity
+        existing.cvss_score = advisory.cvss_score
+    return existing
+
+
+@app.post("/customer/abom/vuln-scan")
+def customer_abom_vuln_scan(
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> Dict[str, Any]:
+    """Walk the tenant's components, query OSV per PURL in batches,
+    upsert advisories + per-component findings. Runs inline; bounded
+    by the OSV batch size + a max-purls cap so the handler latency
+    stays predictable. Background scheduling layers on top later.
+    """
+    from vulnerability_scanner import (
+        osv_batch_query, osv_fetch_vuln, shape_advisory_row,
+    )
+
+    purl_to_component: Dict[str, ABOMComponent] = {}
+    rows = (
+        db.query(ABOMComponent)
+        .filter(ABOMComponent.tenant_id == ctx.tenant_id)
+        .all()
+    )
+    for r in rows:
+        if r.purl and r.purl.startswith("pkg:"):
+            # First-component-wins per PURL — duplicates would be a
+            # bug elsewhere (identity_key collisions should already
+            # have merged them).
+            purl_to_component.setdefault(r.purl, r)
+
+    purls = list(purl_to_component.keys())
+    if not purls:
+        return {
+            "status": "ok",
+            "components_scanned": 0,
+            "findings": 0,
+            "advisories_seen": 0,
+            "note": "no components with a PURL — install collectors first",
+        }
+
+    now = datetime.now(timezone.utc)
+    batch_results = osv_batch_query(purls)
+
+    # OSV's batch endpoint returns IDs + modified timestamps only; we
+    # need to fetch the full advisory per id to extract severity /
+    # references / etc. Cache by id so duplicate findings across
+    # components don't hammer the API.
+    advisory_cache: Dict[str, Optional[Dict[str, Any]]] = {}
+    findings = 0
+    seen_ids: set = set()
+
+    for purl, vuln_briefs in batch_results.items():
+        component = purl_to_component.get(purl)
+        if component is None:
+            continue
+        for brief in vuln_briefs:
+            if not isinstance(brief, dict):
+                continue
+            vuln_id = str(brief.get("id") or "")
+            if not vuln_id:
+                continue
+            seen_ids.add(vuln_id)
+            advisory = advisory_cache.get(vuln_id)
+            if vuln_id not in advisory_cache:
+                advisory = osv_fetch_vuln(vuln_id)
+                advisory_cache[vuln_id] = advisory
+            if not advisory:
+                continue
+            shaped = shape_advisory_row(advisory, purl=purl)
+            advisory_row = _upsert_advisory(db, shaped, advisory)
+            if advisory_row is None:
+                continue
+            _upsert_component_vuln(db, ctx.tenant_id, component, advisory_row, now)
+            findings += 1
+    db.commit()
+
+    logger.info(
+        "abom_vuln_scan tenant=%s purls=%d findings=%d advisories=%d",
+        ctx.tenant_id, len(purls), findings, len(seen_ids),
+    )
+    return {
+        "status": "ok",
+        "scanned_at": now.isoformat(),
+        "components_scanned": len(purls),
+        "findings": findings,
+        "advisories_seen": len(seen_ids),
+    }
+
+
+@app.get("/customer/abom/vulnerabilities")
+def customer_abom_vulnerabilities(
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    db: Annotated[Session, Depends(get_db)],
+    limit: int = 100,
+    offset: int = 0,
+    severity: Optional[str] = None,
+    q: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Paginated list of advisories that hit at least one tenant
+    component. Group-by ``vuln_id`` on the junction table; counts of
+    affected components surface in each row so an operator can sort by
+    blast radius."""
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
+
+    base = (
+        db.query(ABOMComponentVulnerability)
+        .filter(ABOMComponentVulnerability.tenant_id == ctx.tenant_id)
+    )
+    if severity:
+        base = base.filter(ABOMComponentVulnerability.severity == severity)
+
+    # Group counts per advisory.
+    grouped = (
+        db.query(
+            ABOMComponentVulnerability.vuln_id,
+            ABOMComponentVulnerability.severity,
+            func.count(ABOMComponentVulnerability.id).label("component_count"),
+            func.max(ABOMComponentVulnerability.last_seen_at).label("last_seen_at"),
+        )
+        .filter(ABOMComponentVulnerability.tenant_id == ctx.tenant_id)
+    )
+    if severity:
+        grouped = grouped.filter(ABOMComponentVulnerability.severity == severity)
+    grouped = grouped.group_by(
+        ABOMComponentVulnerability.vuln_id,
+        ABOMComponentVulnerability.severity,
+    ).order_by(desc("component_count"))
+
+    rows = grouped.offset(offset).limit(limit).all()
+    advisory_ids = [r.vuln_id for r in rows]
+    advisories = {
+        a.vuln_id: a
+        for a in db.query(ABOMVulnerability).filter(ABOMVulnerability.vuln_id.in_(advisory_ids)).all()
+    }
+    items: List[Dict[str, Any]] = []
+    for r in rows:
+        advisory = advisories.get(r.vuln_id)
+        if q:
+            haystack = f"{r.vuln_id} {advisory.summary if advisory else ''}".lower()
+            if q.lower() not in haystack:
+                continue
+        items.append({
+            "vuln_id": r.vuln_id,
+            "severity": r.severity,
+            "component_count": int(r.component_count or 0),
+            "last_seen_at": r.last_seen_at.isoformat() if r.last_seen_at else None,
+            "summary": (advisory.summary if advisory else "") or "",
+            "cvss_score": advisory.cvss_score if advisory else None,
+            "aliases": _coerce_meta(advisory.aliases) if advisory and advisory.aliases else [],
+            "ecosystem": advisory.ecosystem if advisory else "",
+            "published_at": advisory.published_at.isoformat() if advisory and advisory.published_at else None,
+        })
+
+    # Severity tile counts — one query so the metric strip stays cheap.
+    severity_counts = dict(
+        db.query(
+            ABOMComponentVulnerability.severity,
+            func.count(ABOMComponentVulnerability.id),
+        )
+        .filter(ABOMComponentVulnerability.tenant_id == ctx.tenant_id)
+        .group_by(ABOMComponentVulnerability.severity)
+        .all()
+    )
+    total = (
+        db.query(func.count(func.distinct(ABOMComponentVulnerability.vuln_id)))
+        .filter(ABOMComponentVulnerability.tenant_id == ctx.tenant_id)
+        .scalar() or 0
+    )
+
+    return {
+        "advisories": items,
+        "total": int(total),
+        "limit": limit,
+        "offset": offset,
+        "severity_counts": {k or "unknown": int(v) for k, v in severity_counts.items()},
+    }
+
+
+@app.get("/customer/abom/vulnerabilities/{vuln_id}")
+def customer_abom_vulnerability_detail(
+    vuln_id: str,
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    db: Annotated[Session, Depends(get_db)],
+) -> Dict[str, Any]:
+    advisory = db.query(ABOMVulnerability).filter(ABOMVulnerability.vuln_id == vuln_id).first()
+    if advisory is None:
+        raise HTTPException(status_code=404, detail="advisory not found")
+    findings = (
+        db.query(ABOMComponentVulnerability, ABOMComponent)
+        .join(ABOMComponent, ABOMComponent.id == ABOMComponentVulnerability.component_id)
+        .filter(
+            ABOMComponentVulnerability.tenant_id == ctx.tenant_id,
+            ABOMComponentVulnerability.vuln_id == vuln_id,
+        )
+        .order_by(desc(ABOMComponentVulnerability.last_seen_at))
+        .limit(500)
+        .all()
+    )
+    return {
+        "vuln_id": advisory.vuln_id,
+        "severity": advisory.severity,
+        "cvss_score": advisory.cvss_score,
+        "cvss_vector": advisory.cvss_vector,
+        "summary": advisory.summary or "",
+        "aliases": _coerce_meta(advisory.aliases) or [],
+        "references": _coerce_meta(advisory.references_) or [],
+        "ecosystem": advisory.ecosystem or "",
+        "published_at": advisory.published_at.isoformat() if advisory.published_at else None,
+        "modified_at": advisory.modified_at.isoformat() if advisory.modified_at else None,
+        "components": [
+            {
+                "id": comp.id,
+                "name": comp.name,
+                "version": comp.version,
+                "purl": comp.purl,
+                "type": comp.type,
+                "manufacturer": comp.manufacturer,
+                "first_seen_at": j.first_seen_at.isoformat() if j.first_seen_at else None,
+                "last_seen_at": j.last_seen_at.isoformat() if j.last_seen_at else None,
+                "vex_status": j.vex_status,
+            }
+            for j, comp in findings
+        ],
+    }
+
+
+@app.get("/customer/abom/components/{component_id}/vulnerabilities")
+def customer_abom_component_vulnerabilities(
+    component_id: str,
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    db: Annotated[Session, Depends(get_db)],
+) -> Dict[str, Any]:
+    """Used by the Components Inspector panel — every advisory that
+    matched a single component, ordered worst-first."""
+    rows = (
+        db.query(ABOMComponentVulnerability, ABOMVulnerability)
+        .join(ABOMVulnerability, ABOMVulnerability.vuln_id == ABOMComponentVulnerability.vuln_id)
+        .filter(
+            ABOMComponentVulnerability.tenant_id == ctx.tenant_id,
+            ABOMComponentVulnerability.component_id == component_id,
+        )
+        .all()
+    )
+    rank = {"critical": 4, "high": 3, "medium": 2, "low": 1, "unknown": 0}
+    rows.sort(key=lambda pair: (rank.get((pair[0].severity or "unknown").lower(), 0),
+                                 pair[0].cvss_score or 0), reverse=True)
+    return {
+        "vulnerabilities": [
+            {
+                "vuln_id": j.vuln_id,
+                "severity": j.severity,
+                "cvss_score": j.cvss_score,
+                "vex_status": j.vex_status,
+                "summary": (adv.summary or "")[:240],
+                "aliases": _coerce_meta(adv.aliases) or [],
+                "published_at": adv.published_at.isoformat() if adv.published_at else None,
+            }
+            for j, adv in rows
+        ],
     }
 
 

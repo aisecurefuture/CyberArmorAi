@@ -3022,7 +3022,19 @@ async function viewBillOfMaterials() {
   $("#pageTitle").textContent = "Bill of Materials";
   $("#pageSubtitle").textContent = "Continuously-updated inventory of software, hardware, ML models, and crypto — collected from endpoint agents, RASP, IDE plugins, repos, and cloud (CycloneDX 1.6)";
 
-  let tab = "components"; // "components" | "drift" | "lvi" | "sources" | "ioc"
+  let tab = "components"; // "components" | "drift" | "lvi" | "sources" | "ioc" | "vulns"
+  // Vulnerability tab state.
+  let vulnList = null;          // { advisories, total, severity_counts }
+  let vulnLoadError = null;
+  let vulnSeverityFilter = "all";
+  let vulnSearch = "";
+  let vulnSelectedId = null;
+  let vulnSelectedDetail = null;
+  let vulnScanBusy = false;
+  let vulnScanMessage = null;
+  const vulnPager = { page: 1, pageSize: 50 };
+  // Per-component vuln list shown in the Inspector when a component is selected.
+  let inspectorVulns = null;
   let repoConfig = null;          // server view of the repo-collector config (no token)
   let repoSaveMessage = null;     // {kind, text}
   let repoSyncMessage = null;     // {kind, text, summary?}
@@ -3127,6 +3139,62 @@ async function viewBillOfMaterials() {
       selectedDetail = await api(`/api/customer/abom/components/${encodeURIComponent(componentId)}`);
     } catch (err) {
       selectedDetail = { error: err.message || "fetch failed" };
+    }
+    // Pull this component's vulnerabilities in parallel so the
+    // inspector's Vulnerabilities block can render without a second
+    // click. Empty array on failure (404s are common when no scan has
+    // run yet).
+    await loadInspectorVulns(componentId);
+  }
+
+  async function loadVulns() {
+    try {
+      const params = new URLSearchParams();
+      params.set("limit", String(vulnPager.pageSize === "all" ? 500 : vulnPager.pageSize));
+      params.set("offset", String(vulnPager.pageSize === "all" ? 0 : (vulnPager.page - 1) * vulnPager.pageSize));
+      if (vulnSeverityFilter !== "all") params.set("severity", vulnSeverityFilter);
+      if (vulnSearch.trim()) params.set("q", vulnSearch.trim());
+      vulnList = await api(`/api/customer/abom/vulnerabilities?${params.toString()}`);
+      vulnLoadError = null;
+    } catch (err) {
+      vulnList = null;
+      vulnLoadError = err.message || "fetch failed";
+    }
+  }
+
+  async function loadVulnDetail(vulnId) {
+    try {
+      vulnSelectedDetail = await api(`/api/customer/abom/vulnerabilities/${encodeURIComponent(vulnId)}`);
+    } catch (err) {
+      vulnSelectedDetail = { error: err.message || "fetch failed" };
+    }
+  }
+
+  async function runVulnScan() {
+    vulnScanMessage = null;
+    vulnScanBusy = true;
+    render();
+    try {
+      const resp = await api("/api/customer/abom/vuln-scan", { method: "POST" });
+      vulnScanMessage = {
+        kind: "ok",
+        text: `Scanned ${resp.components_scanned} components — ${resp.findings} findings across ${resp.advisories_seen} advisories.`,
+      };
+      await loadVulns();
+    } catch (err) {
+      vulnScanMessage = { kind: "err", text: err.message || "scan failed" };
+    } finally {
+      vulnScanBusy = false;
+      render();
+    }
+  }
+
+  async function loadInspectorVulns(componentId) {
+    try {
+      const resp = await api(`/api/customer/abom/components/${encodeURIComponent(componentId)}/vulnerabilities`);
+      inspectorVulns = Array.isArray(resp && resp.vulnerabilities) ? resp.vulnerabilities : [];
+    } catch {
+      inspectorVulns = [];
     }
   }
 
@@ -3403,6 +3471,25 @@ async function viewBillOfMaterials() {
         ${d.manufacturer ? `<div class="mt-2 rounded-xl bg-slate-900 px-3 py-2"><div class="text-[10px] uppercase tracking-wider text-slate-500">Manufacturer</div><div class="text-xs text-slate-200">${esc(d.manufacturer)}</div></div>` : ""}
         ${licenses.length ? `<div class="mt-2 rounded-xl bg-slate-900 px-3 py-2"><div class="text-[10px] uppercase tracking-wider text-slate-500">Licenses</div><div class="mt-1 flex flex-wrap gap-1">${licenses.map((l) => `<span class="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-200">${esc(String(l))}</span>`).join("")}</div></div>` : ""}
         ${Object.keys(hashes).length ? `<div class="mt-2 rounded-xl bg-slate-900 px-3 py-2"><div class="text-[10px] uppercase tracking-wider text-slate-500">Hashes</div>${Object.entries(hashes).map(([k, v]) => `<div class="mt-1 font-mono text-[10px] text-slate-400 break-all">${esc(k)}: ${esc(String(v))}</div>`).join("")}</div>` : ""}
+        ${Array.isArray(inspectorVulns) && inspectorVulns.length > 0 ? `
+          <div class="mt-3 rounded-xl border border-rose-900/60 bg-rose-950/20 p-2">
+            <div class="text-[10px] uppercase tracking-wider text-rose-300 mb-2">Vulnerabilities (${inspectorVulns.length})</div>
+            <div class="space-y-1 max-h-56 overflow-y-auto">
+              ${inspectorVulns.slice(0, 25).map((v) => `
+                <div class="rounded-lg bg-slate-900 px-2 py-1.5">
+                  <div class="flex items-center justify-between gap-2">
+                    <span class="font-mono text-xs text-slate-200 truncate">${esc(v.vuln_id)}</span>
+                    ${abomSeverityPill(v.severity)}
+                  </div>
+                  <div class="mt-0.5 text-[10px] text-slate-400 break-words">${esc((v.summary || "").slice(0, 160))}${(v.summary || "").length > 160 ? "…" : ""}</div>
+                  ${v.cvss_score != null ? `<div class="mt-0.5 text-[10px] text-slate-500">CVSS ${esc(String(v.cvss_score))}${v.vex_status ? ` · vex=${esc(v.vex_status)}` : ""}</div>` : ""}
+                </div>
+              `).join("")}
+            </div>
+          </div>
+        ` : Array.isArray(inspectorVulns) && inspectorVulns.length === 0 ? `
+          <div class="mt-3 rounded-xl border border-emerald-900/60 bg-emerald-950/15 px-3 py-2 text-[11px] text-emerald-200">No advisories matched (or vuln scan hasn't run for this tenant yet).</div>
+        ` : ""}
         <div class="mt-3">
           <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-2">Observations (${observations.length})</div>
           ${observations.length === 0 ? `<div class="text-xs text-slate-500">No observations yet.</div>` : `
@@ -3445,6 +3532,130 @@ async function viewBillOfMaterials() {
       <td class="px-3 py-2 text-xs tabular-nums">${esc(String(cv.observation_count || 0))}</td>
       <td class="px-3 py-2 text-xs ${stale ? "text-amber-300" : "text-slate-300"}">${esc(last)}${stale ? ` <span class="text-[10px] text-amber-400">(stale)</span>` : ""}</td>
     </tr>`;
+  }
+
+  function abomSeverityPill(sev) {
+    const s = String(sev || "unknown").toLowerCase();
+    const cls = s === "critical" ? "bg-rose-500/30 text-rose-100"
+              : s === "high"     ? "bg-rose-500/15 text-rose-200"
+              : s === "medium"   ? "bg-amber-500/20 text-amber-200"
+              : s === "low"      ? "bg-amber-500/10 text-amber-300"
+              : "bg-slate-700/40 text-slate-300";
+    return `<span class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${cls}">${esc(s)}</span>`;
+  }
+
+  function renderVulnsBody() {
+    if (vulnLoadError) {
+      return `<div class="rounded-2xl border border-rose-900 bg-rose-950/30 p-3 text-sm text-rose-200">Could not load vulnerabilities: ${esc(vulnLoadError)}.</div>`;
+    }
+    const list = vulnList || { advisories: [], total: 0, severity_counts: {} };
+    const sevCounts = list.severity_counts || {};
+    const sevOptions = ["all", "critical", "high", "medium", "low", "unknown"];
+
+    const detailPanel = (() => {
+      if (!vulnSelectedId) {
+        return `<div class="rounded-2xl border border-slate-800 bg-slate-950 p-4 text-sm text-slate-400">
+          <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-2">Advisory inspector</div>
+          Click any row to see the affected components for this advisory plus the upstream references.
+        </div>`;
+      }
+      if (!vulnSelectedDetail) {
+        return `<div class="rounded-2xl border border-slate-800 bg-slate-950 p-4 text-sm text-slate-400">Loading…</div>`;
+      }
+      if (vulnSelectedDetail.error) {
+        return `<div class="rounded-2xl border border-rose-900 bg-rose-950/30 p-3 text-sm text-rose-200">${esc(vulnSelectedDetail.error)}</div>`;
+      }
+      const d = vulnSelectedDetail;
+      const refs = Array.isArray(d.references) ? d.references : [];
+      const components = Array.isArray(d.components) ? d.components : [];
+      const aliases = Array.isArray(d.aliases) ? d.aliases : [];
+      return `
+        <div class="rounded-2xl border border-slate-800 bg-slate-950 p-4">
+          <div class="flex items-baseline justify-between gap-2">
+            <div class="min-w-0">
+              <div class="flex items-center gap-2">${abomSeverityPill(d.severity)}<span class="text-[10px] uppercase tracking-wider text-slate-500">Advisory</span></div>
+              <div class="mt-1 font-semibold text-slate-100 break-all">${esc(d.vuln_id)}${d.cvss_score != null ? `<span class="ml-2 text-xs text-slate-400 font-normal">CVSS ${esc(String(d.cvss_score))}</span>` : ""}</div>
+            </div>
+            <button id="vulnClearSelection" type="button" class="text-xs text-slate-400 hover:text-slate-200">Clear</button>
+          </div>
+          ${d.summary ? `<p class="mt-3 text-xs text-slate-300">${esc(d.summary)}</p>` : ""}
+          ${aliases.length ? `<div class="mt-2 flex flex-wrap gap-1">${aliases.map((a) => `<span class="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-300">${esc(String(a))}</span>`).join("")}</div>` : ""}
+          ${d.published_at ? `<div class="mt-2 text-[10px] text-slate-500">Published ${esc(new Date(d.published_at).toLocaleDateString())}${d.modified_at ? ` · modified ${esc(new Date(d.modified_at).toLocaleDateString())}` : ""}</div>` : ""}
+          <div class="mt-3">
+            <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-2">Affected components (${components.length})</div>
+            <div class="space-y-1 max-h-72 overflow-y-auto">${components.map((c) => `
+              <div class="rounded-lg bg-slate-900 px-2 py-1.5">
+                <div class="flex items-center justify-between gap-2">
+                  <span class="font-mono text-xs text-slate-200 truncate">${esc(c.name)}${c.version ? `<span class="ml-2 text-[10px] text-slate-500">${esc(c.version)}</span>` : ""}</span>
+                  ${c.vex_status ? `<span class="rounded-full bg-cyan-500/15 px-1.5 py-0.5 text-[10px] uppercase text-cyan-200">${esc(c.vex_status)}</span>` : ""}
+                </div>
+                ${c.purl ? `<div class="mt-0.5 font-mono text-[10px] text-slate-500 break-all">${esc(c.purl)}</div>` : ""}
+              </div>
+            `).join("")}</div>
+          </div>
+          ${refs.length ? `<div class="mt-3"><div class="text-[10px] uppercase tracking-wider text-slate-500 mb-2">References</div><ul class="space-y-1 text-[11px] text-cyan-300 break-all">${refs.map((r) => `<li>· <a href="${esc(r.url || '')}" target="_blank" rel="noopener noreferrer" class="hover:underline">${esc(r.url || '')}</a></li>`).join("")}</ul></div>` : ""}
+        </div>
+      `;
+    })();
+
+    const rows = (list.advisories || []).map((a) => `<tr data-vuln-id="${esc(a.vuln_id)}" class="border-t border-slate-800 cursor-pointer ${vulnSelectedId === a.vuln_id ? "bg-cyan-500/5" : "hover:bg-slate-900/60"}">
+      <td class="px-3 py-2">${abomSeverityPill(a.severity)}</td>
+      <td class="px-3 py-2 font-mono text-xs text-slate-100 break-all">${esc(a.vuln_id)}${(a.aliases || []).length ? `<div class="mt-0.5 flex flex-wrap gap-1">${a.aliases.slice(0,3).map((al) => `<span class="rounded bg-slate-800 px-1 text-[9px] text-slate-400">${esc(al)}</span>`).join("")}</div>` : ""}</td>
+      <td class="px-3 py-2 text-xs text-slate-300">${esc((a.summary || "").slice(0, 140))}${(a.summary || "").length > 140 ? "…" : ""}</td>
+      <td class="px-3 py-2 text-xs tabular-nums">${a.cvss_score != null ? esc(String(a.cvss_score)) : "—"}</td>
+      <td class="px-3 py-2 text-xs tabular-nums">${esc(String(a.component_count || 0))}</td>
+      <td class="px-3 py-2 text-xs text-slate-400">${esc(a.last_seen_at ? new Date(a.last_seen_at).toLocaleString() : "—")}</td>
+    </tr>`).join("");
+
+    const pager = simplePager({ total: list.total || 0, state: vulnPager, idPrefix: "vuln" });
+
+    return `
+      ${card(`
+        <div class="flex flex-wrap items-center gap-4">
+          ${riskMetricCard("Advisories", list.total || 0, (list.total || 0) > 0 ? "rose" : "emerald")}
+          ${riskMetricCard("Critical", sevCounts.critical || 0, (sevCounts.critical || 0) > 0 ? "rose" : "slate")}
+          ${riskMetricCard("High", sevCounts.high || 0, (sevCounts.high || 0) > 0 ? "rose" : "slate")}
+          ${riskMetricCard("Medium", sevCounts.medium || 0, (sevCounts.medium || 0) > 0 ? "amber" : "slate")}
+          ${riskMetricCard("Low", sevCounts.low || 0, "slate")}
+          <div class="ml-auto flex flex-wrap items-center gap-2">
+            <button id="vulnScan" type="button" class="rounded-2xl bg-rose-500 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-rose-400 disabled:opacity-50" ${vulnScanBusy ? "disabled" : ""}>${vulnScanBusy ? "Scanning…" : "Scan now (OSV)"}</button>
+            ${vulnScanMessage ? `<span class="text-xs ${vulnScanMessage.kind === "ok" ? "text-emerald-300" : "text-rose-300"}">${esc(vulnScanMessage.text)}</span>` : ""}
+          </div>
+        </div>
+      `)}
+      ${card(`
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="text-[10px] uppercase tracking-wider text-slate-500">Severity</span>
+          ${sevOptions.map((s) => `
+            <button type="button" data-vuln-sev="${esc(s)}" class="rounded-full px-2 py-1 text-[11px] ${vulnSeverityFilter === s ? "bg-cyan-500 text-slate-950 font-semibold" : "bg-slate-900 border border-slate-700 text-slate-300 hover:bg-slate-800"}">${esc(s === "all" ? "All" : s)}${s !== "all" && sevCounts[s] ? ` <span class="text-slate-500">·${sevCounts[s]}</span>` : ""}</button>
+          `).join("")}
+        </div>
+        <div class="mt-2 flex flex-wrap items-center gap-2">
+          <input id="vulnSearch" type="search" placeholder="Search advisory id or summary…" class="flex-1 min-w-[280px] rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm" value="${esc(vulnSearch)}" />
+        </div>
+      `)}
+      <div class="grid gap-4 lg:grid-cols-[1fr_420px]">
+        ${card(`
+          <div class="overflow-x-auto">
+            <table class="w-full text-left text-sm">
+              <thead class="text-[10px] uppercase tracking-wider text-slate-500"><tr>
+                <th class="px-3 py-2">Severity</th>
+                <th class="px-3 py-2">Advisory</th>
+                <th class="px-3 py-2">Summary</th>
+                <th class="px-3 py-2">CVSS</th>
+                <th class="px-3 py-2">Components</th>
+                <th class="px-3 py-2">Last seen</th>
+              </tr></thead>
+              <tbody id="vulnRows">
+                ${rows || `<tr><td colspan="6" class="px-3 py-8 text-center text-sm text-slate-500">No advisories matched yet. Click "Scan now (OSV)" to check the tenant against the public vulnerability database.</td></tr>`}
+              </tbody>
+            </table>
+          </div>
+          ${list.total > 0 ? pager.html : ""}
+        `)}
+        <div>${detailPanel}</div>
+      </div>
+    `;
   }
 
   function renderIocBody() {
@@ -4050,6 +4261,7 @@ async function viewBillOfMaterials() {
         ${tabButton("drift", `Drift${drift && drift.summary ? ` (${drift.summary.added + drift.summary.removed + drift.summary.version_changed})` : ""}`, tab === "drift")}
         ${tabButton("lvi", `Loaded vs Installed${lvi && lvi.summary ? ` (${lvi.summary.both})` : ""}`, tab === "lvi")}
         ${tabButton("sources", "Sources", tab === "sources")}
+        ${tabButton("vulns", `Vulnerabilities${vulnList && vulnList.total ? ` (${vulnList.total})` : ""}`, tab === "vulns")}
         ${tabButton("ioc", `IOC Scan${iocResult && iocResult.iocs_with_hits ? ` (${iocResult.iocs_with_hits})` : ""}`, tab === "ioc")}
       </div>
     `;
@@ -4074,6 +4286,7 @@ async function viewBillOfMaterials() {
         ${tab === "drift" ? renderDriftBody() : ""}
         ${tab === "lvi" ? renderLviBody() : ""}
         ${tab === "sources" ? renderSourcesBody() : ""}
+        ${tab === "vulns" ? renderVulnsBody() : ""}
         ${tab === "ioc" ? renderIocBody() : ""}
         ${tab !== "components" ? "" : `
         ${card(`
@@ -4191,12 +4404,13 @@ async function viewBillOfMaterials() {
         const cid = tr.dataset.componentId;
         selected = (selected === cid) ? null : cid;
         selectedDetail = null;
+        inspectorVulns = null;
         if (selected) await loadDetail(selected);
         render();
       });
     });
     const clearBtn = $("#bomClearSelection");
-    if (clearBtn) clearBtn.addEventListener("click", () => { selected = null; selectedDetail = null; render(); });
+    if (clearBtn) clearBtn.addEventListener("click", () => { selected = null; selectedDetail = null; inspectorVulns = null; render(); });
     const exp = $("#bomExport"); if (exp) exp.addEventListener("click", () => exportCycloneDX({ signed: false }));
     const expSigned = $("#bomExportSigned"); if (expSigned) expSigned.addEventListener("click", () => exportCycloneDX({ signed: true }));
     const ref = $("#bomRefresh"); if (ref) ref.addEventListener("click", async () => {
@@ -4219,9 +4433,50 @@ async function viewBillOfMaterials() {
         if (tab === "drift" && drift === null) await loadDrift();
         if (tab === "lvi" && lvi === null) await loadLvi();
         if (tab === "sources" && repoConfig === null) await loadRepoConfig();
+        if (tab === "vulns" && vulnList === null) await loadVulns();
         render();
       });
     });
+
+    // Vulnerabilities tab handlers.
+    document.querySelectorAll("[data-vuln-sev]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const next = btn.dataset.vulnSev;
+        if (next === vulnSeverityFilter) return;
+        vulnSeverityFilter = next;
+        vulnPager.page = 1;
+        await loadVulns();
+        render();
+      });
+    });
+    const vulnSearchInput = $("#vulnSearch");
+    if (vulnSearchInput) {
+      vulnSearchInput.addEventListener("change", async () => {
+        vulnSearch = vulnSearchInput.value;
+        vulnPager.page = 1;
+        await loadVulns();
+        render();
+      });
+    }
+    document.querySelectorAll("#vulnRows tr[data-vuln-id]").forEach((tr) => {
+      tr.addEventListener("click", async () => {
+        const id = tr.dataset.vulnId;
+        vulnSelectedId = (vulnSelectedId === id) ? null : id;
+        vulnSelectedDetail = null;
+        if (vulnSelectedId) await loadVulnDetail(vulnSelectedId);
+        render();
+      });
+    });
+    const vulnClear = $("#vulnClearSelection");
+    if (vulnClear) vulnClear.addEventListener("click", () => { vulnSelectedId = null; vulnSelectedDetail = null; render(); });
+    const vulnScanBtn = $("#vulnScan");
+    if (vulnScanBtn) vulnScanBtn.addEventListener("click", runVulnScan);
+    // Vuln pager.
+    if (tab === "vulns") {
+      const list = vulnList || { total: 0 };
+      const vulnPagerInstance = simplePager({ total: list.total || 0, state: vulnPager, idPrefix: "vuln" });
+      vulnPagerInstance.wire(document, async () => { await loadVulns(); render(); });
+    }
 
     // Sources tab: connection editor + sync. Form fields write into
     // the local edit buffer so re-render-from-other-state doesn't blow
