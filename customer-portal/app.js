@@ -3043,7 +3043,8 @@ async function viewBillOfMaterials() {
   let artifactSyncMessage = null;
   let artifactSyncing = false;
   let artifactEdit = { provider: "ghcr", refsText: "", token: "", baseUrl: "", enabled: true };
-  // Cloud-collector state.
+  // Cloud-collector state. ``regionsText`` is overloaded per provider:
+  // AWS region codes, GCP project IDs, Azure subscription IDs.
   let cloudConfig = null;
   let cloudSaveMessage = null;
   let cloudSyncMessage = null;
@@ -3051,9 +3052,16 @@ async function viewBillOfMaterials() {
   let cloudEdit = {
     provider: "aws",
     regionsText: "us-east-1\nus-west-2",
+    // AWS
     accessKeyId: "",
     secretAccessKey: "",
     sessionToken: "",
+    // GCP — paste the service-account JSON
+    serviceAccountJson: "",
+    // Azure
+    azureTenantId: "",
+    azureClientId: "",
+    azureClientSecret: "",
     enabled: true,
   };
   let components = [];
@@ -3162,9 +3170,14 @@ async function viewBillOfMaterials() {
       cloudEdit.provider = cloudConfig.provider || "aws";
       cloudEdit.regionsText = (cloudConfig.regions || []).join("\n");
       cloudEdit.enabled = cloudConfig.enabled !== false;
+      // Clear local cred buffers — server never sends them back.
       cloudEdit.accessKeyId = "";
       cloudEdit.secretAccessKey = "";
       cloudEdit.sessionToken = "";
+      cloudEdit.serviceAccountJson = "";
+      cloudEdit.azureTenantId = "";
+      cloudEdit.azureClientId = "";
+      cloudEdit.azureClientSecret = "";
     } catch (err) {
       cloudConfig = { error: err.message || "fetch failed" };
     }
@@ -3180,9 +3193,16 @@ async function viewBillOfMaterials() {
       provider: cloudEdit.provider || "aws",
       regions,
       enabled: !!cloudEdit.enabled,
-      access_key_id: cloudEdit.accessKeyId || null,
-      secret_access_key: cloudEdit.secretAccessKey || null,
-      session_token: cloudEdit.sessionToken || null,
+      // Send only the credentials that match the currently-selected
+      // provider so a stale local buffer from a different provider
+      // doesn't pollute the saved row.
+      access_key_id:        cloudEdit.provider === "aws"   ? (cloudEdit.accessKeyId || null) : null,
+      secret_access_key:    cloudEdit.provider === "aws"   ? (cloudEdit.secretAccessKey || null) : null,
+      session_token:        cloudEdit.provider === "aws"   ? (cloudEdit.sessionToken || null) : null,
+      service_account_json: cloudEdit.provider === "gcp"   ? (cloudEdit.serviceAccountJson || null) : null,
+      azure_tenant_id:      cloudEdit.provider === "azure" ? (cloudEdit.azureTenantId || null) : null,
+      azure_client_id:      cloudEdit.provider === "azure" ? (cloudEdit.azureClientId || null) : null,
+      azure_client_secret:  cloudEdit.provider === "azure" ? (cloudEdit.azureClientSecret || null) : null,
     };
     try {
       await api("/api/customer/abom/cloud-config", { method: "PUT", body: JSON.stringify(body) });
@@ -3666,22 +3686,52 @@ async function viewBillOfMaterials() {
           <label class="text-xs text-slate-400">Provider
             <select id="cloudProvider" class="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm" ${isAdmin ? "" : "disabled"}>
               <option value="aws" ${cloudEdit.provider === "aws" ? "selected" : ""}>AWS</option>
-              <option value="gcp" disabled>GCP (next slice)</option>
-              <option value="azure" disabled>Azure (next slice)</option>
+              <option value="gcp" ${cloudEdit.provider === "gcp" ? "selected" : ""}>GCP</option>
+              <option value="azure" ${cloudEdit.provider === "azure" ? "selected" : ""}>Azure</option>
             </select>
           </label>
-          <label class="text-xs text-slate-400">AWS access key ID
-            <input id="cloudAccessKey" type="text" placeholder="${cloudConfig.creds_configured ? "•••••••• (configured — leave blank to keep)" : "AKIA…"}" class="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm font-mono" ${isAdmin ? "" : "disabled"} value="${esc(cloudEdit.accessKeyId)}" />
-          </label>
-          <label class="text-xs text-slate-400">AWS secret access key
-            <input id="cloudSecretKey" type="password" autocomplete="off" placeholder="${cloudConfig.creds_configured ? "•••••••• (configured)" : "secret"}" class="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm font-mono" ${isAdmin ? "" : "disabled"} value="${esc(cloudEdit.secretAccessKey)}" />
-          </label>
-          <label class="text-xs text-slate-400">AWS session token (optional, for STS-assumed roles)
-            <input id="cloudSessionToken" type="password" autocomplete="off" class="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm font-mono" ${isAdmin ? "" : "disabled"} value="${esc(cloudEdit.sessionToken)}" />
-          </label>
-          <label class="text-xs text-slate-400 md:col-span-2">Regions (one per line)
-            <textarea id="cloudRegions" rows="4" class="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-xs font-mono" ${isAdmin ? "" : "disabled"} placeholder="us-east-1\nus-west-2\neu-west-1">${esc(cloudEdit.regionsText)}</textarea>
-            <span class="block mt-1 text-[10px] text-slate-500">Each region is one Resource Groups Tagging API call. Required IAM permissions: <span class="font-mono">tag:GetResources</span> + <span class="font-mono">sts:GetCallerIdentity</span>.</span>
+          ${cloudEdit.provider === "aws" ? `
+            <label class="text-xs text-slate-400">AWS access key ID
+              <input id="cloudAccessKey" type="text" placeholder="${cloudConfig.creds_configured ? "•••••••• (configured — leave blank to keep)" : "AKIA…"}" class="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm font-mono" ${isAdmin ? "" : "disabled"} value="${esc(cloudEdit.accessKeyId)}" />
+            </label>
+            <label class="text-xs text-slate-400">AWS secret access key
+              <input id="cloudSecretKey" type="password" autocomplete="off" placeholder="${cloudConfig.creds_configured ? "•••••••• (configured)" : "secret"}" class="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm font-mono" ${isAdmin ? "" : "disabled"} value="${esc(cloudEdit.secretAccessKey)}" />
+            </label>
+            <label class="text-xs text-slate-400 md:col-span-2">AWS session token (optional, for STS-assumed roles)
+              <input id="cloudSessionToken" type="password" autocomplete="off" class="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm font-mono" ${isAdmin ? "" : "disabled"} value="${esc(cloudEdit.sessionToken)}" />
+            </label>
+          ` : cloudEdit.provider === "gcp" ? `
+            <label class="text-xs text-slate-400 md:col-span-2">GCP service account JSON
+              <textarea id="cloudServiceAccountJson" rows="6" placeholder="${cloudConfig.creds_configured ? "•••••••• (configured — leave blank to keep)" : '{ "type": "service_account", "project_id": "...", "private_key": "..." }'}" class="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-xs font-mono" ${isAdmin ? "" : "disabled"}>${esc(cloudEdit.serviceAccountJson)}</textarea>
+              <span class="block mt-1 text-[10px] text-slate-500">Paste the full contents of a SA key JSON. Required role: <span class="font-mono">roles/cloudasset.viewer</span> (or equivalent custom role with <span class="font-mono">cloudasset.assets.searchAllResources</span>).</span>
+            </label>
+          ` : `
+            <label class="text-xs text-slate-400">Azure AAD tenant ID
+              <input id="cloudAzureTenantId" type="text" placeholder="00000000-0000-0000-0000-000000000000" class="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm font-mono" ${isAdmin ? "" : "disabled"} value="${esc(cloudEdit.azureTenantId)}" />
+            </label>
+            <label class="text-xs text-slate-400">Azure client ID
+              <input id="cloudAzureClientId" type="text" class="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm font-mono" ${isAdmin ? "" : "disabled"} value="${esc(cloudEdit.azureClientId)}" />
+            </label>
+            <label class="text-xs text-slate-400 md:col-span-2">Azure client secret
+              <input id="cloudAzureClientSecret" type="password" autocomplete="off" placeholder="${cloudConfig.creds_configured ? "•••••••• (configured)" : "secret"}" class="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-sm font-mono" ${isAdmin ? "" : "disabled"} value="${esc(cloudEdit.azureClientSecret)}" />
+              <span class="block mt-1 text-[10px] text-slate-500">Service principal needs the <span class="font-mono">Reader</span> role (or <span class="font-mono">Resource Graph Reader</span>) on each subscription listed below.</span>
+            </label>
+          `}
+          <label class="text-xs text-slate-400 md:col-span-2">${
+            cloudEdit.provider === "aws" ? "Regions (one per line)"
+            : cloudEdit.provider === "gcp" ? "GCP project IDs (one per line)"
+            : "Azure subscription IDs (one per line)"
+          }
+            <textarea id="cloudRegions" rows="4" class="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-xs font-mono" ${isAdmin ? "" : "disabled"} placeholder="${
+              cloudEdit.provider === "aws" ? "us-east-1\\nus-west-2\\neu-west-1"
+              : cloudEdit.provider === "gcp" ? "my-project-123\\nmy-other-project-456"
+              : "00000000-0000-0000-0000-000000000000"
+            }">${esc(cloudEdit.regionsText)}</textarea>
+            <span class="block mt-1 text-[10px] text-slate-500">${
+              cloudEdit.provider === "aws" ? "One Resource Groups Tagging API call per region. Required IAM: <span class=\"font-mono\">tag:GetResources</span> + <span class=\"font-mono\">sts:GetCallerIdentity</span>."
+              : cloudEdit.provider === "gcp" ? "One Cloud Asset search per project; pages through every visible asset."
+              : "One Resource Graph query per subscription, paged at 1000 resources per call."
+            }</span>
           </label>
           <label class="text-xs text-slate-400 flex items-center gap-2 md:col-span-2">
             <input id="cloudEnabled" type="checkbox" ${cloudEdit.enabled ? "checked" : ""} ${isAdmin ? "" : "disabled"} /> Enabled
@@ -4208,13 +4258,30 @@ async function viewBillOfMaterials() {
 
     // Cloud collector wiring.
     const cldProv = $("#cloudProvider");
-    if (cldProv) cldProv.addEventListener("change", () => { cloudEdit.provider = cldProv.value; });
+    if (cldProv) cldProv.addEventListener("change", () => {
+      cloudEdit.provider = cldProv.value;
+      // Provider switch changes the credential layout — re-render
+      // so the right fields appear.
+      render();
+    });
+    // AWS fields
     const cldAk = $("#cloudAccessKey");
     if (cldAk) cldAk.addEventListener("input", () => { cloudEdit.accessKeyId = cldAk.value; });
     const cldSk = $("#cloudSecretKey");
     if (cldSk) cldSk.addEventListener("input", () => { cloudEdit.secretAccessKey = cldSk.value; });
     const cldSt = $("#cloudSessionToken");
     if (cldSt) cldSt.addEventListener("input", () => { cloudEdit.sessionToken = cldSt.value; });
+    // GCP field
+    const cldSa = $("#cloudServiceAccountJson");
+    if (cldSa) cldSa.addEventListener("input", () => { cloudEdit.serviceAccountJson = cldSa.value; });
+    // Azure fields
+    const cldAzT = $("#cloudAzureTenantId");
+    if (cldAzT) cldAzT.addEventListener("input", () => { cloudEdit.azureTenantId = cldAzT.value; });
+    const cldAzC = $("#cloudAzureClientId");
+    if (cldAzC) cldAzC.addEventListener("input", () => { cloudEdit.azureClientId = cldAzC.value; });
+    const cldAzS = $("#cloudAzureClientSecret");
+    if (cldAzS) cldAzS.addEventListener("input", () => { cloudEdit.azureClientSecret = cldAzS.value; });
+    // Common fields
     const cldRegions = $("#cloudRegions");
     if (cldRegions) cldRegions.addEventListener("input", () => { cloudEdit.regionsText = cldRegions.value; });
     const cldEnabled = $("#cloudEnabled");

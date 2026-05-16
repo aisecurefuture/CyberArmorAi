@@ -1488,8 +1488,18 @@ def _run_cloud_sync_pass(sync_fn) -> None:
                 continue
             provider = str(cfg.get("provider") or "aws")
             creds = _resolve_cloud_creds(row.tenant_id, cfg)
-            if not creds.get("access_key_id") or not creds.get("secret_access_key"):
-                continue
+            # Provider-specific minimum cred check — skip silently when
+            # a credential bag is missing rather than logging a noisy
+            # error every 6h for tenants that haven't finished setup.
+            if provider == "aws":
+                if not creds.get("access_key_id") or not creds.get("secret_access_key"):
+                    continue
+            elif provider == "gcp":
+                if not creds.get("service_account_json"):
+                    continue
+            elif provider == "azure":
+                if not (creds.get("azure_tenant_id") and creds.get("azure_client_id") and creds.get("azure_client_secret")):
+                    continue
             try:
                 results = sync_fn(provider, creds, regions)
             except Exception as exc:  # noqa: BLE001
@@ -5431,17 +5441,22 @@ def _resolve_repo_collector_token(tenant_id: str, cfg: Dict[str, Any]) -> str:
 
 
 class CloudCollectorConfig(BaseModel):
-    """Tenant config for the cloud-inventory collector. AWS first;
-    GCP / Azure share the section with their own credential bag and
-    region/project list. Stored under TenantPortalConfig section
+    """Tenant config for the cloud-inventory collector. ``regions`` is
+    overloaded across providers: AWS region codes, GCP project IDs,
+    Azure subscription IDs. Stored under TenantPortalConfig section
     ``abom-cloud-collector``."""
     provider: str = Field(default="aws", description="aws | gcp | azure")
-    # AWS credentials — write-only via the API (the GET handler
-    # redacts them). The non-secret pieces (regions, enabled flag) stay
-    # in the JSONB row alongside last_synced_at.
+    # AWS credentials.
     access_key_id: Optional[str] = None
     secret_access_key: Optional[str] = None
     session_token: Optional[str] = None
+    # GCP credentials (the literal contents of a service-account JSON key).
+    service_account_json: Optional[str] = None
+    # Azure credentials — AAD tenant for the service principal, NOT
+    # the CyberArmor tenant.
+    azure_tenant_id: Optional[str] = None
+    azure_client_id: Optional[str] = None
+    azure_client_secret: Optional[str] = None
     regions: List[str] = Field(default_factory=list)
     enabled: bool = True
 
@@ -5464,35 +5479,55 @@ def _cloud_collector_config(db: Session, tenant_id: str) -> Dict[str, Any]:
 def _save_cloud_collector_config(
     db: Session, tenant_id: str, payload: Dict[str, Any], updated_by: str
 ) -> Dict[str, Any]:
-    """Persist tenant cloud-collector config. The AWS access/secret/
-    session-token triplet is written to OpenBao as one JSON-encoded
-    secret (so a rotation only re-encrypts one path); falls back to
-    JSONB when vault is unreachable. The list of regions + enabled
-    flag stays in the JSONB row regardless."""
-    existing = _cloud_collector_config(db, tenant_id)
-    raw_access = payload.pop("access_key_id", None) if isinstance(payload, dict) else None
-    raw_secret = payload.pop("secret_access_key", None) if isinstance(payload, dict) else None
-    raw_session = payload.pop("session_token", None) if isinstance(payload, dict) else None
-    merged = {**existing, **{k: v for k, v in payload.items() if v is not None}}
+    """Persist tenant cloud-collector config across all three providers.
 
-    # Treat any of the three triggering a secret update; missing fields
-    # preserve the prior secret bag rather than partial-zero-ing it.
-    if raw_access or raw_secret or raw_session:
-        secret_value = json.dumps({
-            "access_key_id": raw_access or "",
-            "secret_access_key": raw_secret or "",
-            "session_token": raw_session or "",
-        })
-        if _save_tenant_secret(tenant_id, "cloud-collector-aws", secret_value):
+    Secret handling per provider:
+      aws    → access_key_id + secret_access_key + session_token
+      gcp    → service_account_json
+      azure  → azure_tenant_id + azure_client_id + azure_client_secret
+    All write to ``tenants/{tenant}/abom/cloud-collector-<provider>``
+    in OpenBao as one JSON-encoded secret so a rotation re-encrypts
+    one path. Falls back to JSONB with a clear ``creds_storage`` chip
+    when vault is unreachable. The list of regions/projects/subs and
+    the enabled flag stay in the JSONB row regardless.
+    """
+    existing = _cloud_collector_config(db, tenant_id)
+    secret_keys = (
+        "access_key_id", "secret_access_key", "session_token",
+        "service_account_json",
+        "azure_tenant_id", "azure_client_id", "azure_client_secret",
+    )
+    raw_secrets: Dict[str, Optional[str]] = {
+        k: (payload.pop(k, None) if isinstance(payload, dict) else None) for k in secret_keys
+    }
+    merged = {**existing, **{k: v for k, v in payload.items() if v is not None}}
+    provider = str(merged.get("provider") or "aws")
+
+    # The secret bag we'll attempt to persist: only fields the caller
+    # actually supplied (so a partial save preserves the rest of the
+    # prior bag in OpenBao).
+    bag_supplied = {k: v for k, v in raw_secrets.items() if v}
+    if bag_supplied:
+        # Pull the existing bag from OpenBao so we merge instead of
+        # clobbering when the operator only updated one field.
+        existing_bag: Dict[str, Any] = {}
+        if existing.get("creds_in_openbao"):
+            raw = _load_tenant_secret(tenant_id, f"cloud-collector-{provider}")
+            if raw:
+                try:
+                    existing_bag = json.loads(raw)
+                except (ValueError, TypeError):
+                    existing_bag = {}
+        merged_bag = {**existing_bag, **bag_supplied}
+        secret_value = json.dumps(merged_bag)
+        if _save_tenant_secret(tenant_id, f"cloud-collector-{provider}", secret_value):
             merged["creds_in_openbao"] = True
-            merged.pop("access_key_id", None)
-            merged.pop("secret_access_key", None)
-            merged.pop("session_token", None)
+            for k in secret_keys:
+                merged.pop(k, None)
         else:
             merged["creds_in_openbao"] = False
-            if raw_access: merged["access_key_id"] = raw_access
-            if raw_secret: merged["secret_access_key"] = raw_secret
-            if raw_session: merged["session_token"] = raw_session
+            for k, v in bag_supplied.items():
+                merged[k] = v
     record = (
         db.query(TenantPortalConfig)
         .filter(
@@ -5520,28 +5555,33 @@ def _save_cloud_collector_config(
 
 
 def _resolve_cloud_creds(tenant_id: str, cfg: Dict[str, Any]) -> Dict[str, str]:
-    """Return {access_key_id, secret_access_key, session_token} from
-    OpenBao when ``creds_in_openbao`` is set; otherwise from the JSONB
-    row (dev fallback). Missing fields come back as empty strings so
-    sync_cloud_source can raise a clean error."""
+    """Return the credential bag for whichever provider this tenant
+    configured. OpenBao wins when ``creds_in_openbao`` is set; falls
+    back to the JSONB row otherwise. The returned dict carries every
+    field for every provider — sync_cloud_source picks the ones it
+    cares about based on ``provider``."""
+    provider = str(cfg.get("provider") or "aws")
+    bag: Dict[str, Any] = {}
     if cfg.get("creds_in_openbao"):
-        raw = _load_tenant_secret(tenant_id, "cloud-collector-aws")
+        raw = _load_tenant_secret(tenant_id, f"cloud-collector-{provider}")
         if raw:
             try:
-                bag = json.loads(raw)
-                if isinstance(bag, dict):
-                    return {
-                        "access_key_id": str(bag.get("access_key_id") or ""),
-                        "secret_access_key": str(bag.get("secret_access_key") or ""),
-                        "session_token": str(bag.get("session_token") or ""),
-                    }
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    bag = parsed
             except (json.JSONDecodeError, ValueError):
-                logger.warning("cloud-collector openbao payload not JSON for tenant=%s", tenant_id)
-    return {
-        "access_key_id": str(cfg.get("access_key_id") or ""),
-        "secret_access_key": str(cfg.get("secret_access_key") or ""),
-        "session_token": str(cfg.get("session_token") or ""),
-    }
+                logger.warning("cloud-collector openbao payload not JSON for tenant=%s provider=%s",
+                               tenant_id, provider)
+    # Fall back to JSONB row fields when OpenBao didn't yield a value.
+    keys = (
+        "access_key_id", "secret_access_key", "session_token",
+        "service_account_json",
+        "azure_tenant_id", "azure_client_id", "azure_client_secret",
+    )
+    out: Dict[str, str] = {}
+    for k in keys:
+        out[k] = str(bag.get(k) or cfg.get(k) or "")
+    return out
 
 
 @app.get("/customer/abom/cloud-config")
@@ -5551,7 +5591,13 @@ def customer_abom_cloud_config_get(
 ) -> Dict[str, Any]:
     cfg = _cloud_collector_config(db, ctx.tenant_id)
     creds_in_vault = bool(cfg.get("creds_in_openbao"))
-    has_local = bool(cfg.get("access_key_id"))
+    # Provider-specific "is there a JSONB-side secret?" check so the
+    # UI still reports "configured" on the dev fallback path.
+    has_local = bool(
+        cfg.get("access_key_id")
+        or cfg.get("service_account_json")
+        or cfg.get("azure_client_id")
+    )
     storage = "openbao" if creds_in_vault else ("postgres" if has_local else "unconfigured")
     return {
         "provider": cfg.get("provider", "aws"),
@@ -5596,8 +5642,12 @@ def customer_abom_cloud_sync(
         raise HTTPException(status_code=400, detail="no regions configured")
     provider = str(cfg.get("provider") or "aws")
     creds = _resolve_cloud_creds(ctx.tenant_id, cfg)
-    if not creds.get("access_key_id") or not creds.get("secret_access_key"):
-        raise HTTPException(status_code=400, detail="cloud credentials missing")
+    if provider == "aws" and (not creds.get("access_key_id") or not creds.get("secret_access_key")):
+        raise HTTPException(status_code=400, detail="aws credentials missing")
+    if provider == "gcp" and not creds.get("service_account_json"):
+        raise HTTPException(status_code=400, detail="gcp service account JSON missing")
+    if provider == "azure" and not (creds.get("azure_tenant_id") and creds.get("azure_client_id") and creds.get("azure_client_secret")):
+        raise HTTPException(status_code=400, detail="azure service principal credentials missing")
 
     from cloud_collector import sync_cloud_source
 
