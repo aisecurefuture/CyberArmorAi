@@ -13,14 +13,40 @@ const AI_DOMAINS = new Set([
   'copilot.microsoft.com','poe.com','perplexity.ai','huggingface.co',
 ]);
 
-const PROMPT_INJECTION_PATTERNS = [
+// Tiered patterns — same model as chromium-shared. STRONG = a full
+// adversarial phrase, one match is meaningful. WEAK = a lone keyword
+// that legitimately appears in AI-security writing and only matters in
+// co-occurrence or density. Prevents the cyberarmor.ai-style false
+// positive on educational content.
+const PROMPT_INJECTION_STRONG = [
   /ignore\s+(all\s+)?previous\s+instructions/i,
   /you\s+are\s+now\s+(a|an|in)/i,
   /system\s*:\s*you\s+are/i,
   /<\s*(system|prompt|instruction)\s*>/i,
-  /jailbreak|DAN\s+mode|bypass\s+filter/i,
   /forget\s+(everything|all|your)/i,
+  /\bbypass\s+filter\b/i,
 ];
+const PROMPT_INJECTION_WEAK = [
+  /\bjailbreak\b/i,
+  /\bDAN\s+mode\b/i,
+];
+const PROMPT_INJECTION_PATTERNS = [...PROMPT_INJECTION_STRONG, ...PROMPT_INJECTION_WEAK];
+
+// Vendor self-allowlist — mirror of chromium-shared. Skip detection
+// on our own properties so the extension doesn't flag the vendor's
+// own marketing/docs while a prospect is evaluating us.
+const VENDOR_ALLOWLIST_HOSTS = [
+  "cyberarmor.ai",
+  "www.cyberarmor.ai",
+  "app.cyberarmor.ai",
+  "admin.cyberarmor.ai",
+  "docs.cyberarmor.ai",
+  "support.cyberarmor.ai",
+];
+function isVendorAllowlistedHost(host) {
+  const h = (host || "").toLowerCase();
+  return VENDOR_ALLOWLIST_HOSTS.some((d) => h === d || h.endsWith("." + d));
+}
 
 let policies = [];
 let config = {
@@ -499,22 +525,30 @@ browser.webRequest.onBeforeRequest.addListener(
 
     // --- AI-domain prompt injection (legacy path, AI domains only) ---
     if (!AI_DOMAINS.has(parsedUrl.hostname)) return {};
+    if (isVendorAllowlistedHost(parsedUrl.hostname)) return {};
     console.log(`[CyberArmor] AI request: ${details.method} ${parsedUrl.hostname}${parsedUrl.pathname}`);
     try {
       if (details.requestBody && details.requestBody.raw) {
         const decoder = new TextDecoder();
         const bodyText = details.requestBody.raw.map(r => decoder.decode(r.bytes)).join('');
-        for (const pat of PROMPT_INJECTION_PATTERNS) {
-          if (pat.test(bodyText)) {
-            console.warn('[CyberArmor] Prompt injection detected in request to', parsedUrl.hostname);
-            sendTelemetry({
-              type: 'prompt_injection_blocked',
-              payload: { url: details.url, hostname: parsedUrl.hostname, pattern: pat.source },
-            });
-            const blockPolicy = policies.find(p => p.action === 'block' && p.enabled);
-            if (blockPolicy) return { cancel: true };
-            break;
-          }
+        // Tiered: any single STRONG match warrants firing; WEAK keywords
+        // require co-occurrence (>=2) before they count. A lone "jailbreak"
+        // in a research-flavored prompt is not the same as a real attack.
+        const strongMatch = PROMPT_INJECTION_STRONG.find((p) => p.test(bodyText));
+        const weakCount = PROMPT_INJECTION_WEAK.reduce((n, p) => n + (p.test(bodyText) ? 1 : 0), 0);
+        const fired = strongMatch || weakCount >= 2;
+        if (fired) {
+          const pattern = strongMatch ? strongMatch.source : "weak_co_occurrence";
+          console.warn('[CyberArmor] Prompt injection detected in request to', parsedUrl.hostname);
+          sendTelemetry({
+            type: 'prompt_injection_blocked',
+            payload: {
+              url: details.url, hostname: parsedUrl.hostname,
+              pattern, strongMatch: !!strongMatch, weakMatches: weakCount,
+            },
+          });
+          const blockPolicy = policies.find(p => p.action === 'block' && p.enabled);
+          if (blockPolicy) return { cancel: true };
         }
       }
     } catch (e) { console.debug('[CyberArmor] Inspection error:', e); }

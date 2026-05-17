@@ -108,22 +108,47 @@ function redactURL(urlStr, allowedClasses) {
   return changed ? parsed.toString() : null;
 }
 
-// Prompt injection patterns
-const INJECTION_PATTERNS = [
+// Prompt injection patterns. Tiered by signal strength — see
+// content.js for the rationale. STRONG patterns are full adversarial
+// phrases (one match is meaningful); WEAK patterns are lone keywords
+// that legitimately appear in AI-security writing and only matter when
+// they co-occur or appear in suspicious density.
+const INJECTION_PATTERNS_STRONG = [
   /ignore\s+(all\s+)?previous\s+instructions/i,
   /disregard\s+(the\s+)?(system|previous)\s+prompt/i,
-  /\bjailbreak\b/i,
   /\bbegin\s+(?:new\s+)?system\s+prompt/i,
-  /\bdeveloper\s+mode\b/i,
   /\bdisable\s+safety\b/i,
   /\bprint\s+(the\s+)?system\s+prompt/i,
-  /\bexfiltrate\b/i,
   /\bprovide\s+credentials\b/i,
   /\bexecute\s+(bash|powershell|cmd)\b/i,
   /\bact\s+as\s+(?:an?\s+)?(?:un)?restricted/i,
-  /\bDAN\s+mode\b/i,
   /\bbypass\s+(?:all\s+)?(?:safety|content)\s+filter/i,
 ];
+const INJECTION_PATTERNS_WEAK = [
+  /\bjailbreak\b/i,
+  /\bdeveloper\s+mode\b/i,
+  /\bexfiltrate\b/i,
+  /\bDAN\s+mode\b/i,
+];
+// Back-compat: callers that iterate the combined list still work.
+const INJECTION_PATTERNS = [...INJECTION_PATTERNS_STRONG, ...INJECTION_PATTERNS_WEAK];
+
+// Vendor self-allowlist. Mirror of content.js — the marketing/docs/
+// portal/support domains talk about prompt injection because that's
+// the product. Skip promptware scanning so the extension doesn't flag
+// our own content while a prospect is evaluating us.
+const VENDOR_ALLOWLIST_HOSTS = [
+  "cyberarmor.ai",
+  "www.cyberarmor.ai",
+  "app.cyberarmor.ai",
+  "admin.cyberarmor.ai",
+  "docs.cyberarmor.ai",
+  "support.cyberarmor.ai",
+];
+function isVendorAllowlistedHost(host) {
+  const h = (host || "").toLowerCase();
+  return VENDOR_ALLOWLIST_HOSTS.some((d) => h === d || h.endsWith("." + d));
+}
 
 let cachedConfig = { ...DEFAULT_CONFIG };
 let cachedPolicies = [];
@@ -739,15 +764,42 @@ function isAIServiceUrl(url) {
   }
 }
 
-function checkPromptInjection(text) {
+function checkPromptInjection(text, opts = {}) {
   if (!text || !cachedConfig.promptInjectionDetection) return null;
-  const matches = [];
-  for (const pattern of INJECTION_PATTERNS) {
-    if (pattern.test(text)) {
-      matches.push(pattern.source);
-    }
+  // Vendor-allowlisted hosts are skipped unless caller explicitly opts in
+  // (e.g. a "scan our own domains too" demo mode).
+  if (opts.host && !opts.allowVendor && isVendorAllowlistedHost(opts.host)) return null;
+
+  const strongHits = [];
+  const weakHits = [];
+  for (const p of INJECTION_PATTERNS_STRONG) if (p.test(text)) strongHits.push(p.source);
+  for (const p of INJECTION_PATTERNS_WEAK)   if (p.test(text)) weakHits.push(p.source);
+  if (strongHits.length === 0 && weakHits.length === 0) return null;
+
+  // Density per KB of input — same rationale as content.js scanner.
+  const kb = Math.max(1, text.length / 1024);
+  const totalHits = strongHits.length + weakHits.length;
+  const density = totalHits / kb;
+
+  // Risk tiers:
+  //   high   = 2+ strong, or 3+ total with density > 5/KB
+  //   medium = 1 strong, or 2+ weak co-occurring
+  //   low    = single weak hit in long text → telemeter only, no banner
+  let risk;
+  if (strongHits.length >= 2 || (totalHits >= 3 && density > 5)) {
+    risk = "high";
+  } else if (strongHits.length >= 1 || weakHits.length >= 2) {
+    risk = "medium";
+  } else {
+    risk = "low";
   }
-  return matches.length > 0 ? { risk: matches.length >= 3 ? "high" : "medium", patterns: matches } : null;
+  return {
+    risk,
+    patterns: [...strongHits, ...weakHits],
+    strongMatches: strongHits.length,
+    weakMatches: weakHits.length,
+    density: Number(density.toFixed(3)),
+  };
 }
 
 // --- Policy Evaluation (client-side) ---

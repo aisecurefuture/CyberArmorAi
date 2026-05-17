@@ -52,18 +52,50 @@
   ];
 
   // --- Prompt Injection Patterns (for AI interfaces) ---
-  const PROMPT_INJECTION_PATTERNS = [
+  //
+  // Tiered by signal strength. A single STRONG pattern is itself an
+  // adversarial phrase (a full instruction shaped like a real attack);
+  // one match warrants a warning. WEAK patterns are individual keywords
+  // that legitimately appear in AI-security blogs, model cards, research
+  // papers, and vendor marketing — they're only meaningful when they
+  // co-occur with another weak/strong match or appear in suspicious
+  // density. Without this tier, every page describing prompt injection
+  // is flagged, which is exactly the false-positive class we saw on
+  // cyberarmor.ai itself.
+  const PROMPT_INJECTION_STRONG = [
     /ignore\s+(all\s+)?previous\s+instructions/i,
     /disregard\s+(the\s+)?(system|previous)\s+prompt/i,
-    /\bjailbreak\b/i,
     /\bbegin\s+(?:new\s+)?system\s+prompt/i,
-    /\bdeveloper\s+mode\b/i,
     /\bdisable\s+safety\b/i,
-    /\bexfiltrate\b/i,
-    /\bDAN\s+mode\b/i,
     /\bbypass\s+.*?(?:safety|content)\s+filter/i,
     /\bact\s+as\s+(?:an?\s+)?unrestricted/i,
   ];
+  const PROMPT_INJECTION_WEAK = [
+    /\bjailbreak\b/i,
+    /\bdeveloper\s+mode\b/i,
+    /\bexfiltrate\b/i,
+    /\bDAN\s+mode\b/i,
+  ];
+  // Back-compat: some callers still iterate the combined list.
+  const PROMPT_INJECTION_PATTERNS = [...PROMPT_INJECTION_STRONG, ...PROMPT_INJECTION_WEAK];
+
+  // Vendor self-allowlist. Our own marketing/docs/portal/support domains
+  // discuss prompt injection extensively (that's the product). Skip
+  // promptware scanning for these so the extension doesn't flag the
+  // vendor's own content while a CISO is evaluating us. Detection still
+  // runs server-side for telemetry visibility.
+  const VENDOR_ALLOWLIST_HOSTS = [
+    "cyberarmor.ai",
+    "www.cyberarmor.ai",
+    "app.cyberarmor.ai",
+    "admin.cyberarmor.ai",
+    "docs.cyberarmor.ai",
+    "support.cyberarmor.ai",
+  ];
+  function isVendorAllowlistedHost(host) {
+    const h = (host || "").toLowerCase();
+    return VENDOR_ALLOWLIST_HOSTS.some((d) => h === d || h.endsWith("." + d));
+  }
 
   // --- AI Chat Interface Selectors ---
   const AI_CHAT_SELECTORS = [
@@ -203,14 +235,54 @@
   // --- Promptware Detection ---
 
   function scanPageForPromptware() {
+    // Skip the vendor's own properties — see VENDOR_ALLOWLIST_HOSTS.
+    if (isVendorAllowlistedHost(window.location.hostname)) return;
+
     const bodyText = document.body ? document.body.innerText : "";
-    const injections = detectPromptInjection(bodyText);
-    if (injections.length > 0) {
-      sendTelemetry("promptware_detected", {
-        url: window.location.href,
-        patterns: injections.slice(0, 5),
-        textLength: bodyText.length,
-      });
+    if (!bodyText) return;
+
+    // Tiered scan: count strong vs weak matches separately. A single
+    // strong match (a full adversarial phrase) warrants firing; weak
+    // matches (lone keywords like "jailbreak") require co-occurrence
+    // OR suspicious density to escalate. This prevents AI-security
+    // blogs, research papers, model cards, and our own marketing from
+    // tripping the banner on the mere mention of a threat term.
+    const strongHits = [];
+    const weakHits = [];
+    for (const p of PROMPT_INJECTION_STRONG) if (p.test(bodyText)) strongHits.push(p.source);
+    for (const p of PROMPT_INJECTION_WEAK)   if (p.test(bodyText)) weakHits.push(p.source);
+
+    // Density: matches per KB of visible text. 1 weak hit in 24KB of
+    // marketing copy ≈ 0.04/KB → expected on any educational page.
+    // 3+ hits in 200 bytes ≈ 15/KB → almost certainly adversarial.
+    const kb = Math.max(1, bodyText.length / 1024);
+    const totalHits = strongHits.length + weakHits.length;
+    const density = totalHits / kb;
+
+    // Fire when ANY of:
+    //   - 1+ strong hit (real adversarial phrase)
+    //   - 2+ weak hits (co-occurring keywords)
+    //   - density > 5 hits/KB AND total >= 3 (concentrated cluster)
+    const shouldFire =
+      strongHits.length >= 1 ||
+      weakHits.length >= 2 ||
+      (density > 5 && totalHits >= 3);
+
+    if (!shouldFire) return;
+
+    const allHits = [...strongHits, ...weakHits];
+    sendTelemetry("promptware_detected", {
+      url: window.location.href,
+      patterns: allHits.slice(0, 5),
+      strongMatches: strongHits.length,
+      weakMatches: weakHits.length,
+      density: Number(density.toFixed(3)),
+      textLength: bodyText.length,
+    });
+    // Only show the banner for strong-signal detections; weak-only
+    // co-occurrence still telemeters but stays silent so a noisy page
+    // doesn't badge-spam the user.
+    if (strongHits.length >= 1) {
       showWarningBanner("Promptware detected on this page. Malicious AI prompts found in page content.");
     }
   }
