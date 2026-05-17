@@ -1,13 +1,29 @@
 import type { NextConfig } from "next";
 
+// Analytics CSP allowlist.
+//   PostHog: bootstrap snippet is inlined ('unsafe-inline'), but the SDK
+//   loads from us-assets.i.posthog.com (the asset CDN — a different host
+//   than the ingest endpoint us.i.posthog.com). Both need script-src;
+//   ingest also needs connect-src.
+//   Google Analytics 4: gtag.js lives on www.googletagmanager.com; the
+//   collect endpoint is www.google-analytics.com plus region-specific
+//   subdomains under *.analytics.google.com / *.google-analytics.com.
 const ContentSecurityPolicy = [
   "default-src 'self'",
-  "script-src 'self' 'unsafe-inline' https://us.i.posthog.com https://app.posthog.com",
+  [
+    "script-src 'self' 'unsafe-inline'",
+    "https://us.i.posthog.com https://us-assets.i.posthog.com https://app.posthog.com",
+    "https://www.googletagmanager.com",
+  ].join(" "),
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "font-src 'self' https://fonts.gstatic.com data:",
   "img-src 'self' data: blob: https:",
-  "connect-src 'self' https://us.i.posthog.com https://app.posthog.com",
-  "worker-src blob:",
+  [
+    "connect-src 'self'",
+    "https://us.i.posthog.com https://us-assets.i.posthog.com https://app.posthog.com",
+    "https://www.google-analytics.com https://*.analytics.google.com https://*.google-analytics.com",
+  ].join(" "),
+  "worker-src 'self' blob:",
   "frame-src 'none'",
   "object-src 'none'",
   "base-uri 'self'",
