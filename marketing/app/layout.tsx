@@ -5,6 +5,7 @@ import "./globals.css";
 import Navbar from "@/components/layout/Navbar";
 import Footer from "@/components/layout/Footer";
 import PostHogProvider from "@/components/PostHogProvider";
+import LinkedInInsight from "@/components/LinkedInInsight";
 
 const inter = Inter({
   variable: "--font-inter",
@@ -80,6 +81,7 @@ export default function RootLayout({
           <Footer />
         </PostHogProvider>
         {gaId ? <GoogleAnalytics gaId={gaId} /> : null}
+        <LinkedInInsight />
       </body>
     </html>
   );

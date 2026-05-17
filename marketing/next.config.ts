@@ -8,12 +8,16 @@ import type { NextConfig } from "next";
 //   Google Analytics 4: gtag.js lives on www.googletagmanager.com; the
 //   collect endpoint is www.google-analytics.com plus region-specific
 //   subdomains under *.analytics.google.com / *.google-analytics.com.
+//   LinkedIn Insight Tag: insight.min.js lives on snap.licdn.com; the
+//   collect endpoint is px.ads.linkedin.com. img-src 'https:' already
+//   covers the noscript pixel.
 const ContentSecurityPolicy = [
   "default-src 'self'",
   [
     "script-src 'self' 'unsafe-inline'",
     "https://us.i.posthog.com https://us-assets.i.posthog.com https://app.posthog.com",
     "https://www.googletagmanager.com",
+    "https://snap.licdn.com",
   ].join(" "),
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "font-src 'self' https://fonts.gstatic.com data:",
@@ -22,6 +26,7 @@ const ContentSecurityPolicy = [
     "connect-src 'self'",
     "https://us.i.posthog.com https://us-assets.i.posthog.com https://app.posthog.com",
     "https://www.google-analytics.com https://*.analytics.google.com https://*.google-analytics.com",
+    "https://px.ads.linkedin.com https://snap.licdn.com",
   ].join(" "),
   "worker-src 'self' blob:",
   "frame-src 'none'",
