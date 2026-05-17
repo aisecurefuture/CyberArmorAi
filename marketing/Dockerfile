@@ -10,6 +10,16 @@ RUN npm ci
 FROM node:20-alpine AS builder
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
+
+# NEXT_PUBLIC_* vars must be present at build time — Next.js inlines them into
+# the client bundle. Runtime env (env_file in compose) is too late for these.
+ARG NEXT_PUBLIC_POSTHOG_KEY=phc_qjQVKKrn7YKbD7HFtdSXHqzt6NqypYqtw4ipzpw3x6MK
+ARG NEXT_PUBLIC_POSTHOG_HOST=https://us.i.posthog.com
+ARG NEXT_PUBLIC_GA_ID=G-NSZDCLCJ8P
+ENV NEXT_PUBLIC_POSTHOG_KEY=$NEXT_PUBLIC_POSTHOG_KEY
+ENV NEXT_PUBLIC_POSTHOG_HOST=$NEXT_PUBLIC_POSTHOG_HOST
+ENV NEXT_PUBLIC_GA_ID=$NEXT_PUBLIC_GA_ID
+
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build
