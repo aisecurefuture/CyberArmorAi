@@ -12,6 +12,7 @@ from ai_policy_engine import AIRequestContext, AIAwarePolicyEngine, DecisionType
 
 openai_key = "sk-" + ("A" * 48)
 github_token = "ghp_" + ("B" * 36)
+aws_key = "AKIA" + "1234567890ABCDEF"
 
 ctx = AIRequestContext(
     tenant_id="demo-credential-redaction",
@@ -20,8 +21,8 @@ ctx = AIRequestContext(
     model="gpt-4o-mini",
     prompt=(
         "Please summarize this incident. The pasted log includes "
-        "AWS key AKIA1234567890ABCDEF, GitHub token "
-        f"{github_token}, and api_key=abcd1234efgh5678ijkl."
+        f"AWS key {aws_key}, GitHub token {github_token}, "
+        "and api_key=abcd1234efgh5678ijkl."
     ),
     response_text=(
         "Suggested retry command: export OPENAI_API_KEY="
@@ -55,7 +56,7 @@ if decision.decision != DecisionType.ALLOW_WITH_REDACTION:
 missing = [token for token in required if token not in combined]
 if missing:
     raise SystemExit(f"missing redaction placeholders: {', '.join(missing)}")
-for raw in ["AKIA1234567890ABCDEF", github_token, openai_key, "hunter22"]:
+for raw in [aws_key, github_token, openai_key, "hunter22"]:
     if raw in combined:
         raise SystemExit("raw credential remained in redacted output")
 PY

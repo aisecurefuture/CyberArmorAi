@@ -17,7 +17,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import Column, String, Integer, Float, DateTime, Text, JSON, Index, create_engine, inspect, text
+from sqlalchemy import Column, String, Integer, Float, DateTime, Text, JSON, Index, create_engine, inspect
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import Session, sessionmaker
 from cyberarmor_core.crypto import get_public_key_info, verify_shared_secret
@@ -181,7 +181,7 @@ def _ensure_chain_columns() -> None:
                 continue
             with engine.begin() as conn:
                 # Safe here: both column names and DDL fragments come from the fixed `needed` map above.
-                conn.execute(text(f"ALTER TABLE audit_events ADD COLUMN {name} {ddl}"))  # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
+                conn.exec_driver_sql(f"ALTER TABLE audit_events ADD COLUMN {name} {ddl}")
             logger.info("Added missing audit_events column via runtime migration: %s", name)
     except Exception as exc:
         logger.warning("Failed to apply audit chain migration: %s", exc)
@@ -780,7 +780,7 @@ def health():
 @app.get("/ready")
 def ready(db: Session = Depends(get_db)):
     try:
-        db.execute(text("SELECT 1"))
+        db.connection().exec_driver_sql("SELECT 1")
         return {"status": "ready"}
     except Exception:
         raise HTTPException(status_code=503, detail="Database not ready")

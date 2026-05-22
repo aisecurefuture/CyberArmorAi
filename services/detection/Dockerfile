@@ -39,5 +39,7 @@ ENV HF_HOME=/tmp/cyberarmor_models
 # Set TRANSFORMERS_OFFLINE=1 after initial download to block any outbound HF traffic
 ENV TRANSFORMERS_OFFLINE=0
 
+USER appuser
+
 EXPOSE 8002
 CMD ["bash", "/app/run_detection_service.sh"]

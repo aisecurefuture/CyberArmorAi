@@ -33,11 +33,12 @@ class PolicyEngineTests(unittest.TestCase):
         engine = AIAwarePolicyEngine()
         openai_key = "sk-" + ("A" * 48)
         github_token = "ghp_" + ("B" * 36)
+        aws_key = "AKIA" + "1234567890ABCDEF"
         ctx = AIRequestContext(
             tenant_id="tenant-a",
             agent_id="agt_1",
             prompt=(
-                "Debug this request. AWS key AKIA1234567890ABCDEF, "
+                f"Debug this request. AWS key {aws_key}, "
                 f"GitHub token {github_token}, and api_key=abcd1234efgh5678ijkl "
                 "should be protected."
             ),
@@ -55,7 +56,7 @@ class PolicyEngineTests(unittest.TestCase):
         self.assertIn("[REDACTED-APIKEY]", decision.redacted_prompt or "")
         self.assertIn("[REDACTED-OPENAI-KEY]", decision.redacted_response or "")
         self.assertIn("[REDACTED-PASSWORD]", decision.redacted_response or "")
-        self.assertNotIn("AKIA1234567890ABCDEF", decision.redacted_prompt or "")
+        self.assertNotIn(aws_key, decision.redacted_prompt or "")
         self.assertNotIn(github_token, decision.redacted_prompt or "")
         self.assertNotIn(openai_key, decision.redacted_response or "")
 

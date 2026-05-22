@@ -10,5 +10,9 @@ ENV PYTHONPATH="/app/libs/cyberarmor-core:${PYTHONPATH:-}"
 
 COPY services/proxy/ /app/
 
+RUN useradd --create-home --shell /usr/sbin/nologin appuser && \
+    chown -R appuser:appuser /app /home/appuser
+USER appuser
+
 EXPOSE 8080 8443 8081
 CMD ["mitmdump", "--mode", "regular", "--set", "block_global=false", "--set", "connection_strategy=lazy", "--set", "ssl_insecure=true", "--set", "ignore_hosts=(^|\\.)apple\\.com(:\\d+)?$|(^|\\.)icloud\\.com(:\\d+)?$|(^|\\.)mzstatic\\.com(:\\d+)?$|(^|\\.)zoom\\.us(:\\d+)?$", "-s", "transparent_proxy.py", "--listen-port", "8080"]

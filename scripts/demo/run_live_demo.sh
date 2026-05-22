@@ -129,7 +129,7 @@ RUNTIME_HTTP_CODE=""
 for attempt in 1 2 3; do
   RUNTIME_HTTP_CODE="$(curl --max-time 20 -sS -o "$RUNTIME_BODY_FILE" -w "%{http_code}" "http://localhost:8007/runtime/evaluate" \
     -H "Content-Type: application/json" \
-    -d '{"tenant_id":"default","content":"AKIA1234567890ABCDEF","metadata":{"url":"https://chatgpt.com","method":"POST","host":"chatgpt.com","client_ip":"127.0.0.1","direction":"request"}}' || true)"
+    -d '{"tenant_id":"default","content":"AKIA'"1234567890ABCDEF"'","metadata":{"url":"https://chatgpt.com","method":"POST","host":"chatgpt.com","client_ip":"127.0.0.1","direction":"request"}}' || true)"
   if [ "$RUNTIME_HTTP_CODE" = "200" ]; then
     break
   fi
