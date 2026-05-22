@@ -48,12 +48,57 @@ pipeline {
             }
           }
 
-          env.CYBERARMOR_WORKDIR = "${env.HOST_JENKINS_WORK_ROOT}/${env.JOB_BASE_NAME ?: 'CyberArmorAI'}"
+          def workRoot = env.HOST_JENKINS_WORK_ROOT?.trim() ?: '/tmp/cyberarmor-jenkins'
+          env.CYBERARMOR_WORKDIR = "${workRoot}/${env.JOB_BASE_NAME ?: 'CyberArmorAI'}"
           if (checkoutSourceDir == env.MOUNTED_REPO_DIR) {
-            if (!fileExists("${env.CYBERARMOR_WORKDIR}/Jenkinsfile.security")) {
-              error "Mounted repo fallback requires a host-prepared workdir at ${env.CYBERARMOR_WORKDIR}. Run scripts/ci/start_jenkins_security.sh and rerun this job."
-            }
-            echo "Using host-prepared workdir at ${env.CYBERARMOR_WORKDIR}"
+            echo "Refreshing mounted repo fallback workdir at ${env.CYBERARMOR_WORKDIR} from ${checkoutSourceDir}"
+            sh """
+              rm -rf '${env.CYBERARMOR_WORKDIR}'
+              mkdir -p '${env.CYBERARMOR_WORKDIR}'
+              CYBERARMOR_SOURCE_DIR='${checkoutSourceDir}' CYBERARMOR_DEST_DIR='${env.CYBERARMOR_WORKDIR}' python3 - <<'PY'
+import os
+import shutil
+
+src = os.environ["CYBERARMOR_SOURCE_DIR"]
+dst = os.environ["CYBERARMOR_DEST_DIR"]
+ignore = shutil.ignore_patterns(
+    "node_modules",
+    "dist",
+    "out",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".venv",
+    ".env",
+    ".env.local",
+    ".env.local-demo",
+    ".env.production",
+)
+
+for rel in ("Jenkinsfile.security", "Makefile", "README.md"):
+    shutil.copyfile(os.path.join(src, rel), os.path.join(dst, rel))
+
+for rel in (
+    "agents",
+    "libs/cyberarmor-core",
+    "scripts",
+    "services",
+    "sdks/python",
+    "infra/security",
+    "infra/docker-compose",
+):
+    target = os.path.join(dst, rel)
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    shutil.copytree(
+        os.path.join(src, rel),
+        target,
+        dirs_exist_ok=True,
+        ignore=ignore,
+        copy_function=shutil.copyfile,
+    )
+PY
+            """
+            echo "Using security workdir at ${env.CYBERARMOR_WORKDIR}"
           } else {
             sh """
               rm -rf '${env.CYBERARMOR_WORKDIR}'

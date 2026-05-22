@@ -7,7 +7,10 @@ useDefault = true
 description = "Allow demo placeholders and obviously fake example keys"
 regexes = [
   '''change-me([a-z0-9-]+)?''',
+  '''replace-with-[a-z0-9-]+''',
+  '''replace-with-[0-9]+-[a-z0-9-]+''',
   '''sk-mock''',
+  '''abcd1234efgh5678ijkl''',
   '''AKIA1234567890ABCDEF''',
   '''PQC:'''
 ]
