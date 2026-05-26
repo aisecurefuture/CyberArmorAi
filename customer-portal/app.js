@@ -7887,6 +7887,246 @@ async function viewUsers() {
   });
 }
 
+// ─── Multi-factor authentication (TOTP) ─────────────────────────────────
+// Two layers of opt-in:
+//   1. Tenant admin flips a per-tenant flag (TenantPortalConfig section="mfa").
+//   2. With the flag on, each user individually enrolls. Login is only
+//      challenged when BOTH layers are true for that user.
+// The backend lives in services/control-plane/main.py — see
+// /customer/config/mfa and /customer/me/totp/*.
+let _mfaEnrollment = null;      // in-memory {secret, qr_svg, otpauth_uri}
+let _mfaLastBackupCodes = null; // codes returned by confirm / regenerate
+
+function renderMfaSection(status, role) {
+  const isAdmin = role === "tenant_admin";
+  const available = status && !status.error && status.mfa_available_for_tenant;
+  const enabled = status && !status.error && status.totp_enabled;
+  const isError = status && status.error;
+
+  let body = "";
+  // Tenant-admin toggle (always visible to admins).
+  if (isAdmin) {
+    const checked = available ? "checked" : "";
+    body += `
+      <div class="mb-5 flex items-start gap-3 rounded-2xl border border-slate-800 bg-slate-950/60 p-4">
+        <input id="mfaTenantToggle" type="checkbox" class="mt-1 h-4 w-4 rounded border-slate-700 bg-slate-950" ${checked} />
+        <label for="mfaTenantToggle" class="flex-1 text-sm text-slate-200">
+          <span class="font-medium">Make MFA available to users in this tenant</span>
+          <span class="mt-1 block text-xs text-slate-500">When off, no user in this tenant is challenged at sign-in, but any existing enrollments are preserved and restored if you turn it back on.</span>
+        </label>
+        <span id="mfaTenantToggleMsg" class="self-center text-xs text-slate-400"></span>
+      </div>`;
+  }
+
+  if (isError) {
+    body += `<div class="rounded-2xl border border-rose-900 bg-rose-950/40 p-4 text-sm text-rose-200">Could not load MFA status: ${esc(status.error)}</div>`;
+  } else if (!available) {
+    body += `<div class="rounded-2xl border border-slate-800 bg-slate-950/60 p-4 text-sm text-slate-400">${
+      isAdmin
+        ? "Enable the toggle above to let users in this tenant set up an authenticator app."
+        : "MFA is not enabled for this tenant. Ask a tenant admin to turn it on."
+    }</div>`;
+  } else if (_mfaLastBackupCodes) {
+    const codesHtml = _mfaLastBackupCodes.map((c) => `<div class="font-mono text-sm">${esc(c)}</div>`).join("");
+    body += `
+      <div class="rounded-2xl border border-amber-900/60 bg-amber-950/30 p-4">
+        <div class="text-base font-semibold text-amber-200">Save these backup codes now</div>
+        <p class="mt-1 text-sm text-slate-300">Each code works once if you lose access to your authenticator. <strong class="text-amber-200">They will not be shown again.</strong></p>
+        <div class="mt-3 grid grid-cols-2 gap-2 rounded-xl border border-slate-800 bg-slate-900/60 p-3 sm:grid-cols-5">${codesHtml}</div>
+        <div class="mt-4 flex flex-wrap items-center gap-2">
+          <button id="mfaCopyCodesBtn" class="rounded-2xl bg-slate-800 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-700">Copy to clipboard</button>
+          <button id="mfaAckCodesBtn" class="rounded-2xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400">I've saved them — continue</button>
+        </div>
+      </div>`;
+  } else if (_mfaEnrollment) {
+    body += `
+      <div class="rounded-2xl border border-slate-800 bg-slate-950/60 p-4">
+        <div class="text-sm text-slate-300">Scan this QR code with your authenticator app, then enter the 6-digit code it shows.</div>
+        <div class="mt-3 grid items-start gap-6 md:grid-cols-[auto,1fr]">
+          <div class="inline-block rounded-xl bg-white p-3">${_mfaEnrollment.qr_svg}</div>
+          <div>
+            <div class="text-xs uppercase tracking-widest text-slate-500">Can't scan? Enter manually</div>
+            <div class="mt-1 break-all font-mono text-sm text-slate-200">${esc(_mfaEnrollment.secret)}</div>
+            <div class="mt-5">
+              <label class="mb-1 block text-xs uppercase tracking-widest text-slate-500">6-digit code</label>
+              <input id="mfaConfirmInput" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" class="w-40 rounded-2xl border border-slate-800 bg-slate-950 px-4 py-2 text-center font-mono tracking-widest" placeholder="123456" />
+              <div class="mt-3 flex gap-2">
+                <button id="mfaConfirmBtn" class="rounded-2xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400">Confirm</button>
+                <button id="mfaCancelBtn" class="rounded-2xl bg-slate-800 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-700">Cancel</button>
+              </div>
+              <div id="mfaConfirmError" class="mt-2 text-sm text-rose-300"></div>
+            </div>
+          </div>
+        </div>
+      </div>`;
+  } else if (!enabled) {
+    body += `
+      <div class="rounded-2xl border border-slate-800 bg-slate-950/60 p-4">
+        <div class="text-sm text-slate-300">Add a free time-based code (Google Authenticator, Microsoft Authenticator, 1Password, etc.) on top of your email sign-in.</div>
+        <div class="mt-4">
+          <button id="mfaEnrollBtn" class="rounded-2xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400">Set up authenticator app</button>
+        </div>
+      </div>`;
+  } else {
+    body += `
+      <div class="rounded-2xl border border-emerald-900/60 bg-emerald-950/30 p-4">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div class="text-sm text-emerald-200">Sign-in requires an authenticator code.</div>
+          <div>${badge(`${status.backup_codes_remaining} backup code${status.backup_codes_remaining === 1 ? "" : "s"} remaining`, status.backup_codes_remaining > 0 ? "slate" : "amber")}</div>
+        </div>
+      </div>
+      <div class="mt-3 rounded-2xl border border-slate-800 bg-slate-950/60 p-4">
+        <div class="text-sm font-semibold text-slate-200">Disable MFA</div>
+        <p class="mt-1 text-xs text-slate-500">Enter a current 6-digit code (or a backup code) to turn MFA off for your account.</p>
+        <div class="mt-3 flex flex-wrap items-start gap-2">
+          <input id="mfaDisableInput" type="text" inputmode="text" autocomplete="one-time-code" maxlength="12" class="w-48 rounded-2xl border border-slate-800 bg-slate-950 px-4 py-2 text-center font-mono tracking-widest" placeholder="123456" />
+          <button id="mfaDisableBtn" class="rounded-2xl bg-rose-700 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-600">Disable MFA</button>
+        </div>
+        <div id="mfaDisableError" class="mt-2 text-sm text-rose-300"></div>
+      </div>
+      <div class="mt-3 rounded-2xl border border-slate-800 bg-slate-950/60 p-4">
+        <div class="text-sm font-semibold text-slate-200">Regenerate backup codes</div>
+        <p class="mt-1 text-xs text-slate-500">Replaces all existing backup codes. Old codes stop working immediately.</p>
+        <div class="mt-3 flex flex-wrap items-start gap-2">
+          <input id="mfaRegenInput" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" class="w-40 rounded-2xl border border-slate-800 bg-slate-950 px-4 py-2 text-center font-mono tracking-widest" placeholder="123456" />
+          <button id="mfaRegenBtn" class="rounded-2xl bg-slate-800 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-700">Regenerate codes</button>
+        </div>
+        <div id="mfaRegenError" class="mt-2 text-sm text-rose-300"></div>
+      </div>`;
+  }
+
+  return `
+    <div class="rounded-2xl border border-slate-800 bg-slate-900/50 p-4 md:col-span-2">
+      <div class="flex items-center justify-between gap-3">
+        <div>
+          <div class="text-sm text-slate-400">Multi-factor authentication</div>
+          <div class="mt-2 text-lg font-semibold">${enabled ? "On" : (available ? "Available — not enrolled" : "Off")}</div>
+        </div>
+        ${enabled ? badge("enabled", "green") : (available ? badge("available", "cyan") : badge("disabled", "amber"))}
+      </div>
+      <div class="mt-4">${body}</div>
+    </div>`;
+}
+
+function wireMfaSettingsHandlers() {
+  const refresh = () => viewSettings();
+
+  const toggle = $("#mfaTenantToggle");
+  if (toggle) {
+    toggle.addEventListener("change", async () => {
+      const msg = $("#mfaTenantToggleMsg");
+      if (msg) msg.textContent = "Saving…";
+      try {
+        await api("/api/customer/config/mfa", {
+          method: "PUT",
+          body: JSON.stringify({ enabled: toggle.checked }),
+        });
+        if (msg) msg.textContent = toggle.checked ? "MFA available for this tenant" : "MFA disabled for this tenant";
+        // Reload so per-user UI appears/disappears.
+        await refresh();
+      } catch (e) {
+        if (msg) msg.textContent = "";
+        toggle.checked = !toggle.checked;
+        alert(`Could not update MFA setting: ${e.message}`);
+      }
+    });
+  }
+
+  const enrollBtn = $("#mfaEnrollBtn");
+  if (enrollBtn) {
+    enrollBtn.addEventListener("click", async () => {
+      enrollBtn.disabled = true;
+      enrollBtn.textContent = "Generating…";
+      try {
+        _mfaEnrollment = await api("/api/customer/me/totp/enroll", { method: "POST" });
+        await refresh();
+        $("#mfaConfirmInput")?.focus();
+      } catch (e) {
+        enrollBtn.disabled = false;
+        enrollBtn.textContent = "Set up authenticator app";
+        alert(`Enrollment failed: ${e.message}`);
+      }
+    });
+  }
+
+  const confirmBtn = $("#mfaConfirmBtn");
+  if (confirmBtn) {
+    const submit = async () => {
+      const code = ($("#mfaConfirmInput")?.value || "").trim();
+      const err = $("#mfaConfirmError");
+      if (err) err.textContent = "";
+      if (!/^\d{6}$/.test(code)) { if (err) err.textContent = "Enter the 6-digit code from your authenticator app."; return; }
+      confirmBtn.disabled = true;
+      try {
+        const resp = await api("/api/customer/me/totp/confirm", {
+          method: "POST",
+          body: JSON.stringify({ code }),
+        });
+        _mfaEnrollment = null;
+        _mfaLastBackupCodes = resp.backup_codes || [];
+        await refresh();
+      } catch (e) {
+        confirmBtn.disabled = false;
+        if (err) err.textContent = e.message;
+      }
+    };
+    confirmBtn.addEventListener("click", submit);
+    $("#mfaConfirmInput")?.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
+  }
+
+  $("#mfaCancelBtn")?.addEventListener("click", async () => { _mfaEnrollment = null; await refresh(); });
+
+  const copyBtn = $("#mfaCopyCodesBtn");
+  if (copyBtn) {
+    copyBtn.addEventListener("click", async () => {
+      try { await navigator.clipboard.writeText((_mfaLastBackupCodes || []).join("\n")); copyBtn.textContent = "Copied!"; }
+      catch { alert("Couldn't access clipboard — select and copy manually."); }
+    });
+  }
+  $("#mfaAckCodesBtn")?.addEventListener("click", async () => { _mfaLastBackupCodes = null; await refresh(); });
+
+  const disableBtn = $("#mfaDisableBtn");
+  if (disableBtn) {
+    disableBtn.addEventListener("click", async () => {
+      const code = ($("#mfaDisableInput")?.value || "").trim();
+      const err = $("#mfaDisableError");
+      if (err) err.textContent = "";
+      if (!code) { if (err) err.textContent = "Enter a current 6-digit code or a backup code."; return; }
+      if (!confirm("Disable MFA for your account?")) return;
+      disableBtn.disabled = true;
+      try {
+        await api("/api/customer/me/totp", { method: "DELETE", body: JSON.stringify({ code }) });
+        await refresh();
+      } catch (e) {
+        disableBtn.disabled = false;
+        if (err) err.textContent = e.message;
+      }
+    });
+  }
+
+  const regenBtn = $("#mfaRegenBtn");
+  if (regenBtn) {
+    regenBtn.addEventListener("click", async () => {
+      const code = ($("#mfaRegenInput")?.value || "").trim();
+      const err = $("#mfaRegenError");
+      if (err) err.textContent = "";
+      if (!/^\d{6}$/.test(code)) { if (err) err.textContent = "Enter the current 6-digit code from your authenticator app."; return; }
+      regenBtn.disabled = true;
+      try {
+        const resp = await api("/api/customer/me/totp/backup-codes", {
+          method: "POST",
+          body: JSON.stringify({ code }),
+        });
+        _mfaLastBackupCodes = resp.backup_codes || [];
+        await refresh();
+      } catch (e) {
+        regenBtn.disabled = false;
+        if (err) err.textContent = e.message;
+      }
+    });
+  }
+}
+
 async function viewSettings() {
   $("#pageTitle").textContent = "Customer Settings";
   $("#pageSubtitle").textContent = "Tenant identity and portal configuration";
@@ -7894,6 +8134,8 @@ async function viewSettings() {
   const sso = session.role === "tenant_admin"
     ? await api("/api/customer/sso").catch((error) => ({ error: error.message }))
     : null;
+  // MFA status (per-user enrollment + per-tenant availability flag).
+  const mfaStatus = await api("/api/customer/me/totp/status").catch((error) => ({ error: error.message }));
   $("#app").innerHTML = card(`
     <div class="grid gap-4 md:grid-cols-2">
       <div class="rounded-2xl border border-slate-800 bg-slate-900/50 p-4">
@@ -7962,6 +8204,7 @@ async function viewSettings() {
           </form>
         ` : ""}
       </div>
+      ${renderMfaSection(mfaStatus, session.role)}
     </div>
   `);
   if ($("#ssoConfigForm")) {
@@ -7994,6 +8237,7 @@ async function viewSettings() {
       }
     });
   }
+  wireMfaSettingsHandlers();
 }
 
 async function route() {

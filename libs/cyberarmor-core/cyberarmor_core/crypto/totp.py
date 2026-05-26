@@ -1,9 +1,14 @@
-"""TOTP (RFC 6238) + backup-code helpers for dashboard-auth.
+"""TOTP (RFC 6238) + backup-code helpers.
 
-Secrets are encrypted at rest with Fernet. The key is derived from the
-service's SESSION_SECRET via PBKDF2-HMAC-SHA256, so rotating the session
-secret also rotates the KEK (existing sessions already invalidate on
-that rotation, so this is a consistent story).
+Shared between dashboard-auth (admin sign-in) and control-plane
+(tenant-user sign-in). Secrets are encrypted at rest with Fernet; the
+KEK is derived from the calling service's session secret via
+PBKDF2-HMAC-SHA256 so that rotating the session secret rotates the KEK
+(existing sessions already invalidate on that rotation, so this is a
+consistent story). The KEK is per-service: a TOTP secret encrypted by
+dashboard-auth is NOT decryptable by control-plane and vice versa,
+which is intentional — admin users and tenant users are separate
+identity domains.
 """
 from __future__ import annotations
 

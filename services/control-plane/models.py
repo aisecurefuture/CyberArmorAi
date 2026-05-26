@@ -33,6 +33,12 @@ class TenantUser(Base):
     created_at = Column(DateTime(timezone=True), default=now_utc)
     updated_at = Column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
     last_login_at = Column(DateTime(timezone=True), nullable=True)
+    # Per-user TOTP MFA. See libs/cyberarmor-core/cyberarmor_core/crypto/totp.py.
+    # All nullable so existing rows survive the ALTER TABLE migration in init_db().
+    totp_secret_enc = Column(String, nullable=True)
+    totp_pending_enc = Column(String, nullable=True)
+    totp_enabled = Column(Boolean, nullable=False, default=False)
+    backup_codes_hash = Column(Text, nullable=True)  # JSON list of sha256 hashes
 
 
 class CustomerLoginCode(Base):

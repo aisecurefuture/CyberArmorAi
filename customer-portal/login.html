@@ -41,17 +41,36 @@
           <button class="w-full rounded-2xl bg-emerald-400 px-4 py-3 font-semibold text-slate-950 hover:bg-emerald-300" type="submit">Verify and enter</button>
           <button id="changeEmail" class="w-full rounded-2xl border border-slate-800 px-4 py-3 text-sm text-slate-300 hover:bg-slate-900" type="button">Use a different email</button>
         </form>
+        <form id="totpStep" class="hidden space-y-4">
+          <div>
+            <label for="totp" class="mb-2 block text-sm font-medium text-slate-200">Authenticator code</label>
+            <input id="totp" name="totp" inputmode="text" autocomplete="one-time-code" required maxlength="12"
+              class="w-full rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 text-center text-2xl tracking-[0.35em] text-slate-100 outline-none focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/20"
+              placeholder="000000" />
+            <p class="mt-2 text-xs text-slate-500">Enter the 6-digit code from your authenticator app, or one of your backup codes.</p>
+          </div>
+          <button class="w-full rounded-2xl bg-emerald-400 px-4 py-3 font-semibold text-slate-950 hover:bg-emerald-300" type="submit">Verify and enter</button>
+          <button id="cancelTotp" class="w-full rounded-2xl border border-slate-800 px-4 py-3 text-sm text-slate-300 hover:bg-slate-900" type="button">Start over</button>
+        </form>
       </div>
     </section>
   </main>
   <script>
     const emailStep = document.querySelector("#emailStep");
     const codeStep = document.querySelector("#codeStep");
+    const totpStep = document.querySelector("#totpStep");
     const message = document.querySelector("#message");
     const emailInput = document.querySelector("#email");
     const codeInput = document.querySelector("#code");
+    const totpInput = document.querySelector("#totp");
     const changeEmail = document.querySelector("#changeEmail");
+    const cancelTotp = document.querySelector("#cancelTotp");
     let pendingEmail = "";
+
+    function showOnly(form) {
+      [emailStep, codeStep, totpStep].forEach((f) => f.classList.add("hidden"));
+      form.classList.remove("hidden");
+    }
 
     function showMessage(text, tone = "info") {
       const tones = {
@@ -80,8 +99,7 @@
       pendingEmail = emailInput.value.trim().toLowerCase();
       try {
         const data = await authFetch("/request-code", { email: pendingEmail });
-        emailStep.classList.add("hidden");
-        codeStep.classList.remove("hidden");
+        showOnly(codeStep);
         codeInput.focus();
         showMessage(data.dev_code ? `Development code: ${data.dev_code}` : data.message, "success");
       } catch (error) {
@@ -102,7 +120,24 @@
     codeStep.addEventListener("submit", async (event) => {
       event.preventDefault();
       try {
-        await authFetch("/verify-code", { email: pendingEmail, code: codeInput.value });
+        const data = await authFetch("/verify-code", { email: pendingEmail, code: codeInput.value });
+        if (data && data.mfa_required) {
+          showOnly(totpStep);
+          totpInput.value = "";
+          totpInput.focus();
+          showMessage("Enter the 6-digit code from your authenticator app.", "info");
+          return;
+        }
+        window.location.replace("/");
+      } catch (error) {
+        showMessage(error.message, "error");
+      }
+    });
+
+    totpStep.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      try {
+        await authFetch("/verify-totp", { code: totpInput.value });
         window.location.replace("/");
       } catch (error) {
         showMessage(error.message, "error");
@@ -110,11 +145,18 @@
     });
 
     changeEmail.addEventListener("click", () => {
-      codeStep.classList.add("hidden");
-      emailStep.classList.remove("hidden");
+      showOnly(emailStep);
       codeInput.value = "";
       emailInput.focus();
       showMessage("Enter the email address you want to use.", "info");
+    });
+
+    cancelTotp.addEventListener("click", () => {
+      showOnly(emailStep);
+      codeInput.value = "";
+      totpInput.value = "";
+      emailInput.focus();
+      showMessage("Start the sign-in flow again from your email.", "info");
     });
   </script>
 </body>

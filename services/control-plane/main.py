@@ -22,7 +22,7 @@ from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Query, Requ
 from fastapi.responses import JSONResponse, HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from sqlalchemy import desc, func, or_
+from sqlalchemy import desc, func, inspect as sa_inspect, or_
 from sqlalchemy.orm import Session
 
 from db import Base, SessionLocal, engine
@@ -48,6 +48,15 @@ from uuid import uuid4
 
 import httpx
 from cyberarmor_core.crypto import build_auth_headers, get_public_key_info, resolve_api_key_header
+from cyberarmor_core.crypto.totp import (
+    TOTPCipher,
+    generate_backup_codes,
+    generate_secret,
+    hash_backup_code,
+    otpauth_uri,
+    qr_svg,
+    verify_totp,
+)
 from cyberarmor_core.openbao import OpenBaoClient, OpenBaoConfig, OpenBaoError
 
 # In-memory incident store for demo traceability (tenant_id -> request_id -> incident dict)
@@ -96,6 +105,14 @@ CUSTOMER_DEV_CODE_ECHO = os.getenv("CUSTOMER_PORTAL_AUTH_DEV_CODE_ECHO", "false"
 CUSTOMER_COOKIE_SECURE = os.getenv("CUSTOMER_PORTAL_COOKIE_SECURE", "false").strip().lower() in {"1", "true", "yes", "on"}
 CUSTOMER_SESSION_SECRET = os.getenv("CUSTOMER_PORTAL_SESSION_SECRET") or JWT_SECRET
 CUSTOMER_PORTAL_PUBLIC_URL = os.getenv("CUSTOMER_PORTAL_PUBLIC_URL", "http://localhost:3001").rstrip("/")
+# Per-user TOTP MFA for the customer portal. Tenant_admin toggles per-tenant
+# availability via TenantPortalConfig section="mfa". When MFA is required at
+# login, we issue a short-lived signed ticket cookie instead of a session and
+# require the user to POST to /customer-auth/verify-totp with a code.
+CUSTOMER_MFA_TICKET_COOKIE = "ca_customer_mfa"
+CUSTOMER_MFA_TICKET_TTL_SECONDS = int(os.getenv("CUSTOMER_PORTAL_MFA_TICKET_TTL_SECONDS", "300"))
+CUSTOMER_MFA_ISSUER = os.getenv("CUSTOMER_PORTAL_MFA_ISSUER", "CyberArmor Customer Portal")
+CUSTOMER_MFA_MAX_ATTEMPTS = int(os.getenv("CUSTOMER_PORTAL_MFA_MAX_ATTEMPTS", "5"))
 CUSTOMER_PORTAL_CONFIG_SECTIONS = {
     "policy-builder",
     "proxy",
@@ -393,8 +410,42 @@ def _enforce_mtls_config() -> None:
 _enforce_mtls_config()
 
 
+def _ensure_columns(table_name: str, columns: dict[str, str]) -> None:
+    """Idempotent ADD COLUMN for SQLite and Postgres.
+
+    SQLAlchemy's ``create_all`` adds new TABLES but never alters existing
+    ones, so adding columns to a long-lived model needs an out-of-band
+    step. We keep it minimal: ``ALTER TABLE … ADD COLUMN`` is supported
+    on both backends and is a no-op when the column already exists
+    (we check via the inspector first to keep the SQL noise-free).
+
+    ``columns`` maps column name → DDL fragment, e.g. ``"BOOLEAN NOT NULL DEFAULT FALSE"``.
+    """
+    try:
+        existing = {c["name"] for c in sa_inspect(engine).get_columns(table_name)}
+    except Exception as e:
+        # Table doesn't exist yet (fresh DB) — create_all() handles it.
+        logger.debug("skip_column_check table=%s err=%s", table_name, e)
+        return
+    missing = {name: ddl for name, ddl in columns.items() if name not in existing}
+    if not missing:
+        return
+    with engine.begin() as conn:
+        for name, ddl in missing.items():
+            conn.exec_driver_sql(f'ALTER TABLE {table_name} ADD COLUMN {name} {ddl}')
+            logger.info("added_column table=%s column=%s", table_name, name)
+
+
 def init_db():
     Base.metadata.create_all(bind=engine)
+    # Idempotent column adds for models that grew after first deploy.
+    # SQLite & Postgres both accept these DDL fragments verbatim.
+    _ensure_columns("tenant_users", {
+        "totp_secret_enc": "VARCHAR",
+        "totp_pending_enc": "VARCHAR",
+        "totp_enabled": "BOOLEAN NOT NULL DEFAULT FALSE",
+        "backup_codes_hash": "TEXT",
+    })
     with SessionLocal() as db:
         if not db.query(ApiKey).filter(ApiKey.key == DEFAULT_API_KEY).first():
             db.add(ApiKey(key=DEFAULT_API_KEY, role="admin", tenant_id=None, active=True))
@@ -1136,6 +1187,149 @@ def _clear_customer_session_cookies(response: Response) -> None:
     response.delete_cookie(CUSTOMER_CSRF_COOKIE, path="/")
 
 
+# ── Customer-portal TOTP MFA helpers ─────────────────────────────────────
+# Per-user TOTP secrets sit on TenantUser; the per-tenant "is MFA available
+# to this tenant's users?" flag lives in TenantPortalConfig(section="mfa")
+# alongside upload-discovery / abom-* configs. Sharing the cipher with
+# dashboard-auth would be wrong: the KEK is derived from each service's
+# session secret, so an admin's TOTP secret is intentionally undecryptable
+# by control-plane and vice versa.
+_totp_cipher_instance: Optional[TOTPCipher] = None
+# In-process per-MFA-ticket failed-attempt counter. The MFA ticket cookie is
+# HMAC-signed (so the client can't tamper with it), but it's not stored
+# server-side, so without this map an attacker could brute-force 6 digits at
+# unlimited rate within the 5-minute ticket TTL. Keying by sha256(ticket)
+# avoids holding the raw cookie value in memory and the dict resets on
+# process restart, which is fine for a short-lived counter.
+_mfa_failed_attempts: Dict[str, int] = {}
+
+
+def _get_totp_cipher() -> TOTPCipher:
+    global _totp_cipher_instance
+    if _totp_cipher_instance is None:
+        _totp_cipher_instance = TOTPCipher(CUSTOMER_SESSION_SECRET, salt=b"ca-customer-totp-kek-v1")
+    return _totp_cipher_instance
+
+
+def _sign_customer_mfa_ticket(email: str, tenant_id: str, expires: int) -> str:
+    payload = f"{email}|{tenant_id}|{expires}"
+    sig = hmac.new(CUSTOMER_SESSION_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{base64.urlsafe_b64encode(payload.encode('utf-8')).decode('ascii').rstrip('=')}.{sig}"
+
+
+def _verify_customer_mfa_ticket(ticket: Optional[str]) -> Optional[Tuple[str, str]]:
+    """Returns (email, tenant_id) if the ticket is valid and unexpired, else None."""
+    if not ticket or "." not in ticket:
+        return None
+    try:
+        encoded, sig = ticket.rsplit(".", 1)
+        padding = "=" * (-len(encoded) % 4)
+        payload = base64.urlsafe_b64decode(encoded + padding).decode("utf-8")
+        email, tenant_id, expires_str = payload.split("|", 2)
+        expected = hmac.new(
+            CUSTOMER_SESSION_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(expected, sig):
+            return None
+        if int(expires_str) < int(time.time()):
+            return None
+        return (email, tenant_id)
+    except (ValueError, UnicodeDecodeError):
+        return None
+
+
+def _issue_customer_mfa_ticket(response: Response, email: str, tenant_id: str) -> Dict[str, Any]:
+    expires = int(time.time()) + CUSTOMER_MFA_TICKET_TTL_SECONDS
+    ticket = _sign_customer_mfa_ticket(email, tenant_id, expires)
+    response.set_cookie(
+        CUSTOMER_MFA_TICKET_COOKIE,
+        ticket,
+        max_age=CUSTOMER_MFA_TICKET_TTL_SECONDS,
+        httponly=True,
+        secure=CUSTOMER_COOKIE_SECURE,
+        samesite="lax",
+        path="/",
+    )
+    return {"ok": True, "mfa_required": True, "email": email}
+
+
+def _clear_customer_mfa_ticket(response: Response) -> None:
+    response.delete_cookie(CUSTOMER_MFA_TICKET_COOKIE, path="/")
+
+
+def _ticket_attempt_key(ticket: str) -> str:
+    return hashlib.sha256(ticket.encode("utf-8")).hexdigest()
+
+
+def _tenant_mfa_enabled(db: Session, tenant_id: str) -> bool:
+    """Reads TenantPortalConfig(section="mfa") → {"enabled": bool}."""
+    record = (
+        db.query(TenantPortalConfig)
+        .filter(
+            TenantPortalConfig.tenant_id == tenant_id,
+            TenantPortalConfig.section == "mfa",
+        )
+        .first()
+    )
+    if not record:
+        return False
+    cfg = _coerce_meta(record.config) if hasattr(record, "config") else None
+    if not isinstance(cfg, dict):
+        return False
+    return bool(cfg.get("enabled"))
+
+
+def _set_tenant_mfa_enabled(db: Session, tenant_id: str, enabled: bool, updated_by: str) -> None:
+    record = (
+        db.query(TenantPortalConfig)
+        .filter(
+            TenantPortalConfig.tenant_id == tenant_id,
+            TenantPortalConfig.section == "mfa",
+        )
+        .first()
+    )
+    payload = {"enabled": bool(enabled)}
+    if record:
+        record.config = _encode_meta_for_db(payload)
+        record.updated_by = updated_by
+        record.updated_at = _utcnow()
+    else:
+        record = TenantPortalConfig(
+            tenant_id=tenant_id,
+            section="mfa",
+            config=_encode_meta_for_db(payload),
+            updated_by=updated_by,
+            updated_at=_utcnow(),
+        )
+        db.add(record)
+    db.commit()
+
+
+def _load_customer_backup_hashes(user: TenantUser) -> List[str]:
+    if not user.backup_codes_hash:
+        return []
+    try:
+        parsed = json.loads(user.backup_codes_hash)
+        if isinstance(parsed, list):
+            return [str(h) for h in parsed]
+    except (ValueError, TypeError):
+        pass
+    return []
+
+
+def _consume_customer_backup_code(user: TenantUser, code: str) -> bool:
+    """If ``code`` matches one of the user's backup codes, mutate the
+    stored hash list to remove it and return True. Caller must commit.
+    """
+    hashes = _load_customer_backup_hashes(user)
+    if not hashes:
+        return False
+    candidate = hash_backup_code(CUSTOMER_SESSION_SECRET, code)
+    if candidate not in hashes:
+        return False
+    hashes.remove(candidate)
+    user.backup_codes_hash = json.dumps(hashes)
+    return True
 
 
 def _send_customer_login_code(email: str, code: str) -> None:
@@ -1987,7 +2181,75 @@ def customer_verify_code(
 
     login_code.consumed_at = _utcnow()
     user = active_users[0]
+    # MFA gate: if THIS tenant has MFA enabled AND this user has enrolled,
+    # issue a short-lived MFA ticket instead of a session and require the
+    # client to POST to /customer-auth/verify-totp. Otherwise issue the
+    # session straight away — tenants that haven't turned MFA on never see
+    # this branch, and enrolled users in disabled tenants don't either
+    # (per the per-tenant gating contract).
+    if _tenant_mfa_enabled(db, user.tenant_id) and user.totp_enabled and user.totp_secret_enc:
+        db.commit()  # persist login_code.consumed_at + any prior changes
+        return _issue_customer_mfa_ticket(response, user.email, user.tenant_id)
     _issue_customer_session(response, db, user)
+    db.commit()
+    return {"ok": True, "email": user.email, "tenant_id": user.tenant_id, "role": user.role}
+
+
+@app.post("/customer-auth/verify-totp")
+def customer_verify_totp(
+    body: Dict[str, Any],
+    response: Response,
+    db: Annotated[Session, Depends(get_db)],
+    ca_customer_mfa: Annotated[Optional[str], Cookie()] = None,
+) -> Dict[str, Any]:
+    """Second factor of the customer-portal login. Consumes the short-lived
+    ``ca_customer_mfa`` ticket issued by /customer-auth/verify-code and, on
+    success, issues the real session cookie. Accepts either a 6-digit TOTP
+    code or one of the user's backup codes — the backend tries both, the
+    UI is one input field.
+    """
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Code required")
+    code = str(body.get("code") or "").strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="Code required")
+    if not ca_customer_mfa:
+        raise HTTPException(status_code=401, detail="MFA ticket missing or expired")
+
+    parsed = _verify_customer_mfa_ticket(ca_customer_mfa)
+    if not parsed:
+        _clear_customer_mfa_ticket(response)
+        raise HTTPException(status_code=401, detail="MFA ticket missing or expired")
+    email, tenant_id = parsed
+
+    attempt_key = _ticket_attempt_key(ca_customer_mfa)
+    if _mfa_failed_attempts.get(attempt_key, 0) >= CUSTOMER_MFA_MAX_ATTEMPTS:
+        _clear_customer_mfa_ticket(response)
+        _mfa_failed_attempts.pop(attempt_key, None)
+        raise HTTPException(status_code=429, detail="Too many failed MFA attempts — start over")
+
+    user = (
+        db.query(TenantUser)
+        .filter(
+            TenantUser.tenant_id == tenant_id,
+            TenantUser.email == email,
+            TenantUser.status == "active",
+        )
+        .first()
+    )
+    if not user or not user.totp_enabled or not user.totp_secret_enc:
+        _clear_customer_mfa_ticket(response)
+        raise HTTPException(status_code=401, detail="MFA not enrolled")
+
+    secret = _get_totp_cipher().decrypt(user.totp_secret_enc)
+    ok = verify_totp(secret, code) or _consume_customer_backup_code(user, code)
+    if not ok:
+        _mfa_failed_attempts[attempt_key] = _mfa_failed_attempts.get(attempt_key, 0) + 1
+        raise HTTPException(status_code=401, detail="Invalid MFA code")
+
+    _mfa_failed_attempts.pop(attempt_key, None)
+    _issue_customer_session(response, db, user)
+    _clear_customer_mfa_ticket(response)
     db.commit()
     return {"ok": True, "email": user.email, "tenant_id": user.tenant_id, "role": user.role}
 
@@ -2006,6 +2268,135 @@ def customer_logout(
             db.commit()
     _clear_customer_session_cookies(response)
     return {"ok": True}
+
+
+# ── Per-user TOTP MFA management (any authenticated tenant user) ─────────
+def _load_customer_user(db: Session, ctx: CustomerContext) -> TenantUser:
+    user = (
+        db.query(TenantUser)
+        .filter(
+            TenantUser.tenant_id == ctx.tenant_id,
+            TenantUser.email == ctx.email,
+            TenantUser.status == "active",
+        )
+        .first()
+    )
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+
+@app.get("/customer/me/totp/status")
+def customer_totp_status(
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    db: Annotated[Session, Depends(get_db)],
+) -> Dict[str, Any]:
+    user = _load_customer_user(db, ctx)
+    return {
+        "email": user.email,
+        "tenant_id": user.tenant_id,
+        "totp_enabled": bool(user.totp_enabled),
+        "enrollment_in_progress": bool(user.totp_pending_enc),
+        "backup_codes_remaining": len(_load_customer_backup_hashes(user)),
+        "mfa_available_for_tenant": _tenant_mfa_enabled(db, user.tenant_id),
+    }
+
+
+@app.post("/customer/me/totp/enroll")
+def customer_totp_enroll(
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    db: Annotated[Session, Depends(get_db)],
+) -> Dict[str, Any]:
+    if not _tenant_mfa_enabled(db, ctx.tenant_id):
+        raise HTTPException(status_code=403, detail="MFA is not enabled for this tenant")
+    user = _load_customer_user(db, ctx)
+    secret = generate_secret()
+    user.totp_pending_enc = _get_totp_cipher().encrypt(secret)
+    db.commit()
+    uri = otpauth_uri(secret, f"{user.email} ({user.tenant_id})", CUSTOMER_MFA_ISSUER)
+    return {"secret": secret, "otpauth_uri": uri, "qr_svg": qr_svg(uri)}
+
+
+@app.post("/customer/me/totp/confirm")
+def customer_totp_confirm(
+    body: Dict[str, Any],
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    db: Annotated[Session, Depends(get_db)],
+) -> Dict[str, Any]:
+    code = str((body or {}).get("code") or "").strip()
+    user = _load_customer_user(db, ctx)
+    if not user.totp_pending_enc:
+        raise HTTPException(status_code=400, detail="No enrollment in progress")
+    pending = _get_totp_cipher().decrypt(user.totp_pending_enc)
+    if not verify_totp(pending, code):
+        raise HTTPException(status_code=401, detail="Invalid code")
+    user.totp_secret_enc = user.totp_pending_enc
+    user.totp_pending_enc = None
+    user.totp_enabled = True
+    backup_codes = generate_backup_codes()
+    user.backup_codes_hash = json.dumps([hash_backup_code(CUSTOMER_SESSION_SECRET, c) for c in backup_codes])
+    db.commit()
+    return {"ok": True, "backup_codes": backup_codes}
+
+
+@app.delete("/customer/me/totp")
+def customer_totp_disable(
+    body: Dict[str, Any],
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    db: Annotated[Session, Depends(get_db)],
+) -> Dict[str, bool]:
+    code = str((body or {}).get("code") or "").strip()
+    user = _load_customer_user(db, ctx)
+    if not user.totp_enabled or not user.totp_secret_enc:
+        raise HTTPException(status_code=400, detail="MFA is not enabled")
+    secret = _get_totp_cipher().decrypt(user.totp_secret_enc)
+    if not (verify_totp(secret, code) or _consume_customer_backup_code(user, code)):
+        raise HTTPException(status_code=401, detail="Invalid code")
+    user.totp_secret_enc = None
+    user.totp_pending_enc = None
+    user.totp_enabled = False
+    user.backup_codes_hash = None
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/customer/me/totp/backup-codes")
+def customer_totp_regenerate_backup_codes(
+    body: Dict[str, Any],
+    ctx: Annotated[CustomerContext, Depends(get_customer_context)],
+    db: Annotated[Session, Depends(get_db)],
+) -> Dict[str, Any]:
+    code = str((body or {}).get("code") or "").strip()
+    user = _load_customer_user(db, ctx)
+    if not user.totp_enabled or not user.totp_secret_enc:
+        raise HTTPException(status_code=400, detail="MFA is not enabled")
+    secret = _get_totp_cipher().decrypt(user.totp_secret_enc)
+    if not verify_totp(secret, code):
+        raise HTTPException(status_code=401, detail="Invalid code")
+    new_codes = generate_backup_codes()
+    user.backup_codes_hash = json.dumps([hash_backup_code(CUSTOMER_SESSION_SECRET, c) for c in new_codes])
+    db.commit()
+    return {"ok": True, "backup_codes": new_codes}
+
+
+# ── Per-tenant MFA availability toggle (tenant_admin only) ──────────────
+@app.get("/customer/config/mfa")
+def customer_get_mfa_config(
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> Dict[str, Any]:
+    return {"enabled": _tenant_mfa_enabled(db, ctx.tenant_id)}
+
+
+@app.put("/customer/config/mfa")
+def customer_set_mfa_config(
+    body: Dict[str, Any],
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> Dict[str, Any]:
+    enabled = bool((body or {}).get("enabled"))
+    _set_tenant_mfa_enabled(db, ctx.tenant_id, enabled, updated_by=ctx.email)
+    return {"ok": True, "enabled": enabled}
 
 
 @app.get("/customer-auth/sso/start")

@@ -6,14 +6,17 @@ from pathlib import Path
 
 
 SERVICE_DIR = Path(__file__).resolve().parents[1]
-if str(SERVICE_DIR) not in sys.path:
-    sys.path.insert(0, str(SERVICE_DIR))
+REPO_ROOT = SERVICE_DIR.parents[1]
+CYBERARMOR_CORE_LIB = REPO_ROOT / "libs" / "cyberarmor-core"
+for entry in (SERVICE_DIR, CYBERARMOR_CORE_LIB):
+    if str(entry) not in sys.path:
+        sys.path.insert(0, str(entry))
 
 
 def load_dashboard_auth_main(monkeypatch):
     monkeypatch.setenv("DASHBOARD_AUTH_DATABASE_URL", "sqlite:///:memory:")
     monkeypatch.setenv("ADMIN_DASHBOARD_SESSION_SECRET", "test-session-secret")
-    for name in ("main", "db", "models", "totp"):
+    for name in ("main", "db", "models", "cyberarmor_core.crypto.totp"):
         sys.modules.pop(name, None)
     return importlib.import_module("main")
 

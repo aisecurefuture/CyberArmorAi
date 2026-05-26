@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from db import Base, SessionLocal, engine, ensure_sqlite_dir
 from models import AdminUser, DashboardSession, LoginCode
-from totp import (
+from cyberarmor_core.crypto.totp import (
     TOTPCipher,
     generate_backup_codes,
     generate_secret,

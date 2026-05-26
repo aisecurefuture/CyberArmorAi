@@ -39,6 +39,7 @@ const NAV = [
   { id: "telemetry",      label: "Telemetry",         icon: "📈", hash: "#/telemetry" },
   { id: "audit",          label: "Audit Logs",        icon: "📝", hash: "#/audit" },
   { id: "reports",        label: "Reports",           icon: "📄", hash: "#/reports" },
+  { id: "security",       label: "Account Security",  icon: "🔐", hash: "#/security" },
   // ── AI Identity Control Plane ──────────────────────────
   { id: "agents",        label: "Agent Directory",    icon: "🤖", hash: "#/agents" },
   { id: "providers",     label: "AI Providers",       icon: "⚡", hash: "#/providers" },
@@ -3137,6 +3138,252 @@ app.add_middleware(CyberArmorMiddleware, client=client)`,
 }
 
 // ─── Router ──────────────────────────────────────────────
+// ─── Account Security (MFA / TOTP) ───────────────────────
+// Drives the existing /me/totp/* endpoints on dashboard-auth. Backend is
+// already complete; this view is the only UI surface for it.
+async function viewSecurity() {
+  let enrollment = null;       // {secret, otpauth_uri, qr_svg} after POST /me/totp/enroll
+  let lastBackupCodes = null;  // string[] just returned by confirm / regenerate
+
+  async function refresh() {
+    const app = $("#app");
+    app.innerHTML = loading();
+    try {
+      const status = await apiFetch("/me/totp/status");
+      render(status);
+    } catch (e) {
+      app.innerHTML = card(`<div class="text-rose-400">Error: ${esc(e.message)}</div>`);
+    }
+  }
+
+  function statusBanner(status) {
+    if (status.totp_enabled) {
+      return card(`
+        <div class="flex items-center justify-between flex-wrap gap-3">
+          <div>
+            <div class="text-lg font-semibold">Multi-factor authentication</div>
+            <div class="mt-1 text-sm text-slate-400">Sign-in requires a 6-digit code from your authenticator app.</div>
+          </div>
+          <div class="flex items-center gap-2">${badge("MFA on", "green")}
+            ${badge(`${status.backup_codes_remaining} backup code${status.backup_codes_remaining === 1 ? "" : "s"} remaining`, status.backup_codes_remaining > 0 ? "slate" : "amber")}
+          </div>
+        </div>
+      `);
+    }
+    return card(`
+      <div class="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <div class="text-lg font-semibold">Multi-factor authentication</div>
+          <div class="mt-1 text-sm text-slate-400">Add a free time-based code (Google Authenticator, Microsoft Authenticator, 1Password, etc.) on top of your email sign-in.</div>
+        </div>
+        <div>${badge(status.mfa_required ? "Required by policy" : "Optional", status.mfa_required ? "amber" : "slate")}</div>
+      </div>
+    `);
+  }
+
+  function notEnrolledCard(_status) {
+    return card(`
+      <div class="text-sm text-slate-300">Step 1 — generate a secret and scan it into your authenticator app.</div>
+      <div class="mt-4">
+        <button id="mfaEnrollBtn" class="rounded-2xl bg-cyan-500 px-4 py-3 font-semibold text-slate-950 hover:bg-cyan-400">Set up authenticator app</button>
+      </div>
+    `);
+  }
+
+  function enrollmentCard(en) {
+    // qr_svg is a full <svg>…</svg> string from the backend.
+    return card(`
+      <div class="text-sm text-slate-300">Step 2 — scan this QR code with your authenticator app, then enter the 6-digit code it shows.</div>
+      <div class="mt-4 grid gap-6 md:grid-cols-[auto,1fr] items-start">
+        <div class="rounded-xl bg-white p-3 inline-block">${en.qr_svg}</div>
+        <div>
+          <div class="text-xs uppercase tracking-widest text-slate-500">Can't scan? Enter manually</div>
+          <div class="mt-1 font-mono text-sm break-all text-slate-200">${esc(en.secret)}</div>
+          <div class="mt-6">
+            <label class="block text-xs uppercase tracking-widest text-slate-500 mb-1">6-digit code</label>
+            <input id="mfaConfirmInput" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" class="w-40 rounded-2xl border border-slate-800 bg-slate-950 px-4 py-3 font-mono text-center tracking-widest" placeholder="123456" />
+            <div class="mt-3 flex gap-2">
+              <button id="mfaConfirmBtn" class="rounded-2xl bg-cyan-500 px-4 py-3 font-semibold text-slate-950 hover:bg-cyan-400">Confirm</button>
+              <button id="mfaCancelBtn" class="rounded-2xl bg-slate-800 px-4 py-3 font-semibold text-slate-200 hover:bg-slate-700">Cancel</button>
+            </div>
+            <div id="mfaConfirmError" class="mt-2 text-sm text-rose-300"></div>
+          </div>
+        </div>
+      </div>
+    `);
+  }
+
+  function backupCodesCard(codes) {
+    const codesHtml = codes.map((c) => `<div class="font-mono text-sm">${esc(c)}</div>`).join("");
+    return card(`
+      <div class="text-lg font-semibold text-amber-200">Save these backup codes now</div>
+      <p class="mt-2 text-sm text-slate-300">Each code works once if you lose access to your authenticator. <strong class="text-amber-200">They will not be shown again.</strong></p>
+      <div class="mt-4 grid grid-cols-2 sm:grid-cols-5 gap-2 rounded-xl border border-slate-800 bg-slate-900/60 p-4">${codesHtml}</div>
+      <div class="mt-4 flex gap-2 items-center">
+        <button id="mfaCopyCodesBtn" class="rounded-2xl bg-slate-800 px-4 py-3 font-semibold text-slate-200 hover:bg-slate-700">Copy to clipboard</button>
+        <button id="mfaAckCodesBtn" class="rounded-2xl bg-cyan-500 px-4 py-3 font-semibold text-slate-950 hover:bg-cyan-400">I've saved them — continue</button>
+      </div>
+    `);
+  }
+
+  function enabledCard(_status) {
+    return `
+      ${card(`
+        <div class="text-base font-semibold">Disable MFA</div>
+        <p class="mt-1 text-sm text-slate-400">Enter a current 6-digit code (or a backup code) to turn MFA off for your account.</p>
+        <div class="mt-3 flex gap-2 items-start flex-wrap">
+          <input id="mfaDisableInput" type="text" inputmode="text" autocomplete="one-time-code" maxlength="12" class="w-48 rounded-2xl border border-slate-800 bg-slate-950 px-4 py-3 font-mono text-center tracking-widest" placeholder="123456" />
+          <button id="mfaDisableBtn" class="rounded-2xl bg-rose-700 px-4 py-3 font-semibold text-white hover:bg-rose-600">Disable MFA</button>
+        </div>
+        <div id="mfaDisableError" class="mt-2 text-sm text-rose-300"></div>
+      `)}
+      ${card(`
+        <div class="text-base font-semibold mt-1">Regenerate backup codes</div>
+        <p class="mt-1 text-sm text-slate-400">Replaces all existing backup codes. Old codes stop working immediately.</p>
+        <div class="mt-3 flex gap-2 items-start flex-wrap">
+          <input id="mfaRegenInput" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" class="w-40 rounded-2xl border border-slate-800 bg-slate-950 px-4 py-3 font-mono text-center tracking-widest" placeholder="123456" />
+          <button id="mfaRegenBtn" class="rounded-2xl bg-slate-800 px-4 py-3 font-semibold text-slate-200 hover:bg-slate-700">Regenerate codes</button>
+        </div>
+        <div id="mfaRegenError" class="mt-2 text-sm text-rose-300"></div>
+      `)}
+    `;
+  }
+
+  function render(status) {
+    const app = $("#app");
+    const blocks = [statusBanner(status)];
+    if (lastBackupCodes) {
+      blocks.push(backupCodesCard(lastBackupCodes));
+    } else if (enrollment) {
+      blocks.push(enrollmentCard(enrollment));
+    } else if (status.totp_enabled) {
+      blocks.push(enabledCard(status));
+    } else {
+      blocks.push(notEnrolledCard(status));
+    }
+    app.innerHTML = `<div class="grid gap-4 max-w-3xl">${blocks.join("")}</div>`;
+    wireHandlers(status);
+  }
+
+  function wireHandlers(status) {
+    const enrollBtn = $("#mfaEnrollBtn");
+    if (enrollBtn) {
+      enrollBtn.onclick = async () => {
+        enrollBtn.disabled = true;
+        enrollBtn.textContent = "Generating…";
+        try {
+          enrollment = await apiFetch("/me/totp/enroll", { method: "POST" });
+          render(status);
+          $("#mfaConfirmInput")?.focus();
+        } catch (e) {
+          toast(`Enrollment failed: ${e.message}`, "error");
+          enrollBtn.disabled = false;
+          enrollBtn.textContent = "Set up authenticator app";
+        }
+      };
+    }
+
+    const confirmBtn = $("#mfaConfirmBtn");
+    if (confirmBtn) {
+      const submit = async () => {
+        const code = ($("#mfaConfirmInput")?.value || "").trim();
+        const err = $("#mfaConfirmError");
+        if (err) err.textContent = "";
+        if (!/^\d{6}$/.test(code)) { if (err) err.textContent = "Enter the 6-digit code from your authenticator app."; return; }
+        confirmBtn.disabled = true;
+        try {
+          const resp = await apiFetch("/me/totp/confirm", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ code }),
+          });
+          enrollment = null;
+          lastBackupCodes = resp.backup_codes || [];
+          await refresh();
+          toast("MFA enabled", "success");
+        } catch (e) {
+          if (err) err.textContent = e.message;
+          confirmBtn.disabled = false;
+        }
+      };
+      confirmBtn.onclick = submit;
+      $("#mfaConfirmInput")?.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
+    }
+
+    const cancelBtn = $("#mfaCancelBtn");
+    if (cancelBtn) {
+      cancelBtn.onclick = () => { enrollment = null; refresh(); };
+    }
+
+    const copyBtn = $("#mfaCopyCodesBtn");
+    if (copyBtn && lastBackupCodes) {
+      copyBtn.onclick = async () => {
+        try {
+          await navigator.clipboard.writeText(lastBackupCodes.join("\n"));
+          toast("Backup codes copied to clipboard", "success");
+        } catch {
+          toast("Couldn't access clipboard — select and copy manually", "error");
+        }
+      };
+    }
+
+    const ackBtn = $("#mfaAckCodesBtn");
+    if (ackBtn) {
+      ackBtn.onclick = () => { lastBackupCodes = null; refresh(); };
+    }
+
+    const disableBtn = $("#mfaDisableBtn");
+    if (disableBtn) {
+      disableBtn.onclick = async () => {
+        const code = ($("#mfaDisableInput")?.value || "").trim();
+        const err = $("#mfaDisableError");
+        if (err) err.textContent = "";
+        if (!code) { if (err) err.textContent = "Enter a current 6-digit code or a backup code."; return; }
+        if (!confirm("Disable MFA for your account? You'll be able to sign in with just your email code afterward.")) return;
+        disableBtn.disabled = true;
+        try {
+          await apiFetch("/me/totp", {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ code }),
+          });
+          toast("MFA disabled", "success");
+          await refresh();
+        } catch (e) {
+          if (err) err.textContent = e.message;
+          disableBtn.disabled = false;
+        }
+      };
+    }
+
+    const regenBtn = $("#mfaRegenBtn");
+    if (regenBtn) {
+      regenBtn.onclick = async () => {
+        const code = ($("#mfaRegenInput")?.value || "").trim();
+        const err = $("#mfaRegenError");
+        if (err) err.textContent = "";
+        if (!/^\d{6}$/.test(code)) { if (err) err.textContent = "Enter the current 6-digit code from your authenticator app."; return; }
+        regenBtn.disabled = true;
+        try {
+          const resp = await apiFetch("/me/totp/backup-codes", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ code }),
+          });
+          lastBackupCodes = resp.backup_codes || [];
+          toast("Backup codes regenerated — save the new ones", "success");
+          await refresh();
+        } catch (e) {
+          if (err) err.textContent = e.message;
+          regenBtn.disabled = false;
+        }
+      };
+    }
+  }
+
+  await refresh();
+}
+
 const ROUTES = {
   "overview":       { title: "Overview",           subtitle: "Security posture and operations summary",  fn: viewOverview },
   "tenants":        { title: "Tenants",            subtitle: "Multi-tenant organization management",     fn: viewTenants },
@@ -3156,6 +3403,7 @@ const ROUTES = {
   "telemetry":      { title: "Telemetry",          subtitle: "Real-time event monitoring and metrics",   fn: viewTelemetry },
   "audit":          { title: "Audit Logs",         subtitle: "System audit trail",                       fn: viewAudit },
   "reports":        { title: "Reports",            subtitle: "Generate security and compliance reports",  fn: viewReports },
+  "security":       { title: "Account Security",   subtitle: "Multi-factor authentication for your dashboard sign-in", fn: viewSecurity },
   // AI Identity Control Plane
   "agents":         { title: "Agent Directory",    subtitle: "Register and manage AI agent identities",   fn: viewAgents },
   "providers":      { title: "AI Providers",       subtitle: "Configure and monitor AI provider credentials", fn: viewProviders },
