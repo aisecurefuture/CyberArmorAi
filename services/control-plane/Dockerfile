@@ -3,6 +3,7 @@ FROM ${PQC_BASE_IMAGE}
 
 WORKDIR /app
 RUN pip install --no-cache-dir fastapi uvicorn[standard] pydantic sqlalchemy psycopg2-binary redis pyjwt httpx cryptography \
+    pyotp qrcode \
     boto3 \
     google-cloud-asset \
     azure-identity azure-mgmt-resourcegraph
