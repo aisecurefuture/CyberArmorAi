@@ -82,7 +82,7 @@ const statusRows = [
   { capability: "RASP Python hook", status: "Working", note: "" },
   { capability: "Browser extension hook", status: "Working", note: "" },
   { capability: "Prometheus /metrics endpoint", status: "Working", note: "" },
-  { capability: "OpenAI / Anthropic tool-use URL wrappers", status: "Roadmap", note: "" },
+  { capability: "OpenAI / Anthropic tool-use URL wrappers", status: "Working", note: "Intercepts tool-call response objects before agent fetch; sync + async; block/redact" },
   { capability: "Feedback-driven fine-tuning pipeline", status: "Roadmap", note: "" },
   { capability: "Enforced mTLS, Redis reputation cache, K8s NetworkPolicy", status: "Configurable", note: "Production-hardening steps documented" },
 ];
