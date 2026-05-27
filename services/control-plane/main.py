@@ -515,6 +515,7 @@ class TenantUserOut(BaseModel):
     created_at: datetime
     updated_at: Optional[datetime] = None
     last_login_at: Optional[datetime] = None
+    totp_enabled: bool = False
 
     class Config:
         from_attributes = True
@@ -1195,13 +1196,90 @@ def _clear_customer_session_cookies(response: Response) -> None:
 # session secret, so an admin's TOTP secret is intentionally undecryptable
 # by control-plane and vice versa.
 _totp_cipher_instance: Optional[TOTPCipher] = None
-# In-process per-MFA-ticket failed-attempt counter. The MFA ticket cookie is
-# HMAC-signed (so the client can't tamper with it), but it's not stored
-# server-side, so without this map an attacker could brute-force 6 digits at
-# unlimited rate within the 5-minute ticket TTL. Keying by sha256(ticket)
-# avoids holding the raw cookie value in memory and the dict resets on
-# process restart, which is fine for a short-lived counter.
+# Per-MFA-ticket failed-attempt counter. The MFA ticket cookie is HMAC-signed
+# (so the client can't tamper with it), but it's not stored server-side, so
+# without a counter an attacker could brute-force 6 digits at unlimited rate
+# within the 5-minute ticket TTL. Keying by sha256(ticket) avoids holding
+# the raw cookie value in storage.
+#
+# Backend selection at startup:
+#   - REDIS_URL set + reachable → Redis (works across multiple uvicorn workers).
+#   - Otherwise → in-process dict (fine for single-worker dev).
+# Mid-request Redis errors fail closed (treat as rate-limit hit) so the
+# guarantee can't be eroded by tickling the network — better to lock a
+# legitimate user out for 5 minutes than to silently disable the limit.
 _mfa_failed_attempts: Dict[str, int] = {}
+_mfa_redis_client: Any = None  # redis.Redis | None
+
+
+def _init_mfa_rate_limiter() -> None:
+    global _mfa_redis_client
+    url = os.getenv("REDIS_URL", "").strip()
+    if not url:
+        logger.info("mfa_rate_limit backend=in-memory reason=REDIS_URL_unset")
+        return
+    try:
+        import redis as _redis_lib  # type: ignore[import-not-found]
+        client = _redis_lib.Redis.from_url(
+            url, socket_timeout=2, socket_connect_timeout=2, decode_responses=True
+        )
+        client.ping()
+        _mfa_redis_client = client
+        logger.info("mfa_rate_limit backend=redis url=%s", url)
+    except Exception as e:
+        logger.warning("mfa_rate_limit redis_unavailable err=%s fallback=in-memory", e)
+        _mfa_redis_client = None
+
+
+_init_mfa_rate_limiter()
+
+
+def _mfa_redis_key(ticket_hash: str) -> str:
+    return f"mfa:fails:{ticket_hash}"
+
+
+def _mfa_inc_attempts(ticket_hash: str) -> int:
+    """Increment and return the post-increment count for this ticket. On Redis
+    failure when Redis was configured at startup, raises HTTPException(429)
+    rather than silently falling through to no rate limit.
+    """
+    if _mfa_redis_client is None:
+        _mfa_failed_attempts[ticket_hash] = _mfa_failed_attempts.get(ticket_hash, 0) + 1
+        return _mfa_failed_attempts[ticket_hash]
+    try:
+        key = _mfa_redis_key(ticket_hash)
+        count = _mfa_redis_client.incr(key)
+        if count == 1:
+            # Tie the counter's TTL to the ticket's TTL so it auto-clears
+            # when the ticket would have expired anyway.
+            _mfa_redis_client.expire(key, CUSTOMER_MFA_TICKET_TTL_SECONDS)
+        return int(count)
+    except Exception as e:
+        logger.warning("mfa_rate_limit redis_error_on_incr err=%s fail_closed=True", e)
+        # Fail closed: treat as max attempts reached.
+        raise HTTPException(status_code=429, detail="MFA service temporarily unavailable, try again shortly")
+
+
+def _mfa_clear_attempts(ticket_hash: str) -> None:
+    if _mfa_redis_client is None:
+        _mfa_failed_attempts.pop(ticket_hash, None)
+        return
+    try:
+        _mfa_redis_client.delete(_mfa_redis_key(ticket_hash))
+    except Exception as e:
+        logger.warning("mfa_rate_limit redis_error_on_clear err=%s", e)
+
+
+def _mfa_attempts_count(ticket_hash: str) -> int:
+    """Read-only peek used for the early-exit check."""
+    if _mfa_redis_client is None:
+        return _mfa_failed_attempts.get(ticket_hash, 0)
+    try:
+        val = _mfa_redis_client.get(_mfa_redis_key(ticket_hash))
+        return int(val) if val is not None else 0
+    except Exception as e:
+        logger.warning("mfa_rate_limit redis_error_on_get err=%s fail_closed=True", e)
+        raise HTTPException(status_code=429, detail="MFA service temporarily unavailable, try again shortly")
 
 
 def _get_totp_cipher() -> TOTPCipher:
@@ -2223,9 +2301,9 @@ def customer_verify_totp(
     email, tenant_id = parsed
 
     attempt_key = _ticket_attempt_key(ca_customer_mfa)
-    if _mfa_failed_attempts.get(attempt_key, 0) >= CUSTOMER_MFA_MAX_ATTEMPTS:
+    if _mfa_attempts_count(attempt_key) >= CUSTOMER_MFA_MAX_ATTEMPTS:
         _clear_customer_mfa_ticket(response)
-        _mfa_failed_attempts.pop(attempt_key, None)
+        _mfa_clear_attempts(attempt_key)
         raise HTTPException(status_code=429, detail="Too many failed MFA attempts — start over")
 
     user = (
@@ -2244,10 +2322,10 @@ def customer_verify_totp(
     secret = _get_totp_cipher().decrypt(user.totp_secret_enc)
     ok = verify_totp(secret, code) or _consume_customer_backup_code(user, code)
     if not ok:
-        _mfa_failed_attempts[attempt_key] = _mfa_failed_attempts.get(attempt_key, 0) + 1
+        _mfa_inc_attempts(attempt_key)
         raise HTTPException(status_code=401, detail="Invalid MFA code")
 
-    _mfa_failed_attempts.pop(attempt_key, None)
+    _mfa_clear_attempts(attempt_key)
     _issue_customer_session(response, db, user)
     _clear_customer_mfa_ticket(response)
     db.commit()
@@ -5239,6 +5317,48 @@ def customer_update_user(
     db.commit()
     db.refresh(user)
     return user
+
+
+@app.post("/customer/users/{user_id}/disable-mfa", response_model=TenantUserOut)
+def customer_force_disable_mfa(
+    user_id: str,
+    ctx: Annotated[CustomerContext, Depends(require_customer_role("tenant_admin"))],
+    db: Annotated[Session, Depends(get_db)],
+):
+    """Tenant-admin escape hatch when a user has lost BOTH their authenticator
+    app and all backup codes. Clears the four TOTP fields so the user can
+    sign in with the email code alone and re-enroll. Tenant-scoped — an
+    admin in tenant A cannot touch users in tenant B (the .filter on
+    tenant_id == ctx.tenant_id enforces this). The audit middleware logs
+    the call via the URL path; no extra audit row needed.
+    """
+    user = (
+        db.query(TenantUser)
+        .filter(TenantUser.id == user_id, TenantUser.tenant_id == ctx.tenant_id)
+        .first()
+    )
+    if not user:
+        raise HTTPException(status_code=404, detail="Tenant user not found")
+    if not user.totp_enabled and not user.totp_secret_enc and not user.totp_pending_enc:
+        # Already off — surface a 400 so the UI can show "nothing to do".
+        raise HTTPException(status_code=400, detail="MFA is not enabled for this user")
+    if user.email == ctx.email:
+        # Tenant admins must use the regular self-service /me/totp endpoint
+        # to disable their own MFA — that flow requires a current code,
+        # which this endpoint deliberately bypasses.
+        raise HTTPException(status_code=400, detail="Use Account Security to disable MFA on your own account")
+    user.totp_secret_enc = None
+    user.totp_pending_enc = None
+    user.totp_enabled = False
+    user.backup_codes_hash = None
+    logger.warning(
+        "mfa_force_disabled tenant=%s by_admin=%s target_user=%s",
+        ctx.tenant_id, ctx.email, user.email,
+    )
+    db.commit()
+    db.refresh(user)
+    return user
+
 
 @app.get("/apikeys", response_model=list[ApiKeyOut])
 def list_apikeys(

@@ -7835,12 +7835,23 @@ async function viewUsers() {
     const lastCell = last
       ? `<span title="${esc(fmt(last))}">${esc(relativeFromIso(last))}</span>`
       : `<span class="text-slate-600">never</span>`;
+    // "Reset MFA" appears only when this user has MFA on AND it's not the
+    // current admin themselves (they have a self-service path with code).
+    const isSelf = user.email === session.email;
+    const mfaCell = user.totp_enabled
+      ? badge("MFA on", "green")
+      : `<span class="text-slate-600 text-xs">—</span>`;
+    const resetBtn = user.totp_enabled && !isSelf
+      ? `<button data-action="reset-mfa" data-user-id="${esc(user.id)}" data-email="${esc(user.email)}" class="rounded-xl border border-rose-800 bg-rose-950/40 px-2 py-1 text-xs font-semibold text-rose-200 hover:bg-rose-900/60">Reset MFA</button>`
+      : "";
     return `
       <tr class="border-t border-slate-800">
         <td class="px-3 py-3">${esc(user.email)}</td>
         <td class="px-3 py-3">${badge(user.role, user.role === "tenant_admin" ? "green" : "cyan")}</td>
         <td class="px-3 py-3">${badge(user.status, user.status === "active" ? "green" : "amber")}</td>
+        <td class="px-3 py-3">${mfaCell}</td>
         <td class="px-3 py-3 text-xs text-slate-400 tabular-nums">${lastCell}</td>
+        <td class="px-3 py-3">${resetBtn}</td>
       </tr>`;
   }).join("");
   $("#app").innerHTML = card(`
@@ -7860,9 +7871,16 @@ async function viewUsers() {
       <div class="min-w-0 flex-1 overflow-x-auto">
         <table class="w-full text-left text-sm">
           <thead class="text-xs uppercase tracking-[0.18em] text-slate-500">
-            <tr><th class="px-3 py-2">Email</th><th class="px-3 py-2">Role</th><th class="px-3 py-2">Status</th><th class="px-3 py-2">Last login</th></tr>
+            <tr>
+              <th class="px-3 py-2">Email</th>
+              <th class="px-3 py-2">Role</th>
+              <th class="px-3 py-2">Status</th>
+              <th class="px-3 py-2">MFA</th>
+              <th class="px-3 py-2">Last login</th>
+              <th class="px-3 py-2"></th>
+            </tr>
           </thead>
-          <tbody>${rows || `<tr><td class="px-3 py-8 text-slate-400" colspan="4">No tenant users yet.</td></tr>`}</tbody>
+          <tbody>${rows || `<tr><td class="px-3 py-8 text-slate-400" colspan="6">No tenant users yet.</td></tr>`}</tbody>
         </table>
       </div>
     </div>
@@ -7884,6 +7902,24 @@ async function viewUsers() {
       $("#userFormMessage").textContent = error.message;
       $("#userFormMessage").className = "mt-3 text-sm text-rose-300";
     }
+  });
+  // Per-row "Reset MFA" — confirms, calls the force-disable endpoint, refreshes.
+  $("#app").querySelectorAll('button[data-action="reset-mfa"]').forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const userId = btn.dataset.userId;
+      const email = btn.dataset.email;
+      if (!confirm(`Force-disable MFA for ${email}? They will be able to sign in with just an email code afterward, and can re-enroll from their Settings.`)) return;
+      btn.disabled = true;
+      btn.textContent = "Resetting…";
+      try {
+        await api(`/api/customer/users/${encodeURIComponent(userId)}/disable-mfa`, { method: "POST" });
+        await viewUsers();
+      } catch (e) {
+        btn.disabled = false;
+        btn.textContent = "Reset MFA";
+        alert(`Could not reset MFA: ${e.message}`);
+      }
+    });
   });
 }
 
