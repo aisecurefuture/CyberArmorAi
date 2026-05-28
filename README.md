@@ -374,5 +374,5 @@ Proprietary - Gratitech Research and Charitable Endeavor Corporation - All right
 
 ## Support
 
-- Enterprise Support: support@cyberarmor.com
-- Security Issues: security@cyberarmor.com
+- Enterprise Support: support@cyberarmor.ai
+- Security Issues: security@cyberarmor.ai
