@@ -1,4 +1,4 @@
-# CyberArmor
+# CyberArmor.AI
 
 **Pre-Ingestion URL Trust Gate and AI Security Runtime**
 
