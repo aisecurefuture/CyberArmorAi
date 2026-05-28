@@ -4,7 +4,7 @@
 
 **Do not open a public GitHub issue for security vulnerabilities.**
 
-Report security issues by email to **security@gratitech.com**. You should receive an acknowledgment within **7 business days** and a status update within **14 business days**.
+Report security issues by email to **security@cyberarmor.ai**. You should receive an acknowledgment within **7 business days** and a status update within **14 business days**.
 
 Please include as much of the following as possible:
 
