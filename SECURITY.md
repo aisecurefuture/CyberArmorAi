@@ -69,5 +69,5 @@ We appreciate responsible disclosure. Reporters who identify and responsibly dis
 
 ## Contact
 
-- Security disclosures: security@gratitech.com
-- General support: support@gratitech.com
+- Security disclosures: security@cyberarmor.ai
+- General support: support@cyberarmor.ai
