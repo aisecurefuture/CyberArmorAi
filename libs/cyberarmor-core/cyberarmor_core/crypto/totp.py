@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
+import re
 import secrets
 from typing import List
 
@@ -58,11 +59,31 @@ def otpauth_uri(secret: str, label: str, issuer: str) -> str:
 
 
 def qr_svg(uri: str) -> str:
-    factory = qrcode.image.svg.SvgImage
-    img = qrcode.make(uri, image_factory=factory, box_size=8, border=2)
+    """Render the otpauth URI as an inline-HTML-safe SVG string.
+
+    qrcode's default ``SvgImage`` factory emits ``<svg:rect>`` elements with
+    namespace prefixes; when the browser parses such markup via ``innerHTML``
+    (HTML mode, not XML), it treats those tags as unknown HTML elements and
+    silently drops them on the floor — the SVG container is present in the
+    DOM but no QR modules render. The ``SvgPathImage`` factory emits a single
+    unprefixed ``<path>`` element which renders cleanly.
+
+    We additionally strip the XML prolog (``<?xml …?>``) — which HTML's
+    parser treats as a comment/PI and which has been known to break
+    sibling-SVG rendering — and rewrite the millimeter dimensions to plain
+    pixels. The viewBox is preserved so the QR scales correctly inside the
+    fixed-size box.
+    """
+    factory = qrcode.image.svg.SvgPathImage
+    img = qrcode.make(uri, image_factory=factory, box_size=10, border=2)
     buf = io.BytesIO()
     img.save(buf)
-    return buf.getvalue().decode("utf-8")
+    svg = buf.getvalue().decode("utf-8")
+    if svg.lstrip().startswith("<?xml"):
+        svg = svg[svg.index("?>") + 2:].lstrip()
+    svg = re.sub(r'\swidth="[^"]+"', ' width="200"', svg, count=1)
+    svg = re.sub(r'\sheight="[^"]+"', ' height="200"', svg, count=1)
+    return svg
 
 
 def _normalize_code(code: str) -> str:
