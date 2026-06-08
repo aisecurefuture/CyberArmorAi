@@ -58,14 +58,19 @@ pipeline {
               CYBERARMOR_SOURCE_DIR='${checkoutSourceDir}' CYBERARMOR_DEST_DIR='${env.CYBERARMOR_WORKDIR}' python3 - <<'PY'
 import os
 import shutil
+import stat
+import time
 
 src = os.environ["CYBERARMOR_SOURCE_DIR"]
 dst = os.environ["CYBERARMOR_DEST_DIR"]
 ignore = shutil.ignore_patterns(
+    ".DS_Store",
     "node_modules",
     "dist",
     "out",
     "__pycache__",
+    "*.pyc",
+    "*.pyo",
     ".pytest_cache",
     ".mypy_cache",
     ".venv",
@@ -75,8 +80,41 @@ ignore = shutil.ignore_patterns(
     ".env.production",
 )
 
+def copy_regular_file(src_path, dst_path):
+    src_stat = os.lstat(src_path)
+    mode = src_stat.st_mode
+    if stat.S_ISLNK(mode):
+        link_target = os.readlink(src_path)
+        if os.path.lexists(dst_path):
+            os.unlink(dst_path)
+        os.symlink(link_target, dst_path)
+        return dst_path
+    if not stat.S_ISREG(mode):
+        return dst_path
+
+    last_error = None
+    for attempt in range(4):
+        try:
+            with open(src_path, "rb") as source, open(dst_path, "wb") as target_file:
+                while True:
+                    chunk = source.read(1024 * 64)
+                    if not chunk:
+                        break
+                    target_file.write(chunk)
+            last_error = None
+            break
+        except OSError as err:
+            last_error = err
+            if err.errno != 35 or attempt == 3:
+                raise RuntimeError(f"failed to copy {src_path} to {dst_path}: {err}") from err
+            time.sleep(0.25 * (attempt + 1))
+    if last_error is not None:
+        raise RuntimeError(f"failed to copy {src_path} to {dst_path}: {last_error}") from last_error
+    shutil.copymode(src_path, dst_path)
+    return dst_path
+
 for rel in ("Jenkinsfile.security", "Makefile", "README.md"):
-    shutil.copyfile(os.path.join(src, rel), os.path.join(dst, rel))
+    copy_regular_file(os.path.join(src, rel), os.path.join(dst, rel))
 
 for rel in (
     "agents",
@@ -94,7 +132,7 @@ for rel in (
         target,
         dirs_exist_ok=True,
         ignore=ignore,
-        copy_function=shutil.copyfile,
+        copy_function=copy_regular_file,
     )
 PY
             """
