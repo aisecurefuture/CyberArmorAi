@@ -48,14 +48,14 @@ export default function Navbar() {
             {/* Logo */}
             <Link href="/" style={{ display: "flex", alignItems: "center", gap: "8px", textDecoration: "none" }}>
               <div style={{
-                width: 42, height: 42,
-                borderRadius: 10,
+                width: 56, height: 56,
+                borderRadius: 12,
                 flexShrink: 0,
                 border: "1px solid rgba(0,163,255,0.3)",
                 boxShadow: "0 0 18px rgba(0,163,255,0.2), inset 0 0 0 1px rgba(0,163,255,0.1)",
                 backgroundImage: "url('/CyberArmorAI.png')",
-                backgroundSize: "145%",
-                backgroundPosition: "50% 50%",
+                backgroundSize: "195%",
+                backgroundPosition: "50% 28%",
                 backgroundRepeat: "no-repeat",
               }} />
               <span style={{ fontSize: 17, fontWeight: 700, color: "#ffffff", letterSpacing: "-0.03em" }}>
